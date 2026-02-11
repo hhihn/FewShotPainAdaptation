@@ -6,6 +6,7 @@ from utils.logger import setup_logger
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.meta_ds_sampler import SixWayKShotSampler
 
+
 class LOSOCrossValidator:
     """
     Leave-One-Subject-Out Cross-Validator for meta-learning.
@@ -15,12 +16,12 @@ class LOSOCrossValidator:
     """
 
     def __init__(
-            self,
-            dataset: PainMetaDataset,
-            k_shot: int = 5,
-            q_query: int = 5,
-            episodes_per_epoch: int = 100,
-            seed: Optional[int] = None
+        self,
+        dataset: PainMetaDataset,
+        k_shot: int = 5,
+        q_query: int = 5,
+        episodes_per_epoch: int = 100,
+        seed: Optional[int] = None,
     ):
         """
         Initialize cross-validator.
@@ -72,44 +73,44 @@ class LOSOCrossValidator:
 
         train_sampler = SixWayKShotSampler(
             dataset=self.dataset,
-            mode='train',
+            mode="train",
             train_subjects=train_subjects_final,
             test_subject=test_subject,
             k_shot=self.k_shot,
             q_query=self.q_query,
             episodes_per_epoch=self.episodes_per_epoch,
-            seed=self.seed
+            seed=self.seed,
         )
 
         val_sampler = SixWayKShotSampler(
             dataset=self.dataset,
-            mode='val',
+            mode="val",
             train_subjects=val_subjects,
             test_subject=test_subject,
             k_shot=self.k_shot,
             q_query=self.q_query,
             episodes_per_epoch=self.episodes_per_epoch // 5,
-            seed=self.seed
+            seed=self.seed,
         )
 
         test_sampler = SixWayKShotSampler(
             dataset=self.dataset,
-            mode='test',
+            mode="test",
             train_subjects=train_subjects,
             test_subject=test_subject,
             k_shot=self.k_shot,
             q_query=self.q_query,
             episodes_per_epoch=20,  # Fewer episodes for testing
-            seed=self.seed
+            seed=self.seed,
         )
 
         return {
-            'train_sampler': train_sampler,
-            'val_sampler': val_sampler,
-            'test_sampler': test_sampler,
-            'test_subject': test_subject,
-            'train_subjects': train_subjects_final,
-            'val_subjects': val_subjects,
-            'n_train_subjects': len(train_subjects_final),
-            'n_val_subjects': len(val_subjects)
+            "train_sampler": train_sampler,
+            "val_sampler": val_sampler,
+            "test_sampler": test_sampler,
+            "test_subject": test_subject,
+            "train_subjects": train_subjects_final,
+            "val_subjects": val_subjects,
+            "n_train_subjects": len(train_subjects_final),
+            "n_val_subjects": len(val_subjects),
         }

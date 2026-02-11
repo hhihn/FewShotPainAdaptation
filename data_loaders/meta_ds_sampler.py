@@ -8,6 +8,7 @@ from utils.logger import setup_logger
 
 from data_loaders.pain_meta_dataset import PainMetaDataset
 
+
 class SixWayKShotSampler:
     """
     6-Way-K-Shot episodic sampler for meta-learning.
@@ -25,15 +26,15 @@ class SixWayKShotSampler:
     """
 
     def __init__(
-            self,
-            dataset: PainMetaDataset,
-            mode: str = 'train',
-            train_subjects: Optional[List[int]] = None,
-            test_subject: Optional[int] = None,
-            k_shot: int = 5,
-            q_query: int = 5,
-            episodes_per_epoch: int = 100,
-            seed: Optional[int] = None
+        self,
+        dataset: PainMetaDataset,
+        mode: str = "train",
+        train_subjects: Optional[List[int]] = None,
+        test_subject: Optional[int] = None,
+        k_shot: int = 5,
+        q_query: int = 5,
+        episodes_per_epoch: int = 100,
+        seed: Optional[int] = None,
     ):
         """
         Initialize the sampler.
@@ -64,9 +65,9 @@ class SixWayKShotSampler:
         self.train_subjects = train_subjects
         self.test_subject = test_subject
 
-        if mode == 'train':
+        if mode == "train":
             self.active_subjects = train_subjects
-        elif mode == 'val':
+        elif mode == "val":
             # Use a subset of training subjects for validation
             self.active_subjects = train_subjects[-5:]  # Last 5 subjects
         else:  # test
@@ -96,12 +97,7 @@ class SixWayKShotSampler:
     def _sample_episode(self) -> Dict[str, np.ndarray]:
         """Sample a single episode."""
 
-        episode_dict = {
-            'support_X': [],
-            'support_y': [],
-            'query_X': [],
-            'query_y': []
-        }
+        episode_dict = {"support_X": [], "support_y": [], "query_X": [], "query_y": []}
 
         # For each of the 6 pain levels
         for class_id in range(self.config.n_way):
@@ -109,7 +105,10 @@ class SixWayKShotSampler:
             pooled_indices = []
 
             for subject in self.active_subjects:
-                if subject in self.dataset.index and class_id in self.dataset.index[subject]:
+                if (
+                    subject in self.dataset.index
+                    and class_id in self.dataset.index[subject]
+                ):
                     pooled_indices.extend(self.dataset.index[subject][class_id])
 
             if len(pooled_indices) < self.config.k_shot + self.config.q_query:
@@ -122,29 +121,29 @@ class SixWayKShotSampler:
             sampled_indices = self.rng.choice(
                 pooled_indices,
                 size=min(self.config.k_shot + self.config.q_query, len(pooled_indices)),
-                replace=False
+                replace=False,
             )
 
-            support_indices = sampled_indices[:self.config.k_shot]
-            query_indices = sampled_indices[self.config.k_shot:]
+            support_indices = sampled_indices[: self.config.k_shot]
+            query_indices = sampled_indices[self.config.k_shot :]
 
             # Load support samples
             for idx in support_indices:
                 x = self.dataset.X[idx]
-                episode_dict['support_X'].append(x)
-                episode_dict['support_y'].append(class_id)
+                episode_dict["support_X"].append(x)
+                episode_dict["support_y"].append(class_id)
 
             # Load query samples
             for idx in query_indices:
                 x = self.dataset.X[idx]
-                episode_dict['query_X'].append(x)
-                episode_dict['query_y'].append(class_id)
+                episode_dict["query_X"].append(x)
+                episode_dict["query_y"].append(class_id)
 
         # Stack into arrays
-        episode_dict['support_X'] = np.stack(episode_dict['support_X'], axis=0)
-        episode_dict['support_y'] = np.array(episode_dict['support_y'])
-        episode_dict['query_X'] = np.stack(episode_dict['query_X'], axis=0)
-        episode_dict['query_y'] = np.array(episode_dict['query_y'])
+        episode_dict["support_X"] = np.stack(episode_dict["support_X"], axis=0)
+        episode_dict["support_y"] = np.array(episode_dict["support_y"])
+        episode_dict["query_X"] = np.stack(episode_dict["query_X"], axis=0)
+        episode_dict["query_y"] = np.array(episode_dict["query_y"])
 
         return episode_dict
 
@@ -175,14 +174,10 @@ class SixWayKShotSampler:
         return self.dataset.sample_episode(
             subject=self.test_subject,
             k_shot=k_shot or self.k_shot,
-            q_query=self.q_query
+            q_query=self.q_query,
         )
 
-    def as_tf_dataset(
-            self,
-            batch_size: int = 1,
-            prefetch: int = 2
-    ) -> tf.data.Dataset:
+    def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:
         """
         Convert to TensorFlow Dataset.
 
@@ -195,38 +190,30 @@ class SixWayKShotSampler:
         """
         # Define output signature
         output_signature = {
-            'support_X': tf.TensorSpec(
+            "support_X": tf.TensorSpec(
                 shape=(self.support_size, self.seq_len, self.n_sensors),
-                dtype=tf.float32
+                dtype=tf.float32,
             ),
-            'support_y': tf.TensorSpec(
-                shape=(self.support_size,),
-                dtype=tf.int32
+            "support_y": tf.TensorSpec(shape=(self.support_size,), dtype=tf.int32),
+            "query_X": tf.TensorSpec(
+                shape=(self.query_size, self.seq_len, self.n_sensors), dtype=tf.float32
             ),
-            'query_X': tf.TensorSpec(
-                shape=(self.query_size, self.seq_len, self.n_sensors),
-                dtype=tf.float32
-            ),
-            'query_y': tf.TensorSpec(
-                shape=(self.query_size,),
-                dtype=tf.int32
-            ),
-            'subject': tf.TensorSpec(shape=(), dtype=tf.int32)
+            "query_y": tf.TensorSpec(shape=(self.query_size,), dtype=tf.int32),
+            "subject": tf.TensorSpec(shape=(), dtype=tf.int32),
         }
 
         def generator():
             for episode in self:
                 yield {
-                    'support_X': episode['support_X'].astype(np.float32),
-                    'support_y': episode['support_y'].astype(np.int32),
-                    'query_X': episode['query_X'].astype(np.float32),
-                    'query_y': episode['query_y'].astype(np.int32),
-                    'subject': np.int32(episode['subject'])
+                    "support_X": episode["support_X"].astype(np.float32),
+                    "support_y": episode["support_y"].astype(np.int32),
+                    "query_X": episode["query_X"].astype(np.float32),
+                    "query_y": episode["query_y"].astype(np.int32),
+                    "subject": np.int32(episode["subject"]),
                 }
 
         dataset = tf.data.Dataset.from_generator(
-            generator,
-            output_signature=output_signature
+            generator, output_signature=output_signature
         )
 
         if batch_size > 1:
@@ -235,9 +222,7 @@ class SixWayKShotSampler:
         return dataset.prefetch(prefetch)
 
     def as_multimodal_tf_dataset(
-            self,
-            batch_size: int = 1,
-            prefetch: int = 2
+        self, batch_size: int = 1, prefetch: int = 2
     ) -> tf.data.Dataset:
         """
         Convert to TensorFlow Dataset with separate modality tensors.
@@ -253,42 +238,38 @@ class SixWayKShotSampler:
             for episode in self:
                 # Split by modality
                 support_modalities = {
-                    name: episode['support_X'][:, :, i:i + 1].astype(np.float32)
+                    name: episode["support_X"][:, :, i : i + 1].astype(np.float32)
                     for i, name in enumerate(modality_names)
                 }
                 query_modalities = {
-                    name: episode['query_X'][:, :, i:i + 1].astype(np.float32)
+                    name: episode["query_X"][:, :, i : i + 1].astype(np.float32)
                     for i, name in enumerate(modality_names)
                 }
 
                 yield {
-                    'support': support_modalities,
-                    'support_y': episode['support_y'].astype(np.int32),
-                    'query': query_modalities,
-                    'query_y': episode['query_y'].astype(np.int32),
-                    'subject': np.int32(episode['subject'])
+                    "support": support_modalities,
+                    "support_y": episode["support_y"].astype(np.int32),
+                    "query": query_modalities,
+                    "query_y": episode["query_y"].astype(np.int32),
+                    "subject": np.int32(episode["subject"]),
                 }
 
         # Build output signature
         modality_spec = {
-            name: tf.TensorSpec(
-                shape=(None, self.seq_len, 1),
-                dtype=tf.float32
-            )
+            name: tf.TensorSpec(shape=(None, self.seq_len, 1), dtype=tf.float32)
             for name in modality_names
         }
 
         output_signature = {
-            'support': modality_spec,
-            'support_y': tf.TensorSpec(shape=(None,), dtype=tf.int32),
-            'query': modality_spec.copy(),
-            'query_y': tf.TensorSpec(shape=(None,), dtype=tf.int32),
-            'subject': tf.TensorSpec(shape=(), dtype=tf.int32)
+            "support": modality_spec,
+            "support_y": tf.TensorSpec(shape=(None,), dtype=tf.int32),
+            "query": modality_spec.copy(),
+            "query_y": tf.TensorSpec(shape=(None,), dtype=tf.int32),
+            "subject": tf.TensorSpec(shape=(), dtype=tf.int32),
         }
 
         dataset = tf.data.Dataset.from_generator(
-            generator,
-            output_signature=output_signature
+            generator, output_signature=output_signature
         )
 
         if batch_size > 1:

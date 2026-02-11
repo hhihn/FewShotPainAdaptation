@@ -1,9 +1,11 @@
 from typing import Tuple, Dict
 from dataclasses import dataclass
 
+
 @dataclass
 class PainDatasetConfig:
     """Configuration for the pain dataset."""
+
     # Data dimensions
     num_subjects: int = 52
     num_stimuli_levels: int = 6  # 6 temperature/pain levels
@@ -14,12 +16,12 @@ class PainDatasetConfig:
     painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
     # Modality information
     modality_names: Tuple[str, ...] = (
-        'EDA', # idx 1
-        'ECG', # idx 4
-        'EMG',  # idx 5
+        "EDA",  # idx 1
+        "ECG",  # idx 4
+        "EMG",  # idx 5
     )
     # Sensor to index mapping
-    sensor_idx =  [1, 4, 5]
+    sensor_idx = [1, 4, 5]
 
     # Meta-learning settings
     n_way: int = 6  # Number of classes per episode (all 6 pain levels)
@@ -27,6 +29,6 @@ class PainDatasetConfig:
     q_query: int = 3  # Query samples per class
 
     # Data paths
-    data_path: str = 'X_pre.npy'
-    labels_path: str = 'y_heater.npy'
-    subjects_path: str = 'subjects.npy'
+    data_path: str = "X_pre.npy"
+    labels_path: str = "y_heater.npy"
+    subjects_path: str = "subjects.npy"

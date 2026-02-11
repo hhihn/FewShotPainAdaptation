@@ -21,6 +21,7 @@ import logging
 from utils.logger import setup_logger
 from data_loaders.pain_ds_config import PainDatasetConfig
 
+
 class PainMetaDataset:
     """
     Meta-learning dataset for multi-modal pain assessment.
@@ -35,11 +36,11 @@ class PainMetaDataset:
     """
 
     def __init__(
-            self,
-            data_dir: str,
-            config: Optional[PainDatasetConfig] = None,
-            normalize: bool = True,
-            normalize_per_subject: bool = True
+        self,
+        data_dir: str,
+        config: Optional[PainDatasetConfig] = None,
+        normalize: bool = True,
+        normalize_per_subject: bool = True,
     ):
         """
         Initialize the dataset.
@@ -72,7 +73,9 @@ class PainMetaDataset:
         self.logger.info(f"Loading data from {self.data_dir}...")
 
         # Load arrays
-        self.X = np.load(self.data_dir / self.config.data_path)[:, :, self.config.sensor_idx, :]
+        self.X = np.load(self.data_dir / self.config.data_path)[
+            :, :, self.config.sensor_idx, :
+        ]
         self.logger.info(f"X.shape: {self.X.shape}")
         self.y_onehot = np.load(self.data_dir / self.config.labels_path)
         self.logger.info(f"y_onehot.shape: {self.y_onehot.shape}")
@@ -116,7 +119,7 @@ class PainMetaDataset:
 
     def _verify_index(self):
         """Verify that the index is valid for sampling."""
-        min_samples_per_class = float('inf')
+        min_samples_per_class = float("inf")
 
         for subject in self.unique_subjects:
             for class_id in range(self.config.n_way):
@@ -129,7 +132,9 @@ class PainMetaDataset:
                         f"but {self.config.k_shot + self.config.q_query} are needed for sampling."
                     )
 
-        self.logger.info(f"  Minimum samples per (subject, class): {min_samples_per_class}")
+        self.logger.info(
+            f"  Minimum samples per (subject, class): {min_samples_per_class}"
+        )
 
     def _compute_normalization_stats(self):
         """Compute mean and std for normalization."""
@@ -140,22 +145,24 @@ class PainMetaDataset:
                 subject_mask = self.subjects == subject
                 subject_data = self.X[subject_mask]
                 self.norm_stats[subject] = {
-                    'mean': np.mean(subject_data, axis=(0, 1), keepdims=True),
-                    'std': np.std(subject_data, axis=(0, 1), keepdims=True) + 1e-8
+                    "mean": np.mean(subject_data, axis=(0, 1), keepdims=True),
+                    "std": np.std(subject_data, axis=(0, 1), keepdims=True) + 1e-8,
                 }
         else:
             # Global normalization
             self.global_mean = np.mean(self.X, axis=(0, 1), keepdims=True)
             self.global_std = np.std(self.X, axis=(0, 1), keepdims=True) + 1e-8
 
-    def _normalize_data(self, data: np.ndarray, subject: Optional[int] = None) -> np.ndarray:
+    def _normalize_data(
+        self, data: np.ndarray, subject: Optional[int] = None
+    ) -> np.ndarray:
         """Normalize data."""
         if not self.normalize:
             return data
 
         if self.normalize_per_subject and subject is not None:
-            mean = self.norm_stats[subject]['mean']
-            std = self.norm_stats[subject]['std']
+            mean = self.norm_stats[subject]["mean"]
+            std = self.norm_stats[subject]["std"]
         else:
             mean = self.global_mean
             std = self.global_std
@@ -163,9 +170,7 @@ class PainMetaDataset:
         return (data - mean) / std
 
     def get_subject_data(
-            self,
-            subject: int,
-            normalize: bool = True
+        self, subject: int, normalize: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Get all data for a specific subject.
@@ -188,11 +193,11 @@ class PainMetaDataset:
         return X, y
 
     def sample_episode(
-            self,
-            subject: int,
-            k_shot: Optional[int] = None,
-            q_query: Optional[int] = None,
-            seed: Optional[int] = None
+        self,
+        subject: int,
+        k_shot: Optional[int] = None,
+        q_query: Optional[int] = None,
+        seed: Optional[int] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Sample a 6-way-K-shot episode from a single subject.
@@ -232,7 +237,7 @@ class PainMetaDataset:
             # Random sample
             sampled = np.random.choice(indices, size=k_shot + q_query, replace=False)
             support_idx = sampled[:k_shot]
-            query_idx = sampled[k_shot:k_shot + q_query]
+            query_idx = sampled[k_shot : k_shot + q_query]
 
             # Get data
             support_X.append(self.X[support_idx])
@@ -255,19 +260,19 @@ class PainMetaDataset:
         query_perm = np.random.permutation(len(query_y))
 
         return {
-            'support_X': support_X[support_perm],
-            'support_y': support_y[support_perm],
-            'query_X': query_X[query_perm],
-            'query_y': query_y[query_perm],
-            'subject': subject
+            "support_X": support_X[support_perm],
+            "support_y": support_y[support_perm],
+            "query_X": query_X[query_perm],
+            "query_y": query_y[query_perm],
+            "subject": subject,
         }
 
     def sample_meta_batch(
-            self,
-            subjects: List[int],
-            batch_size: int,
-            k_shot: Optional[int] = None,
-            q_query: Optional[int] = None
+        self,
+        subjects: List[int],
+        batch_size: int,
+        k_shot: Optional[int] = None,
+        q_query: Optional[int] = None,
     ) -> List[Dict[str, np.ndarray]]:
         """
         Sample a batch of episodes for meta-training.
@@ -282,15 +287,9 @@ class PainMetaDataset:
             List of episode dictionaries
         """
         sampled_subjects = np.random.choice(subjects, size=batch_size, replace=True)
-        return [
-            self.sample_episode(s, k_shot, q_query)
-            for s in sampled_subjects
-        ]
+        return [self.sample_episode(s, k_shot, q_query) for s in sampled_subjects]
 
-    def leave_one_subject_out_split(
-            self,
-            test_subject: int
-    ) -> Tuple[List[int], int]:
+    def leave_one_subject_out_split(self, test_subject: int) -> Tuple[List[int], int]:
         """
         Create leave-one-subject-out split.
 
@@ -305,10 +304,7 @@ class PainMetaDataset:
         return train_subjects, test_subject
 
     def get_few_shot_split(
-            self,
-            subject: int,
-            k_shot: int,
-            seed: Optional[int] = None
+        self, subject: int, k_shot: int, seed: Optional[int] = None
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """
         Get a few-shot split for adaptation and evaluation.
@@ -349,8 +345,7 @@ class PainMetaDataset:
         support_X = self._normalize_data(support_X, subject)
         eval_X = self._normalize_data(eval_X, subject)
 
-        support_set = {'X': support_X, 'y': support_y}
-        eval_set = {'X': eval_X, 'y': eval_y}
+        support_set = {"X": support_X, "y": support_y}
+        eval_set = {"X": eval_X, "y": eval_y}
 
         return support_set, eval_set
-

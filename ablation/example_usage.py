@@ -11,6 +11,7 @@ from data_loaders.loso_cross_validator import LOSOCrossValidator
 
 logger = setup_logger("PainMetaExampleUsage", level=logging.DEBUG)
 
+
 def example_usage():
     """Demonstrate the sampler usage."""
 
@@ -32,7 +33,7 @@ def example_usage():
         data_dir=str(data_dir),
         config=config,
         normalize=True,
-        normalize_per_subject=True
+        normalize_per_subject=True,
     )
 
     # Test basic episode sampling
@@ -45,7 +46,9 @@ def example_usage():
     logger.info(f"Support y shape: {episode['support_y'].shape}")
     logger.info(f"Query X shape: {episode['query_X'].shape}")
     logger.info(f"Query y shape: {episode['query_y'].shape}")
-    logger.info(f"Support y distribution: {np.bincount(episode['support_y'], minlength=6)}")
+    logger.info(
+        f"Support y distribution: {np.bincount(episode['support_y'], minlength=6)}"
+    )
     logger.info(f"Query y distribution: {np.bincount(episode['query_y'], minlength=6)}")
 
     # Test LOSO cross-validation
@@ -57,7 +60,7 @@ def example_usage():
         dataset=dataset,
         k_shot=config.k_shot,
         q_query=config.q_query,
-        episodes_per_epoch=10
+        episodes_per_epoch=10,
     )
 
     logger.info(f"Number of folds: {len(cv)}")
@@ -74,13 +77,15 @@ def example_usage():
     logger.info("Testing Sampler iteration...")
     logger.info("-" * 40)
 
-    train_sampler = fold['train_sampler']
+    train_sampler = fold["train_sampler"]
     for i, episode in enumerate(train_sampler):
         if i >= 3:
             break
-        logger.info(f"Episode {i}: "
-              f"support={episode['support_X'].shape}, "
-              f"query={episode['query_X'].shape}")
+        logger.info(
+            f"Episode {i}: "
+            f"support={episode['support_X'].shape}, "
+            f"query={episode['query_X'].shape}"
+        )
 
     # Test few-shot split
     logger.info("-" * 40)
@@ -89,7 +94,9 @@ def example_usage():
 
     for k in [1, 3, 5]:
         support, eval_set = dataset.get_few_shot_split(subject=0, k_shot=k)
-        logger.info(f"{k}-shot: Support={support['X'].shape}, Eval={eval_set['X'].shape}")
+        logger.info(
+            f"{k}-shot: Support={support['X'].shape}, Eval={eval_set['X'].shape}"
+        )
 
     # Clean up
 
@@ -98,5 +105,5 @@ def example_usage():
     logger.info("=" * 60)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     example_usage()
