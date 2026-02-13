@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from typing import Tuple, List, Dict, Optional, Generator
+from typing import List, Dict, Optional, Generator
 
 import logging
 

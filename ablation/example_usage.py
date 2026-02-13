@@ -67,7 +67,7 @@ def example_usage():
 
     # Get first fold
     fold = cv.get_fold(test_subject=0)
-    logger.info(f"Fold for test subject 0:")
+    logger.info("Fold for test subject 0:")
     logger.info(f"Training subjects: {len(fold['train_subjects'])}")
     logger.info(f"Validation subjects: {len(fold['val_subjects'])}")
     logger.info(f"Test subject: {fold['test_subject']}")

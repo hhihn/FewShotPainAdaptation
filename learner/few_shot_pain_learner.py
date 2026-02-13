@@ -9,6 +9,7 @@ from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
 import logging
 
+
 class FewShotPainLearner:
     """Meta-learning trainer for personalized pain assessment."""
 
@@ -57,14 +58,14 @@ class FewShotPainLearner:
         self.optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
         self.loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
-        logger.info(
+        self.logger.info(
             f"Initialized FewShotPainLearner with {len(self.cv.subjects)} subjects"
         )
-        logger.info(
+        self.logger.info(
             f"Data shape: (sequence_length={config.sequence_length}, num_sensors={num_sensors})"
         )
-        logger.info(f"Modalities: {config.modality_names}")
-        logger.info(f"Fusion method: {fusion_method}")
+        self.logger.info(f"Modalities: {config.modality_names}")
+        self.logger.info(f"Fusion method: {fusion_method}")
 
     def train_step(self, support_x, support_y, query_x, query_y):
         """Single training step on one episode."""
@@ -116,11 +117,11 @@ class FewShotPainLearner:
         num_subjects = len(self.cv.subjects)
 
         for fold, test_subject in enumerate(self.cv.subjects):
-            logger.info(f"\n{'=' * 60}")
-            logger.info(
+            self.logger.info(f"\n{'=' * 60}")
+            self.logger.info(
                 f"Fold {fold + 1}/{num_subjects}: Test subject = {test_subject}"
             )
-            logger.info(f"{'=' * 60}")
+            self.logger.info(f"{'=' * 60}")
 
             # Reset model for each fold
             num_sensors = len(self.config.sensor_idx)
@@ -205,7 +206,7 @@ class FewShotPainLearner:
                 fold_results["val_accuracies"].append(avg_val_acc)
 
                 if (epoch + 1) % 2 == 0:
-                    logger.info(
+                    self.logger.info(
                         f"Epoch {epoch + 1}/{num_epochs} | "
                         f"Train Loss: {avg_train_loss:.4f}, Acc: {avg_train_acc:.4f} | "
                         f"Val Loss: {avg_val_loss:.4f}, Acc: {avg_val_acc:.4f}"
@@ -236,7 +237,7 @@ class FewShotPainLearner:
             avg_test_loss = np.mean(test_losses)
             avg_test_acc = np.mean(test_accs)
 
-            logger.info(
+            self.logger.info(
                 f"\nTest Subject {test_subject}: "
                 f"Loss: {avg_test_loss:.4f}, Accuracy: {avg_test_acc:.4f}"
             )
@@ -250,14 +251,14 @@ class FewShotPainLearner:
             cv_results["test_losses"].append(avg_test_loss)
             cv_results["test_accuracies"].append(avg_test_acc)
 
-        logger.info(f"\n{'=' * 60}")
-        logger.info("CROSS-VALIDATION RESULTS")
-        logger.info(f"{'=' * 60}")
-        logger.info(
+        self.logger.info(f"\n{'=' * 60}")
+        self.logger.info("CROSS-VALIDATION RESULTS")
+        self.logger.info(f"{'=' * 60}")
+        self.logger.info(
             f"Average Test Accuracy: {np.mean(cv_results['test_accuracies']):.4f} "
             f"(±{np.std(cv_results['test_accuracies']):.4f})"
         )
-        logger.info(f"Average Test Loss: {np.mean(cv_results['test_losses']):.4f}")
-        logger.info(f"{'=' * 60}\n")
+        self.logger.info(f"Average Test Loss: {np.mean(cv_results['test_losses']):.4f}")
+        self.logger.info(f"{'=' * 60}\n")
 
         return cv_results
