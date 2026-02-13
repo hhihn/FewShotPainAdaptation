@@ -4,8 +4,10 @@ from tensorflow import keras
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
+from utils.logger import setup_logger
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
+import logging
 
 class FewShotPainLearner:
     """Meta-learning trainer for personalized pain assessment."""
@@ -28,6 +30,8 @@ class FewShotPainLearner:
         self.data_dir = data_dir
         self.learning_rate = learning_rate
         self.fusion_method = fusion_method
+        self.logger = setup_logger("few_shot_pain_learner")
+        self.logger.setLevel(logging.DEBUG)
 
         # Initialize dataset and cross-validator
         self.dataset = PainMetaDataset(
