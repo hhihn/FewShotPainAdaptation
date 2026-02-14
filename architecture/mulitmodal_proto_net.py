@@ -3,6 +3,8 @@ from tensorflow import keras
 from typing import Tuple
 from utils.logger import setup_logger
 
+from architecture.tcn import TemporalConvolutionalNetwork
+
 import logging
 
 
@@ -72,51 +74,13 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
     def _build_encoder(
         self, modality_name: str, embedding_dim: int
-    ) -> keras.Sequential:
+    ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
-        model = keras.Sequential(
-            [
-                keras.layers.Input(shape=(self.sequence_length, 1)),
-                # Block 1
-                keras.layers.Conv1D(
-                    32, kernel_size=7, activation="relu", padding="same"
-                ),
-                keras.layers.BatchNormalization(),
-                keras.layers.Conv1D(
-                    32, kernel_size=7, activation="relu", padding="same"
-                ),
-                keras.layers.BatchNormalization(),
-                keras.layers.MaxPooling1D(pool_size=4),
-                keras.layers.Dropout(0.3),
-                # Block 2
-                keras.layers.Conv1D(
-                    64, kernel_size=5, activation="relu", padding="same"
-                ),
-                keras.layers.BatchNormalization(),
-                keras.layers.Conv1D(
-                    64, kernel_size=5, activation="relu", padding="same"
-                ),
-                keras.layers.BatchNormalization(),
-                keras.layers.MaxPooling1D(pool_size=4),
-                keras.layers.Dropout(0.3),
-                # Block 3
-                keras.layers.Conv1D(
-                    128, kernel_size=3, activation="relu", padding="same"
-                ),
-                keras.layers.BatchNormalization(),
-                keras.layers.Conv1D(
-                    128, kernel_size=3, activation="relu", padding="same"
-                ),
-                keras.layers.BatchNormalization(),
-                keras.layers.GlobalAveragePooling1D(),
-                # Embedding layer
-                keras.layers.Dense(embedding_dim, activation="relu"),
-                keras.layers.LayerNormalization(),
-            ],
-            name=f"encoder_{modality_name}",
-        )
+        model = TemporalConvolutionalNetwork(
+            name=f"tcn_{modality_name}", embedding_dim=embedding_dim)
         self.logger.info(f"Built CNN encoder with {modality_name}")
         self.logger.info(model.summary())
+        return model
 
     def encode(self, x, training=False):
         """

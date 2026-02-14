@@ -1,14 +1,13 @@
 cloudpickle
-gym
 matplotlib
 numpy
 pandas
-ray
 scikit_learn
 scipy
 seaborn
-tensorflow
+tensorflow==2.18.1
 tensorflow-probability
 tensorflow-similarity
+tensorflow-metal
 tf-keras
 pydantic

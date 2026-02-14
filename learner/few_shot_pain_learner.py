@@ -132,7 +132,7 @@ class FewShotPainLearner:
                 embedding_dim=64,
                 modality_names=self.config.modality_names,
                 fusion_method=self.fusion_method,
-                distance_metric="euclidean",
+                distance_metric="cosine",
             )
             self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 

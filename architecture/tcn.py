@@ -1,5 +1,7 @@
-from typing import List
+from typing import List, Any
 import tensorflow as tf
+from keras import Model
+from optree import PyTree
 from tensorflow import keras
 import logging
 
@@ -52,7 +54,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.num_blocks = num_blocks
         self.kernel_size = kernel_size
         self.dropout_rate = dropout_rate
-        self.logger = setup_logger(name="name", level=logging.INFO)
+        self.logger = setup_logger(name="TemporalConvolutionalNetwork", level=logging.INFO)
         # Auto-generate filter list if not provided
         if filters_list is None:
             filters_list = [32 * (2**i) for i in range(num_blocks)]
@@ -73,10 +75,14 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         # Build TCN blocks
         self.tcn_blocks = []
+        inputs = keras.layers.Input(
+            shape=(self.sequence_length, 1), name=f"tcn_block_{0}_input"
+        )
         for i in range(num_blocks):
-            block = self._build_tcn_block(
-                filters=filters_list[i], dilation_rate=dilation_rates[i], block_idx=i
+            block, new_inputs = self._build_tcn_block(
+                inputs=inputs, filters=filters_list[i], dilation_rate=dilation_rates[i], block_idx=i
             )
+            inputs = new_inputs
             self.tcn_blocks.append(block)
 
         # Self-attention layer
@@ -104,12 +110,9 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.info(f"Dilation rates: {dilation_rates}")
 
     def _build_tcn_block(
-        self, filters: int, dilation_rate: int, block_idx: int
-    ) -> keras.Model:
+        self, inputs, filters: int, dilation_rate: int, block_idx: int
+    ) -> tuple[Model, Any]:
         """Build a single TCN block with residual connection."""
-        inputs = keras.layers.Input(
-            shape=(self.sequence_length, None), name=f"tcn_block_{block_idx}_input"
-        )
 
         # Double convolution with batch norm
         x = keras.layers.Conv1D(
@@ -147,7 +150,7 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         return keras.Model(
             inputs=inputs, outputs=outputs, name=f"tcn_block_{block_idx}"
-        )
+        ), outputs
 
     def call(self, x, training=False):
         """
