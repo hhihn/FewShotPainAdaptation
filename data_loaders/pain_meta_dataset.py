@@ -212,6 +212,7 @@ class PainMetaDataset:
         q_query: Optional[int] = None,
         seed: Optional[int] = None,
         normalize_mode: str = "subject",
+        rng: Optional[np.random.Generator] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Sample a 6-way-K-shot episode from a single subject.
@@ -225,6 +226,7 @@ class PainMetaDataset:
                 - 'subject': normalize with precomputed per-subject/global stats
                 - 'support': normalize both support/query using support-set stats only
                 - 'none': no normalization
+            rng: Optional numpy Generator to control sampling deterministically
 
         Returns:
             Dictionary containing:
@@ -236,8 +238,12 @@ class PainMetaDataset:
         k_shot = k_shot or self.config.k_shot
         q_query = q_query or self.config.q_query
 
-        if seed is not None:
-            np.random.seed(seed)
+        if rng is not None:
+            local_rng = rng
+        elif seed is not None:
+            local_rng = np.random.default_rng(seed)
+        else:
+            local_rng = np.random.default_rng()
 
         support_X, support_y = [], []
         query_X, query_y = [], []
@@ -253,7 +259,7 @@ class PainMetaDataset:
                 )
 
             # Random sample
-            sampled = np.random.choice(indices, size=k_shot + q_query, replace=False)
+            sampled = local_rng.choice(indices, size=k_shot + q_query, replace=False)
             support_idx = sampled[:k_shot]
             query_idx = sampled[k_shot : k_shot + q_query]
 
@@ -285,8 +291,8 @@ class PainMetaDataset:
             )
 
         # Shuffle
-        support_perm = np.random.permutation(len(support_y))
-        query_perm = np.random.permutation(len(query_y))
+        support_perm = local_rng.permutation(len(support_y))
+        query_perm = local_rng.permutation(len(query_y))
 
         return {
             "support_X": support_X[support_perm],
@@ -347,18 +353,17 @@ class PainMetaDataset:
             support_set: Dictionary with support data
             eval_set: Dictionary with remaining data for evaluation
         """
-        if seed is not None:
-            np.random.seed(seed)
+        local_rng = np.random.default_rng(seed)
 
         support_X, support_y = [], []
         eval_X, eval_y = [], []
 
         for class_id in range(self.config.n_way):
             indices = self.index[subject][class_id]
-            np.random.shuffle(indices)
+            shuffled_indices = local_rng.permutation(indices)
 
-            support_idx = indices[:k_shot]
-            eval_idx = indices[k_shot:]
+            support_idx = shuffled_indices[:k_shot]
+            eval_idx = shuffled_indices[k_shot:]
 
             support_X.append(self.X[support_idx])
             support_y.append(self.y[support_idx])

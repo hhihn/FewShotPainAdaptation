@@ -1,10 +1,12 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+import json
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
 from utils.logger import setup_logger
+from utils.reproducibility import set_global_reproducibility
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
 import logging
@@ -19,6 +21,8 @@ class FewShotPainLearner:
         data_dir: str = "./dataset/np-dataset",
         learning_rate: float = 1e-3,
         fusion_method: str = "attention",
+        seed: int = 42,
+        deterministic_ops: bool = True,
     ):
         """
         Args:
@@ -26,13 +30,22 @@ class FewShotPainLearner:
             data_dir: Directory containing numpy files
             learning_rate: Outer loop learning rate
             fusion_method: 'concat', 'mean', or 'attention'
+            seed: Global random seed for reproducibility
+            deterministic_ops: Enforce deterministic TensorFlow ops where possible
         """
         self.config = config
         self.data_dir = data_dir
         self.learning_rate = learning_rate
         self.fusion_method = fusion_method
+        self.seed = seed
+        self.deterministic_ops = deterministic_ops
         self.logger = setup_logger("few_shot_pain_learner")
         self.logger.setLevel(logging.DEBUG)
+        set_global_reproducibility(
+            seed=self.seed,
+            deterministic_ops=self.deterministic_ops,
+            logger=self.logger,
+        )
 
         # Initialize dataset and cross-validator
         self.dataset = PainMetaDataset(
@@ -40,7 +53,10 @@ class FewShotPainLearner:
         )
 
         self.cv = LOSOCrossValidator(
-            dataset=self.dataset, k_shot=config.k_shot, q_query=config.q_query
+            dataset=self.dataset,
+            k_shot=config.k_shot,
+            q_query=config.q_query,
+            seed=self.seed,
         )
 
         # Initialize model
@@ -57,6 +73,21 @@ class FewShotPainLearner:
 
         self.optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
         self.loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+
+        run_config = {
+            "seed": self.seed,
+            "deterministic_ops": self.deterministic_ops,
+            "data_dir": self.data_dir,
+            "learning_rate": self.learning_rate,
+            "fusion_method": self.fusion_method,
+            "sequence_length": self.config.sequence_length,
+            "n_way": self.config.n_way,
+            "k_shot": self.config.k_shot,
+            "q_query": self.config.q_query,
+            "sensor_idx": list(self.config.sensor_idx),
+            "modality_names": list(self.config.modality_names),
+        }
+        self.logger.info(f"Run config: {json.dumps(run_config, sort_keys=True)}")
 
         self.logger.info(
             f"Initialized FewShotPainLearner with {len(self.cv.subjects)} subjects"

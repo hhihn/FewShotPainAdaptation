@@ -62,6 +62,9 @@ class LOSOCrossValidator:
             Dictionary with train_sampler, val_sampler, test_sampler, and metadata
         """
         train_subjects, _ = self.dataset.leave_one_subject_out_split(test_subject)
+        fold_seed = None if self.seed is None else int(self.seed) + int(test_subject)
+        val_seed = None if fold_seed is None else fold_seed + 10_000
+        test_seed = None if fold_seed is None else fold_seed + 20_000
         self.logger.debug(f"Train subjects: {train_subjects}")
         # Split training subjects into train and validation
         n_val = max(1, len(train_subjects) // 10)  # 10% for validation
@@ -79,7 +82,7 @@ class LOSOCrossValidator:
             k_shot=self.k_shot,
             q_query=self.q_query,
             episodes_per_epoch=self.episodes_per_epoch,
-            seed=self.seed,
+            seed=fold_seed,
         )
 
         val_sampler = SixWayKShotSampler(
@@ -90,7 +93,7 @@ class LOSOCrossValidator:
             k_shot=self.k_shot,
             q_query=self.q_query,
             episodes_per_epoch=self.episodes_per_epoch // 5,
-            seed=self.seed,
+            seed=val_seed,
         )
 
         test_sampler = SixWayKShotSampler(
@@ -101,7 +104,7 @@ class LOSOCrossValidator:
             k_shot=self.k_shot,
             q_query=self.q_query,
             episodes_per_epoch=20,  # Fewer episodes for testing
-            seed=self.seed,
+            seed=test_seed,
         )
 
         return {

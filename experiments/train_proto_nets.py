@@ -30,6 +30,8 @@ def main():
             data_dir="../data",
             learning_rate=1e-3,
             fusion_method=fusion_method,
+            seed=config.seed,
+            deterministic_ops=config.deterministic_ops,
         )
 
         cv_results = learner.train(

@@ -82,9 +82,6 @@ class SixWayKShotSampler:
         self.seq_len = self.config.sequence_length
         self.n_sensors = self.config.num_sensors
 
-        if seed is not None:
-            np.random.seed(seed)
-
     def __len__(self) -> int:
         """Number of episodes per epoch."""
         return self.episodes_per_epoch
@@ -158,10 +155,14 @@ class SixWayKShotSampler:
             Episode dictionary
         """
         if subject is None:
-            subject = np.random.choice(self.active_subjects)
+            subject = self.rng.choice(self.active_subjects)
         normalize_mode = "subject" if self.mode == "train" else "support"
         return self.dataset.sample_episode(
-            subject, self.k_shot, self.q_query, normalize_mode=normalize_mode
+            subject,
+            self.k_shot,
+            self.q_query,
+            normalize_mode=normalize_mode,
+            rng=self.rng,
         )
 
     def get_test_episode(self, k_shot: Optional[int] = None) -> Dict[str, np.ndarray]:
@@ -179,6 +180,7 @@ class SixWayKShotSampler:
             k_shot=k_shot or self.k_shot,
             q_query=self.q_query,
             normalize_mode="support",
+            rng=self.rng,
         )
 
     def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:
