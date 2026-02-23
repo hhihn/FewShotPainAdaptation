@@ -169,6 +169,19 @@ class PainMetaDataset:
 
         return (data - mean) / std
 
+    @staticmethod
+    def _compute_batch_stats(data: np.ndarray) -> Dict[str, np.ndarray]:
+        """Compute mean/std stats from a batch [n, seq_len, n_sensors]."""
+        return {
+            "mean": np.mean(data, axis=(0, 1), keepdims=True),
+            "std": np.std(data, axis=(0, 1), keepdims=True) + 1e-8,
+        }
+
+    @staticmethod
+    def _apply_stats(data: np.ndarray, stats: Dict[str, np.ndarray]) -> np.ndarray:
+        """Normalize a batch with externally provided stats."""
+        return (data - stats["mean"]) / stats["std"]
+
     def get_subject_data(
         self, subject: int, normalize: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -198,6 +211,7 @@ class PainMetaDataset:
         k_shot: Optional[int] = None,
         q_query: Optional[int] = None,
         seed: Optional[int] = None,
+        normalize_mode: str = "subject",
     ) -> Dict[str, np.ndarray]:
         """
         Sample a 6-way-K-shot episode from a single subject.
@@ -207,6 +221,10 @@ class PainMetaDataset:
             k_shot: Number of support samples per class (default: config.k_shot)
             q_query: Number of query samples per class (default: config.q_query)
             seed: Random seed for reproducibility
+            normalize_mode: One of:
+                - 'subject': normalize with precomputed per-subject/global stats
+                - 'support': normalize both support/query using support-set stats only
+                - 'none': no normalization
 
         Returns:
             Dictionary containing:
@@ -252,8 +270,19 @@ class PainMetaDataset:
         query_y = np.concatenate(query_y, axis=0)
 
         # Normalize
-        support_X = self._normalize_data(support_X, subject)
-        query_X = self._normalize_data(query_X, subject)
+        if normalize_mode == "subject":
+            support_X = self._normalize_data(support_X, subject)
+            query_X = self._normalize_data(query_X, subject)
+        elif normalize_mode == "support":
+            stats = self._compute_batch_stats(support_X)
+            support_X = self._apply_stats(support_X, stats)
+            query_X = self._apply_stats(query_X, stats)
+        elif normalize_mode == "none":
+            pass
+        else:
+            raise ValueError(
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'support', or 'none'."
+            )
 
         # Shuffle
         support_perm = np.random.permutation(len(support_y))

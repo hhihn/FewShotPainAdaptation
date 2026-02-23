@@ -159,7 +159,10 @@ class SixWayKShotSampler:
         """
         if subject is None:
             subject = np.random.choice(self.active_subjects)
-        return self.dataset.sample_episode(subject, self.k_shot, self.q_query)
+        normalize_mode = "subject" if self.mode == "train" else "support"
+        return self.dataset.sample_episode(
+            subject, self.k_shot, self.q_query, normalize_mode=normalize_mode
+        )
 
     def get_test_episode(self, k_shot: Optional[int] = None) -> Dict[str, np.ndarray]:
         """
@@ -175,6 +178,7 @@ class SixWayKShotSampler:
             subject=self.test_subject,
             k_shot=k_shot or self.k_shot,
             q_query=self.q_query,
+            normalize_mode="support",
         )
 
     def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:
