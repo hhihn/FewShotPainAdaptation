@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 import json
+import gc
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -39,6 +40,7 @@ class FewShotPainLearner:
         self.fusion_method = fusion_method
         self.seed = seed
         self.deterministic_ops = deterministic_ops
+        self.embedding_dim = config.embedding_dim
         self.logger = setup_logger("few_shot_pain_learner")
         self.logger.setLevel(logging.DEBUG)
         set_global_reproducibility(
@@ -60,19 +62,7 @@ class FewShotPainLearner:
         )
 
         # Initialize model
-        num_sensors = len(config.sensor_idx)
-        self.model = MultimodalPrototypicalNetwork(
-            sequence_length=config.sequence_length,
-            num_sensors=num_sensors,
-            num_classes=config.num_stimuli_levels,
-            embedding_dim=64,
-            modality_names=config.modality_names,
-            fusion_method=fusion_method,
-            distance_metric="euclidean",
-            num_tcn_blocks=config.num_tcn_block
-        )
-
-        self.optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+        self._rebuild_model(distance_metric="euclidean", clear_session=False)
         self.loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
         run_config = {
@@ -85,6 +75,9 @@ class FewShotPainLearner:
             "n_way": self.config.n_way,
             "k_shot": self.config.k_shot,
             "q_query": self.config.q_query,
+            "embedding_dim": self.embedding_dim,
+            "num_tcn_blocks": self.config.num_tcn_blocks,
+            "clear_session_per_fold": self.config.clear_session_per_fold,
             "sensor_idx": list(self.config.sensor_idx),
             "modality_names": list(self.config.modality_names),
         }
@@ -93,11 +86,31 @@ class FewShotPainLearner:
         self.logger.info(
             f"Initialized FewShotPainLearner with {len(self.cv.subjects)} subjects"
         )
+        num_sensors = len(config.sensor_idx)
         self.logger.info(
             f"Data shape: (sequence_length={config.sequence_length}, num_sensors={num_sensors})"
         )
         self.logger.info(f"Modalities: {config.modality_names}")
         self.logger.info(f"Fusion method: {fusion_method}")
+
+    def _rebuild_model(self, distance_metric: str, clear_session: bool = True) -> None:
+        """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
+        if clear_session:
+            tf.keras.backend.clear_session()
+            gc.collect()
+
+        num_sensors = len(self.config.sensor_idx)
+        self.model = MultimodalPrototypicalNetwork(
+            sequence_length=self.config.sequence_length,
+            num_sensors=num_sensors,
+            num_classes=self.config.num_stimuli_levels,
+            embedding_dim=self.embedding_dim,
+            modality_names=self.config.modality_names,
+            fusion_method=self.fusion_method,
+            distance_metric=distance_metric,
+            num_tcn_blocks=self.config.num_tcn_blocks,
+        )
+        self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 
     def train_step(self, support_x, support_y, query_x, query_y):
         """Single training step on one episode."""
@@ -155,19 +168,11 @@ class FewShotPainLearner:
             )
             self.logger.info(f"{'=' * 60}")
 
-            # Reset model for each fold
-            num_sensors = len(self.config.sensor_idx)
-            self.model = MultimodalPrototypicalNetwork(
-                sequence_length=self.config.sequence_length,
-                num_sensors=num_sensors,
-                num_classes=self.config.num_stimuli_levels,
-                embedding_dim=64,
-                modality_names=self.config.modality_names,
-                fusion_method=self.fusion_method,
+            # Reset model for each fold and free memory from prior graph state.
+            self._rebuild_model(
                 distance_metric="cosine",
-                num_tcn_blocks=self.config.num_tcn_blocks
+                clear_session=self.config.clear_session_per_fold,
             )
-            self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 
             # Get fold dictionary with samplers
             fold_dict = self.cv.get_fold(test_subject)

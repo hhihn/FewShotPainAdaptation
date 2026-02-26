@@ -13,6 +13,8 @@ class PainDatasetConfig:
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
     num_tcn_blocks: int = 1 # Number of Temporal Conv Blocks in the Architecture
+    embedding_dim: int = 64  # Encoder embedding dimension
+    clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
     # Sensors used
     painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
     # Modality information
