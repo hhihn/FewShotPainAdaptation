@@ -17,6 +17,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         num_sensors: int = 3,
         num_classes: int = 6,
         embedding_dim: int = 64,
+        num_tcn_blocks: int = 3,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "concat",
         distance_metric: str = "euclidean",
@@ -30,6 +31,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             modality_names: Names of modalities (EDA, ECG, EMG)
             fusion_method: 'concat', 'mean', 'attention'
             distance_metric: 'euclidean' or 'cosine'
+            num_tcn_blocks: number of Temporal Convolutional Network blocks
         """
         super().__init__()
         self.sequence_length = sequence_length
@@ -39,6 +41,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.modality_names = modality_names
         self.fusion_method = fusion_method
         self.distance_metric = distance_metric
+        self.num_tcn_blocks = num_tcn_blocks
         self.logger = setup_logger(
             name="MultimodalPrototypicalNetwork", level=logging.INFO
         )
@@ -73,11 +76,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
     def _build_encoder(
-        self, modality_name: str, embedding_dim: int
+        self, modality_name: str, embedding_dim: int, num_tcn_blocks: int
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
         model = TemporalConvolutionalNetwork(
-            name=f"tcn_{modality_name}", embedding_dim=embedding_dim)
+            name=f"tcn_{modality_name}", embedding_dim=embedding_dim, num_blocks=num_tcn_blocks)
         self.logger.info(f"Built CNN encoder with {modality_name}")
         self.logger.info(model.summary())
         return model

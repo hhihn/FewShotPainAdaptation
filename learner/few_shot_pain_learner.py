@@ -69,6 +69,7 @@ class FewShotPainLearner:
             modality_names=config.modality_names,
             fusion_method=fusion_method,
             distance_metric="euclidean",
+            num_tcn_blocks=config.num_tcn_block
         )
 
         self.optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
@@ -164,6 +165,7 @@ class FewShotPainLearner:
                 modality_names=self.config.modality_names,
                 fusion_method=self.fusion_method,
                 distance_metric="cosine",
+                num_tcn_blocks=self.config.num_tcn_block
             )
             self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 
