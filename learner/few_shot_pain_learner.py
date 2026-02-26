@@ -77,6 +77,7 @@ class FewShotPainLearner:
             "q_query": self.config.q_query,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
+            "tcn_attention_pool_size": self.config.tcn_attention_pool_size,
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "sensor_idx": list(self.config.sensor_idx),
             "modality_names": list(self.config.modality_names),
@@ -109,6 +110,7 @@ class FewShotPainLearner:
             fusion_method=self.fusion_method,
             distance_metric=distance_metric,
             num_tcn_blocks=self.config.num_tcn_blocks,
+            tcn_attention_pool_size=self.config.tcn_attention_pool_size,
         )
         self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 

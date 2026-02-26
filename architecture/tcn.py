@@ -31,6 +31,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         num_attention_heads: int = 4,
         attention_key_dim: int = 32,
         attention_dropout: float = 0.2,
+        attention_pool_size: int = 8,
         name: str = "tcn_network",
     ):
         """
@@ -45,6 +46,8 @@ class TemporalConvolutionalNetwork(keras.Model):
             num_attention_heads: Number of attention heads
             attention_key_dim: Key dimension per attention head
             attention_dropout: Dropout in attention layer
+            attention_pool_size: Downsampling factor before self-attention.
+                Values > 1 reduce memory from O(L^2) to O((L/pool)^2).
             name: Name of the model
         """
         super().__init__(name=name)
@@ -54,6 +57,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.num_blocks = num_blocks
         self.kernel_size = kernel_size
         self.dropout_rate = dropout_rate
+        self.attention_pool_size = max(1, int(attention_pool_size))
         self.logger = setup_logger(name="TemporalConvolutionalNetwork", level=logging.INFO)
         # Auto-generate filter list if not provided
         if filters_list is None:
@@ -92,6 +96,16 @@ class TemporalConvolutionalNetwork(keras.Model):
             dropout=attention_dropout,
             name="self_attention",
         )
+
+        # Optional temporal downsampling before attention to avoid OOM on long sequences.
+        self.attention_pool = None
+        if self.attention_pool_size > 1:
+            self.attention_pool = keras.layers.AveragePooling1D(
+                pool_size=self.attention_pool_size,
+                strides=self.attention_pool_size,
+                padding="valid",
+                name="attention_pool",
+            )
 
         # Normalization after attention
         self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
@@ -170,8 +184,12 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.debug(f"After TCN blocks: {tf.shape(x)}")
 
         # Self-attention
-        attention_out = self.attention(x, x, training=training)
-        x = self.attention_norm(x + attention_out)
+        attention_x = x
+        if self.attention_pool is not None:
+            attention_x = self.attention_pool(attention_x)
+
+        attention_out = self.attention(attention_x, attention_x, training=training)
+        x = self.attention_norm(attention_x + attention_out)
 
         self.logger.debug(f"After attention: {tf.shape(x)}")
 
@@ -196,4 +214,5 @@ class TemporalConvolutionalNetwork(keras.Model):
             "dilation_rates": self.dilation_rates,
             "kernel_size": self.kernel_size,
             "dropout_rate": self.dropout_rate,
+            "attention_pool_size": self.attention_pool_size,
         }

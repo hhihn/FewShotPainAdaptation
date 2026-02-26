@@ -18,6 +18,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         num_classes: int = 6,
         embedding_dim: int = 64,
         num_tcn_blocks: int = 3,
+        tcn_attention_pool_size: int = 8,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "concat",
         distance_metric: str = "euclidean",
@@ -32,6 +33,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             fusion_method: 'concat', 'mean', 'attention'
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
+            tcn_attention_pool_size: Downsample factor before TCN self-attention
         """
         super().__init__()
         self.sequence_length = sequence_length
@@ -42,6 +44,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.fusion_method = fusion_method
         self.distance_metric = distance_metric
         self.num_tcn_blocks = num_tcn_blocks
+        self.tcn_attention_pool_size = tcn_attention_pool_size
         self.logger = setup_logger(
             name="MultimodalPrototypicalNetwork", level=logging.INFO
         )
@@ -49,7 +52,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.modality_encoders = {}
         for modality_name in modality_names:
             self.modality_encoders[modality_name] = self._build_encoder(
-                modality_name, embedding_dim, num_tcn_blocks
+                modality_name, embedding_dim, num_tcn_blocks, tcn_attention_pool_size
             )
 
         # Fusion layer based on fusion method
@@ -76,11 +79,19 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
     def _build_encoder(
-        self, modality_name: str, embedding_dim: int, num_tcn_blocks: int
+        self,
+        modality_name: str,
+        embedding_dim: int,
+        num_tcn_blocks: int,
+        tcn_attention_pool_size: int,
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
         model = TemporalConvolutionalNetwork(
-            name=f"tcn_{modality_name}", embedding_dim=embedding_dim, num_blocks=num_tcn_blocks)
+            name=f"tcn_{modality_name}",
+            embedding_dim=embedding_dim,
+            num_blocks=num_tcn_blocks,
+            attention_pool_size=tcn_attention_pool_size,
+        )
         self.logger.info(f"Built CNN encoder with {modality_name}")
         self.logger.info(model.summary())
         return model
