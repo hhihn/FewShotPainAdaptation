@@ -12,7 +12,7 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 3 # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 1 # Number of Temporal Conv Blocks in the Architecture
     # Sensors used
     painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
     # Modality information

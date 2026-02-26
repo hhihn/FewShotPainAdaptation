@@ -49,7 +49,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.modality_encoders = {}
         for modality_name in modality_names:
             self.modality_encoders[modality_name] = self._build_encoder(
-                modality_name, embedding_dim
+                modality_name, embedding_dim, num_tcn_blocks
             )
 
         # Fusion layer based on fusion method
