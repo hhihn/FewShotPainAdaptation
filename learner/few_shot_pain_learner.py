@@ -3,6 +3,8 @@ import tensorflow as tf
 from tensorflow import keras
 import json
 import gc
+import csv
+import os
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -143,11 +145,97 @@ class FewShotPainLearner:
 
         return loss, accuracy
 
+    def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+        """Compute accuracy, macro precision, macro recall, and macro F1."""
+        num_classes = self.config.num_stimuli_levels
+        conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
+        for truth, pred in zip(y_true, y_pred):
+            conf_mat[int(truth), int(pred)] += 1
+
+        tp = np.diag(conf_mat).astype(np.float64)
+        fp = np.sum(conf_mat, axis=0) - tp
+        fn = np.sum(conf_mat, axis=1) - tp
+
+        precision_per_class = np.divide(
+            tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0
+        )
+        recall_per_class = np.divide(
+            tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0
+        )
+        f1_per_class = np.divide(
+            2 * precision_per_class * recall_per_class,
+            precision_per_class + recall_per_class,
+            out=np.zeros_like(tp),
+            where=(precision_per_class + recall_per_class) > 0,
+        )
+
+        total = np.sum(conf_mat)
+        accuracy = float(np.sum(tp) / total) if total > 0 else 0.0
+        return {
+            "accuracy": accuracy,
+            "precision": float(np.mean(precision_per_class)),
+            "recall": float(np.mean(recall_per_class)),
+            "f1": float(np.mean(f1_per_class)),
+        }
+
+    def _evaluate_sampler_metrics(self, sampler, num_episodes: int) -> dict:
+        """Evaluate classifier metrics on episodes sampled from a sampler."""
+        all_true = []
+        all_pred = []
+        for _ in range(num_episodes):
+            episode_dict = sampler.get_episode()
+
+            support_x = tf.constant(episode_dict["support_X"], dtype=tf.float32)
+            support_y = tf.constant(episode_dict["support_y"], dtype=tf.int32)
+            query_x = tf.constant(episode_dict["query_X"], dtype=tf.float32)
+            query_y = episode_dict["query_y"].astype(np.int32)
+
+            logits = self.model(support_x, support_y, query_x, training=False)
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
+
+            all_true.append(query_y)
+            all_pred.append(pred)
+
+        y_true = np.concatenate(all_true, axis=0)
+        y_pred = np.concatenate(all_pred, axis=0)
+        return self._compute_macro_metrics(y_true, y_pred)
+
+    def _save_adaptation_curve(
+        self,
+        records: list,
+        output_dir: str,
+        fold_index: int,
+        test_subject: int,
+    ) -> str:
+        """Save per-step adaptation metrics to CSV."""
+        os.makedirs(output_dir, exist_ok=True)
+        out_path = os.path.join(
+            output_dir,
+            f"fold_{fold_index + 1:02d}_subject_{int(test_subject):02d}_adaptation_curve.csv",
+        )
+        fieldnames = [
+            "fold",
+            "test_subject",
+            "gradient_step",
+            "accuracy",
+            "precision",
+            "recall",
+            "f1",
+        ]
+        with open(out_path, "w", newline="", encoding="utf-8") as fp:
+            writer = csv.DictWriter(fp, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(records)
+        return out_path
+
     def train(
         self,
         num_epochs: int = 10,
         episodes_per_epoch: int = 100,
         val_episodes: int = 20,
+        adaptation_steps: int = 30,
+        adaptation_eval_episodes: int = 5,
+        adaptation_output_dir: str = "outputs/adaptation_curves",
     ):
         """
         Train on all subjects using leave-one-subject-out cross-validation.
@@ -159,6 +247,7 @@ class FewShotPainLearner:
             "val_accuracies": [],
             "test_losses": [],
             "test_accuracies": [],
+            "adaptation_curve_files": [],
         }
 
         num_subjects = len(self.cv.subjects)
@@ -280,6 +369,42 @@ class FewShotPainLearner:
             self.logger.info(
                 f"\nTest Subject {test_subject}: "
                 f"Loss: {avg_test_loss:.4f}, Accuracy: {avg_test_acc:.4f}"
+            )
+
+            # Adaptation-speed evaluation on the held-out subject.
+            adaptation_records = []
+            for step_idx in range(1, adaptation_steps + 1):
+                adapt_episode = test_sampler.get_episode()
+                support_x = tf.constant(adapt_episode["support_X"], dtype=tf.float32)
+                support_y = tf.constant(adapt_episode["support_y"], dtype=tf.int32)
+                query_x = tf.constant(adapt_episode["query_X"], dtype=tf.float32)
+                query_y = tf.constant(adapt_episode["query_y"], dtype=tf.int32)
+                self.train_step(support_x, support_y, query_x, query_y)
+
+                step_metrics = self._evaluate_sampler_metrics(
+                    test_sampler, num_episodes=adaptation_eval_episodes
+                )
+                adaptation_records.append(
+                    {
+                        "fold": fold + 1,
+                        "test_subject": int(test_subject),
+                        "gradient_step": step_idx,
+                        "accuracy": step_metrics["accuracy"],
+                        "precision": step_metrics["precision"],
+                        "recall": step_metrics["recall"],
+                        "f1": step_metrics["f1"],
+                    }
+                )
+
+            curve_file = self._save_adaptation_curve(
+                records=adaptation_records,
+                output_dir=adaptation_output_dir,
+                fold_index=fold,
+                test_subject=test_subject,
+            )
+            cv_results["adaptation_curve_files"].append(curve_file)
+            self.logger.info(
+                f"Saved adaptation curve for subject {test_subject} to {curve_file}"
             )
 
             cv_results["train_losses"].append(np.mean(fold_results["train_losses"]))
