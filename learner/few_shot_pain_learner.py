@@ -12,9 +12,6 @@ from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
-import logging
-
-
 class FewShotPainLearner:
     """Meta-learning trainer for personalized pain assessment."""
 
@@ -44,7 +41,6 @@ class FewShotPainLearner:
         self.deterministic_ops = deterministic_ops
         self.embedding_dim = config.embedding_dim
         self.logger = setup_logger("few_shot_pain_learner")
-        self.logger.setLevel(logging.DEBUG)
         set_global_reproducibility(
             seed=self.seed,
             deterministic_ops=self.deterministic_ops,

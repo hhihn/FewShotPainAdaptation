@@ -51,7 +51,7 @@ class PainMetaDataset:
             normalize: Whether to normalize the data
             normalize_per_subject: If True, normalize per subject; else global normalization
         """
-        self.logger = setup_logger("PainMetaDataset", level=logging.DEBUG)
+        self.logger = setup_logger("PainMetaDataset")
         self.config = config or PainDatasetConfig()
         self.data_dir = Path(data_dir)
         self.logger.debug(f"Data directory: {self.data_dir}")

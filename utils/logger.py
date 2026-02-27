@@ -15,9 +15,15 @@ def setup_logger(
     # Create logger
     logger = logging.getLogger(name)
     logger.setLevel(level)
+    logger.propagate = False
 
-    # Avoid duplicate handlers
+    # Avoid duplicate handlers, but keep levels synchronized.
     if logger.handlers:
+        for handler in logger.handlers:
+            handler.setLevel(level)
+            if log_format is not None:
+                formatter = logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S")
+                handler.setFormatter(formatter)
         return logger
 
     # Console handler
