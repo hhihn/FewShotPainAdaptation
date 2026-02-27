@@ -3,8 +3,6 @@ import tensorflow as tf
 from tensorflow import keras
 import json
 import gc
-import csv
-import os
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -177,8 +175,11 @@ class FewShotPainLearner:
             "f1": float(np.mean(f1_per_class)),
         }
 
-    def _evaluate_sampler_metrics(self, sampler, num_episodes: int) -> dict:
-        """Evaluate classifier metrics on episodes sampled from a sampler."""
+    def _evaluate_sampler_loss_and_metrics(
+        self, sampler, num_episodes: int
+    ) -> tuple[float, dict]:
+        """Evaluate average loss and macro metrics on sampled episodes."""
+        losses = []
         all_true = []
         all_pred = []
         for _ in range(num_episodes):
@@ -187,58 +188,31 @@ class FewShotPainLearner:
             support_x = tf.constant(episode_dict["support_X"], dtype=tf.float32)
             support_y = tf.constant(episode_dict["support_y"], dtype=tf.int32)
             query_x = tf.constant(episode_dict["query_X"], dtype=tf.float32)
-            query_y = episode_dict["query_y"].astype(np.int32)
+            query_y_np = episode_dict["query_y"].astype(np.int32)
+            query_y = tf.constant(query_y_np, dtype=tf.int32)
 
             logits = self.model(support_x, support_y, query_x, training=False)
+            loss = self.loss_fn(query_y, logits)
             pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
 
-            all_true.append(query_y)
+            losses.append(float(loss))
+            all_true.append(query_y_np)
             all_pred.append(pred)
 
         y_true = np.concatenate(all_true, axis=0)
         y_pred = np.concatenate(all_pred, axis=0)
-        return self._compute_macro_metrics(y_true, y_pred)
-
-    def _save_adaptation_curve(
-        self,
-        records: list,
-        output_dir: str,
-        fold_index: int,
-        test_subject: int,
-    ) -> str:
-        """Save per-step adaptation metrics to CSV."""
-        os.makedirs(output_dir, exist_ok=True)
-        out_path = os.path.join(
-            output_dir,
-            f"fold_{fold_index + 1:02d}_subject_{int(test_subject):02d}_adaptation_curve.csv",
-        )
-        fieldnames = [
-            "fold",
-            "test_subject",
-            "gradient_step",
-            "accuracy",
-            "precision",
-            "recall",
-            "f1",
-        ]
-        with open(out_path, "w", newline="", encoding="utf-8") as fp:
-            writer = csv.DictWriter(fp, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(records)
-        return out_path
+        return float(np.mean(losses)), self._compute_macro_metrics(y_true, y_pred)
 
     def train(
         self,
         num_epochs: int = 10,
         episodes_per_epoch: int = 100,
         val_episodes: int = 20,
-        adaptation_steps: int = 30,
-        adaptation_eval_episodes: int = 5,
-        adaptation_output_dir: str = "outputs/adaptation_curves",
         training_progress_output_dir: str = "outputs/training_progress",
+        k_shot_adaptation_steps: int = 10,
+        subject_eval_episodes: int = 20,
         train_log_every: int = 10,
         eval_log_every: int = 5,
-        adaptation_log_every: int = 1,
     ):
         """
         Train on all subjects using leave-one-subject-out cross-validation.
@@ -250,7 +224,16 @@ class FewShotPainLearner:
             "val_accuracies": [],
             "test_losses": [],
             "test_accuracies": [],
-            "adaptation_curve_files": [],
+            "zero_shot_losses": [],
+            "zero_shot_accuracies": [],
+            "zero_shot_precisions": [],
+            "zero_shot_recalls": [],
+            "zero_shot_f1s": [],
+            "k_shot_losses": [],
+            "k_shot_accuracies": [],
+            "k_shot_precisions": [],
+            "k_shot_recalls": [],
+            "k_shot_f1s": [],
             "training_progress_files": [],
         }
 
@@ -259,7 +242,6 @@ class FewShotPainLearner:
             logger=self.logger,
             train_log_every=train_log_every,
             eval_log_every=eval_log_every,
-            adaptation_log_every=adaptation_log_every,
         )
         csv_writer = TrainingProgressCSVWriter(output_dir=training_progress_output_dir)
 
@@ -396,114 +378,73 @@ class FewShotPainLearner:
                         f"Val Loss: {avg_val_loss:.4f}, Acc: {avg_val_acc:.4f}"
                     )
 
-            # Test on held-out subject
-            test_losses = []
-            test_accs = []
-
-            for _ in range(val_episodes):
-                episode_dict = test_sampler.get_episode()
-
-                support_x = episode_dict["support_X"]
-                support_y = episode_dict["support_y"]
-                query_x = episode_dict["query_X"]
-                query_y = episode_dict["query_y"]
-
-                loss, acc = self.evaluate_episode(
-                    tf.constant(support_x, dtype=tf.float32),
-                    tf.constant(support_y, dtype=tf.int32),
-                    tf.constant(query_x, dtype=tf.float32),
-                    tf.constant(query_y, dtype=tf.int32),
-                )
-
-                test_losses.append(float(loss))
-                test_accs.append(float(acc))
-                csv_writer.write_event(
-                    fold_idx=fold + 1,
-                    test_subject=test_subject,
-                    event_type="test_step",
-                    epoch=None,
-                    epoch_total=None,
-                    step=len(test_losses),
-                    step_total=val_episodes,
-                    loss=float(loss),
-                    accuracy=float(acc),
-                )
-                progress.log_eval_step(
-                    stage="Test",
-                    fold_idx=fold + 1,
-                    total_folds=num_subjects,
-                    step_idx=len(test_losses),
-                    total_steps=val_episodes,
-                    loss=float(loss),
-                    metric_value=float(acc),
-                    metric_name="accuracy",
-                )
-
-            avg_test_loss = np.mean(test_losses)
-            avg_test_acc = np.mean(test_accs)
-
-            self.logger.info(
-                f"\nTest Subject {test_subject}: "
-                f"Loss: {avg_test_loss:.4f}, Accuracy: {avg_test_acc:.4f}"
+            # Zero-shot performance (after training on M-1 subjects).
+            zero_shot_loss, zero_shot_metrics = self._evaluate_sampler_loss_and_metrics(
+                test_sampler, num_episodes=subject_eval_episodes
+            )
+            csv_writer.write_event(
+                fold_idx=fold + 1,
+                test_subject=test_subject,
+                event_type="zero_shot_summary",
+                loss=zero_shot_loss,
+                accuracy=zero_shot_metrics["accuracy"],
+                precision=zero_shot_metrics["precision"],
+                recall=zero_shot_metrics["recall"],
+                f1=zero_shot_metrics["f1"],
+            )
+            progress.log_subject_summary(
+                stage="Zero-shot",
+                fold_idx=fold + 1,
+                total_folds=num_subjects,
+                test_subject=int(test_subject),
+                loss=zero_shot_loss,
+                metrics=zero_shot_metrics,
             )
 
-            # Adaptation-speed evaluation on the held-out subject.
-            adaptation_records = []
-            for step_idx in range(1, adaptation_steps + 1):
+            # K-shot adaptation on held-out subject data.
+            progress.log_adaptation_start(
+                fold_idx=fold + 1,
+                total_folds=num_subjects,
+                test_subject=int(test_subject),
+                adaptation_steps=k_shot_adaptation_steps,
+            )
+            adaptation_losses = []
+            for _ in range(k_shot_adaptation_steps):
                 adapt_episode = test_sampler.get_episode()
                 support_x = tf.constant(adapt_episode["support_X"], dtype=tf.float32)
                 support_y = tf.constant(adapt_episode["support_y"], dtype=tf.int32)
                 query_x = tf.constant(adapt_episode["query_X"], dtype=tf.float32)
                 query_y = tf.constant(adapt_episode["query_y"], dtype=tf.int32)
                 adapt_loss, _ = self.train_step(support_x, support_y, query_x, query_y)
-
-                step_metrics = self._evaluate_sampler_metrics(
-                    test_sampler, num_episodes=adaptation_eval_episodes
-                )
-                csv_writer.write_event(
-                    fold_idx=fold + 1,
-                    test_subject=test_subject,
-                    event_type="adaptation_step",
-                    epoch=None,
-                    epoch_total=None,
-                    step=step_idx,
-                    step_total=adaptation_steps,
-                    loss=float(adapt_loss),
-                    accuracy=step_metrics["accuracy"],
-                    precision=step_metrics["precision"],
-                    recall=step_metrics["recall"],
-                    f1=step_metrics["f1"],
-                )
-                progress.log_adaptation_step(
-                    fold_idx=fold + 1,
-                    total_folds=num_subjects,
-                    test_subject=int(test_subject),
-                    step_idx=step_idx,
-                    total_steps=adaptation_steps,
-                    loss=float(adapt_loss),
-                    metrics=step_metrics,
-                )
-                adaptation_records.append(
-                    {
-                        "fold": fold + 1,
-                        "test_subject": int(test_subject),
-                        "gradient_step": step_idx,
-                        "accuracy": step_metrics["accuracy"],
-                        "precision": step_metrics["precision"],
-                        "recall": step_metrics["recall"],
-                        "f1": step_metrics["f1"],
-                    }
-                )
-
-            curve_file = self._save_adaptation_curve(
-                records=adaptation_records,
-                output_dir=adaptation_output_dir,
-                fold_index=fold,
+                adaptation_losses.append(float(adapt_loss))
+            csv_writer.write_event(
+                fold_idx=fold + 1,
                 test_subject=test_subject,
+                event_type="adaptation_phase",
+                loss=float(np.mean(adaptation_losses)) if adaptation_losses else 0.0,
             )
-            cv_results["adaptation_curve_files"].append(curve_file)
-            self.logger.info(
-                f"Saved adaptation curve for subject {test_subject} to {curve_file}"
+
+            # K-shot performance (after adaptation).
+            k_shot_loss, k_shot_metrics = self._evaluate_sampler_loss_and_metrics(
+                test_sampler, num_episodes=subject_eval_episodes
+            )
+            csv_writer.write_event(
+                fold_idx=fold + 1,
+                test_subject=test_subject,
+                event_type="k_shot_summary",
+                loss=k_shot_loss,
+                accuracy=k_shot_metrics["accuracy"],
+                precision=k_shot_metrics["precision"],
+                recall=k_shot_metrics["recall"],
+                f1=k_shot_metrics["f1"],
+            )
+            progress.log_subject_summary(
+                stage="K-shot",
+                fold_idx=fold + 1,
+                total_folds=num_subjects,
+                test_subject=int(test_subject),
+                loss=k_shot_loss,
+                metrics=k_shot_metrics,
             )
 
             cv_results["train_losses"].append(np.mean(fold_results["train_losses"]))
@@ -512,14 +453,24 @@ class FewShotPainLearner:
             )
             cv_results["val_losses"].append(np.mean(fold_results["val_losses"]))
             cv_results["val_accuracies"].append(np.mean(fold_results["val_accuracies"]))
-            cv_results["test_losses"].append(avg_test_loss)
-            cv_results["test_accuracies"].append(avg_test_acc)
+            cv_results["test_losses"].append(zero_shot_loss)
+            cv_results["test_accuracies"].append(zero_shot_metrics["accuracy"])
+            cv_results["zero_shot_losses"].append(zero_shot_loss)
+            cv_results["zero_shot_accuracies"].append(zero_shot_metrics["accuracy"])
+            cv_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
+            cv_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
+            cv_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
+            cv_results["k_shot_losses"].append(k_shot_loss)
+            cv_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
+            cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
+            cv_results["k_shot_recalls"].append(k_shot_metrics["recall"])
+            cv_results["k_shot_f1s"].append(k_shot_metrics["f1"])
             csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
                 event_type="fold_summary",
-                loss=float(avg_test_loss),
-                accuracy=float(avg_test_acc),
+                loss=zero_shot_loss,
+                accuracy=zero_shot_metrics["accuracy"],
             )
             csv_writer.close()
             cv_results["training_progress_files"].append(progress_file)
@@ -527,18 +478,27 @@ class FewShotPainLearner:
                 fold_idx=fold + 1,
                 total_folds=num_subjects,
                 test_subject=int(test_subject),
-                test_loss=avg_test_loss,
-                test_accuracy=avg_test_acc,
+                test_loss=zero_shot_loss,
+                test_accuracy=zero_shot_metrics["accuracy"],
             )
 
         self.logger.info(f"\n{'=' * 60}")
         self.logger.info("CROSS-VALIDATION RESULTS")
         self.logger.info(f"{'=' * 60}")
         self.logger.info(
-            f"Average Test Accuracy: {np.mean(cv_results['test_accuracies']):.4f} "
-            f"(±{np.std(cv_results['test_accuracies']):.4f})"
+            f"Average Zero-shot Accuracy: {np.mean(cv_results['zero_shot_accuracies']):.4f} "
+            f"(±{np.std(cv_results['zero_shot_accuracies']):.4f})"
         )
-        self.logger.info(f"Average Test Loss: {np.mean(cv_results['test_losses']):.4f}")
+        self.logger.info(
+            f"Average K-shot Accuracy: {np.mean(cv_results['k_shot_accuracies']):.4f} "
+            f"(±{np.std(cv_results['k_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average Zero-shot Loss: {np.mean(cv_results['zero_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
+        )
         self.logger.info(f"{'=' * 60}\n")
 
         return cv_results

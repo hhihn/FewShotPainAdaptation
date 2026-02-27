@@ -9,12 +9,10 @@ class TrainingProgressReporter:
         logger: logging.Logger,
         train_log_every: int = 10,
         eval_log_every: int = 5,
-        adaptation_log_every: int = 1,
     ):
         self.logger = logger
         self.train_log_every = max(1, int(train_log_every))
         self.eval_log_every = max(1, int(eval_log_every))
-        self.adaptation_log_every = max(1, int(adaptation_log_every))
 
     @staticmethod
     def _pct(current: int, total: int) -> float:
@@ -94,28 +92,35 @@ class TrainingProgressReporter:
             f"loss={loss:.4f}, {metric_name}={metric_value:.4f}"
         )
 
-    def log_adaptation_step(
+    def log_adaptation_start(
         self,
         fold_idx: int,
         total_folds: int,
         test_subject: int,
-        step_idx: int,
-        total_steps: int,
+        adaptation_steps: int,
+    ) -> None:
+        fold_pct = self._pct(fold_idx, total_folds)
+        self.logger.info(
+            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
+            f"Adapting on held-out subject={test_subject} for {adaptation_steps} gradient steps"
+        )
+
+    def log_subject_summary(
+        self,
+        stage: str,
+        fold_idx: int,
+        total_folds: int,
+        test_subject: int,
         loss: float,
         metrics: dict,
     ) -> None:
-        if not self._should_log(step_idx, total_steps, self.adaptation_log_every):
-            return
         fold_pct = self._pct(fold_idx, total_folds)
-        step_pct = self._pct(step_idx, total_steps)
-        metrics_str = (
+        self.logger.info(
+            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
+            f"[{stage} subject={test_subject}] "
+            f"loss={loss:.4f}, "
             f"accuracy={metrics['accuracy']:.4f}, "
             f"precision={metrics['precision']:.4f}, "
             f"recall={metrics['recall']:.4f}, "
             f"f1={metrics['f1']:.4f}"
-        )
-        self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
-            f"[Subject {test_subject} adaptation step {step_idx}/{total_steps} | {step_pct:.1f}%] "
-            f"loss={loss:.4f}, {metrics_str}"
         )
