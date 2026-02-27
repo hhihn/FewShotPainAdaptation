@@ -31,6 +31,7 @@ class PainDatasetConfig:
     n_way: int = 6  # Number of classes per episode (all 6 pain levels)
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
+    train_batch_size: int = 1  # Number of episodes per optimizer update
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
 

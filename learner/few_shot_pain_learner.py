@@ -41,6 +41,7 @@ class FewShotPainLearner:
         self.seed = seed
         self.deterministic_ops = deterministic_ops
         self.embedding_dim = config.embedding_dim
+        self.train_batch_size = max(1, int(config.train_batch_size))
         self.logger = setup_logger("few_shot_pain_learner")
         set_global_reproducibility(
             seed=self.seed,
@@ -74,6 +75,7 @@ class FewShotPainLearner:
             "n_way": self.config.n_way,
             "k_shot": self.config.k_shot,
             "q_query": self.config.q_query,
+            "train_batch_size": self.train_batch_size,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
             "tcn_attention_pool_size": self.config.tcn_attention_pool_size,
@@ -129,6 +131,33 @@ class FewShotPainLearner:
         )
 
         return loss, accuracy
+
+    def train_batch_step(self, episode_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
+        """Single optimizer update using a batch of episodes."""
+        with tf.GradientTape() as tape:
+            losses = []
+            accuracies = []
+            for episode_dict in episode_batch:
+                support_x = tf.constant(episode_dict["support_X"], dtype=tf.float32)
+                support_y = tf.constant(episode_dict["support_y"], dtype=tf.int32)
+                query_x = tf.constant(episode_dict["query_X"], dtype=tf.float32)
+                query_y = tf.constant(episode_dict["query_y"], dtype=tf.int32)
+
+                logits = self.model(support_x, support_y, query_x, training=True)
+                loss = self.loss_fn(query_y, logits)
+                predictions = tf.argmax(logits, axis=1)
+                accuracy = tf.reduce_mean(
+                    tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
+                )
+                losses.append(loss)
+                accuracies.append(accuracy)
+
+            batch_loss = tf.reduce_mean(tf.stack(losses))
+            batch_acc = tf.reduce_mean(tf.stack(accuracies))
+
+        gradients = tape.gradient(batch_loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return batch_loss, batch_acc
 
     def evaluate_episode(self, support_x, support_y, query_x, query_y):
         """Evaluate on one episode without updating weights."""
@@ -277,31 +306,27 @@ class FewShotPainLearner:
                 # Training
                 epoch_train_losses = []
                 epoch_train_accs = []
+                processed_episodes = 0
 
-                for episode in range(episodes_per_epoch):
-                    episode_dict = train_sampler.get_episode()
-
-                    support_x = episode_dict["support_X"]  # [6*k_shot, 2500, 3]
-                    support_y = episode_dict["support_y"]  # [6*k_shot]
-                    query_x = episode_dict["query_X"]  # [6*q_query, 2500, 3]
-                    query_y = episode_dict["query_y"]  # [6*q_query]
-
-                    loss, acc = self.train_step(
-                        tf.constant(support_x, dtype=tf.float32),
-                        tf.constant(support_y, dtype=tf.int32),
-                        tf.constant(query_x, dtype=tf.float32),
-                        tf.constant(query_y, dtype=tf.int32),
+                for episode_start in range(0, episodes_per_epoch, self.train_batch_size):
+                    current_batch_size = min(
+                        self.train_batch_size, episodes_per_epoch - episode_start
                     )
+                    episode_batch = [
+                        train_sampler.get_episode() for _ in range(current_batch_size)
+                    ]
+                    loss, acc = self.train_batch_step(episode_batch)
+                    processed_episodes += current_batch_size
 
                     epoch_train_losses.append(float(loss))
                     epoch_train_accs.append(float(acc))
                     csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
-                        event_type="train_step",
+                        event_type="train_update",
                         epoch=epoch + 1,
                         epoch_total=num_epochs,
-                        step=episode + 1,
+                        step=processed_episodes,
                         step_total=episodes_per_epoch,
                         loss=float(loss),
                         accuracy=float(acc),
@@ -311,7 +336,7 @@ class FewShotPainLearner:
                         total_folds=num_subjects,
                         epoch_idx=epoch + 1,
                         total_epochs=num_epochs,
-                        episode_idx=episode + 1,
+                        episode_idx=processed_episodes,
                         total_episodes=episodes_per_epoch,
                         loss=float(loss),
                         metric_value=float(acc),
