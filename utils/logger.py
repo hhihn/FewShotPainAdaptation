@@ -3,7 +3,7 @@ import sys
 
 
 def setup_logger(
-    name: str = __name__, level: int = logging.DEBUG, log_format: str = None
+    name: str = __name__, level: int = logging.INFO, log_format: str = None
 ) -> logging.Logger:
     """Create a professional logger instance."""
 
