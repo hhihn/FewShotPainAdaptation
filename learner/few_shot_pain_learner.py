@@ -10,6 +10,8 @@ from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
 from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
+from utils.training_progress import TrainingProgressReporter
+from utils.training_progress_csv import TrainingProgressCSVWriter
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
 class FewShotPainLearner:
@@ -232,6 +234,10 @@ class FewShotPainLearner:
         adaptation_steps: int = 30,
         adaptation_eval_episodes: int = 5,
         adaptation_output_dir: str = "outputs/adaptation_curves",
+        training_progress_output_dir: str = "outputs/training_progress",
+        train_log_every: int = 10,
+        eval_log_every: int = 5,
+        adaptation_log_every: int = 1,
     ):
         """
         Train on all subjects using leave-one-subject-out cross-validation.
@@ -244,16 +250,23 @@ class FewShotPainLearner:
             "test_losses": [],
             "test_accuracies": [],
             "adaptation_curve_files": [],
+            "training_progress_files": [],
         }
 
         num_subjects = len(self.cv.subjects)
+        progress = TrainingProgressReporter(
+            logger=self.logger,
+            train_log_every=train_log_every,
+            eval_log_every=eval_log_every,
+            adaptation_log_every=adaptation_log_every,
+        )
+        csv_writer = TrainingProgressCSVWriter(output_dir=training_progress_output_dir)
 
         for fold, test_subject in enumerate(self.cv.subjects):
-            self.logger.info(f"\n{'=' * 60}")
-            self.logger.info(
-                f"Fold {fold + 1}/{num_subjects}: Test subject = {test_subject}"
+            progress.log_fold_start(
+                fold_idx=fold + 1, total_folds=num_subjects, test_subject=test_subject
             )
-            self.logger.info(f"{'=' * 60}")
+            progress_file = csv_writer.start_fold(fold_idx=fold + 1, test_subject=test_subject)
 
             # Reset model for each fold and free memory from prior graph state.
             self._rebuild_model(
@@ -297,6 +310,28 @@ class FewShotPainLearner:
 
                     epoch_train_losses.append(float(loss))
                     epoch_train_accs.append(float(acc))
+                    csv_writer.write_event(
+                        fold_idx=fold + 1,
+                        test_subject=test_subject,
+                        event_type="train_step",
+                        epoch=epoch + 1,
+                        epoch_total=num_epochs,
+                        step=episode + 1,
+                        step_total=episodes_per_epoch,
+                        loss=float(loss),
+                        accuracy=float(acc),
+                    )
+                    progress.log_train_step(
+                        fold_idx=fold + 1,
+                        total_folds=num_subjects,
+                        epoch_idx=epoch + 1,
+                        total_epochs=num_epochs,
+                        episode_idx=episode + 1,
+                        total_episodes=episodes_per_epoch,
+                        loss=float(loss),
+                        metric_value=float(acc),
+                        metric_name="accuracy",
+                    )
 
                 # Validation
                 epoch_val_losses = []
@@ -319,6 +354,27 @@ class FewShotPainLearner:
 
                     epoch_val_losses.append(float(loss))
                     epoch_val_accs.append(float(acc))
+                    csv_writer.write_event(
+                        fold_idx=fold + 1,
+                        test_subject=test_subject,
+                        event_type="validation_step",
+                        epoch=epoch + 1,
+                        epoch_total=num_epochs,
+                        step=len(epoch_val_losses),
+                        step_total=val_episodes,
+                        loss=float(loss),
+                        accuracy=float(acc),
+                    )
+                    progress.log_eval_step(
+                        stage="Validation",
+                        fold_idx=fold + 1,
+                        total_folds=num_subjects,
+                        step_idx=len(epoch_val_losses),
+                        total_steps=val_episodes,
+                        loss=float(loss),
+                        metric_value=float(acc),
+                        metric_name="accuracy",
+                    )
 
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
@@ -358,6 +414,27 @@ class FewShotPainLearner:
 
                 test_losses.append(float(loss))
                 test_accs.append(float(acc))
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type="test_step",
+                    epoch=None,
+                    epoch_total=None,
+                    step=len(test_losses),
+                    step_total=val_episodes,
+                    loss=float(loss),
+                    accuracy=float(acc),
+                )
+                progress.log_eval_step(
+                    stage="Test",
+                    fold_idx=fold + 1,
+                    total_folds=num_subjects,
+                    step_idx=len(test_losses),
+                    total_steps=val_episodes,
+                    loss=float(loss),
+                    metric_value=float(acc),
+                    metric_name="accuracy",
+                )
 
             avg_test_loss = np.mean(test_losses)
             avg_test_acc = np.mean(test_accs)
@@ -375,10 +452,33 @@ class FewShotPainLearner:
                 support_y = tf.constant(adapt_episode["support_y"], dtype=tf.int32)
                 query_x = tf.constant(adapt_episode["query_X"], dtype=tf.float32)
                 query_y = tf.constant(adapt_episode["query_y"], dtype=tf.int32)
-                self.train_step(support_x, support_y, query_x, query_y)
+                adapt_loss, _ = self.train_step(support_x, support_y, query_x, query_y)
 
                 step_metrics = self._evaluate_sampler_metrics(
                     test_sampler, num_episodes=adaptation_eval_episodes
+                )
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type="adaptation_step",
+                    epoch=None,
+                    epoch_total=None,
+                    step=step_idx,
+                    step_total=adaptation_steps,
+                    loss=float(adapt_loss),
+                    accuracy=step_metrics["accuracy"],
+                    precision=step_metrics["precision"],
+                    recall=step_metrics["recall"],
+                    f1=step_metrics["f1"],
+                )
+                progress.log_adaptation_step(
+                    fold_idx=fold + 1,
+                    total_folds=num_subjects,
+                    test_subject=int(test_subject),
+                    step_idx=step_idx,
+                    total_steps=adaptation_steps,
+                    loss=float(adapt_loss),
+                    metrics=step_metrics,
                 )
                 adaptation_records.append(
                     {
@@ -411,6 +511,22 @@ class FewShotPainLearner:
             cv_results["val_accuracies"].append(np.mean(fold_results["val_accuracies"]))
             cv_results["test_losses"].append(avg_test_loss)
             cv_results["test_accuracies"].append(avg_test_acc)
+            csv_writer.write_event(
+                fold_idx=fold + 1,
+                test_subject=test_subject,
+                event_type="fold_summary",
+                loss=float(avg_test_loss),
+                accuracy=float(avg_test_acc),
+            )
+            csv_writer.close()
+            cv_results["training_progress_files"].append(progress_file)
+            progress.log_fold_complete(
+                fold_idx=fold + 1,
+                total_folds=num_subjects,
+                test_subject=int(test_subject),
+                test_loss=avg_test_loss,
+                test_accuracy=avg_test_acc,
+            )
 
         self.logger.info(f"\n{'=' * 60}")
         self.logger.info("CROSS-VALIDATION RESULTS")
