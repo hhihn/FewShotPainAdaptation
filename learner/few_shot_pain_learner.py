@@ -14,6 +14,7 @@ from utils.training_progress import TrainingProgressReporter
 from utils.training_progress_csv import TrainingProgressCSVWriter
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
+
 class FewShotPainLearner:
     """Meta-learning trainer for personalized pain assessment."""
 
@@ -266,7 +267,9 @@ class FewShotPainLearner:
             progress.log_fold_start(
                 fold_idx=fold + 1, total_folds=num_subjects, test_subject=test_subject
             )
-            progress_file = csv_writer.start_fold(fold_idx=fold + 1, test_subject=test_subject)
+            progress_file = csv_writer.start_fold(
+                fold_idx=fold + 1, test_subject=test_subject
+            )
 
             # Reset model for each fold and free memory from prior graph state.
             self._rebuild_model(

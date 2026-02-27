@@ -16,7 +16,6 @@ import numpy as np
 from typing import Tuple, List, Dict, Optional
 from pathlib import Path
 import warnings
-import logging
 
 from utils.logger import setup_logger
 from data_loaders.pain_ds_config import PainDatasetConfig

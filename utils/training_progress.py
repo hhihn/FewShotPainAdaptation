@@ -26,7 +26,9 @@ class TrainingProgressReporter:
     def _should_log(current: int, total: int, interval: int) -> bool:
         return current == 1 or current % interval == 0 or current == total
 
-    def log_fold_start(self, fold_idx: int, total_folds: int, test_subject: int) -> None:
+    def log_fold_start(
+        self, fold_idx: int, total_folds: int, test_subject: int
+    ) -> None:
         fold_pct = self._pct(fold_idx, total_folds)
         self.logger.info(
             f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] Start - held-out subject={test_subject}"

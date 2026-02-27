@@ -6,7 +6,6 @@ from utils.logger import setup_logger
 from architecture.tcn import TemporalConvolutionalNetwork
 
 
-
 class MultimodalPrototypicalNetwork(keras.Model):
     """Multimodal Prototypical Networks for few-shot learning on pain data."""
 

@@ -86,4 +86,3 @@ class TrainingProgressCSVWriter:
             self._file.close()
         self._file = None
         self._writer = None
-
