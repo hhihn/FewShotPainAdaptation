@@ -12,7 +12,7 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 1 # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
     embedding_dim: int = 64  # Encoder embedding dimension
     tcn_attention_pool_size: int = 8  # Downsample factor before self-attention
     clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds

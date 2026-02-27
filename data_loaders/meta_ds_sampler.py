@@ -2,7 +2,6 @@ import numpy as np
 import tensorflow as tf
 from typing import List, Dict, Optional, Generator
 
-import logging
 
 from utils.logger import setup_logger
 
@@ -49,7 +48,7 @@ class SixWayKShotSampler:
             episodes_per_epoch: Number of episodes per epoch
             seed: Random seed
         """
-        self.logger = setup_logger(__name__, level=logging.DEBUG)
+        self.logger = setup_logger(__name__)
         self.dataset = dataset
         self.mode = mode
         self.k_shot = k_shot

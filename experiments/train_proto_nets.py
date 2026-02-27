@@ -1,19 +1,16 @@
-import logging
 import tensorflow as tf
 from data_loaders.pain_ds_config import PainDatasetConfig
 from learner.few_shot_pain_learner import FewShotPainLearner
 from utils.logger import setup_logger
 
-logger = setup_logger("FewShotPainLearner", level=logging.INFO)
-
-
+logger = setup_logger("FewShotPainLearner")
 
 
 def main():
     """Example usage of the few-shot pain learner."""
     config = PainDatasetConfig()
     print(tf.config.list_physical_devices())
-    print("Num GPUs Available: ", len(tf.config.list_physical_devices('MPS')))
+    print("Num GPUs Available: ", len(tf.config.list_physical_devices("MPS")))
 
     logger.info("=" * 60)
     logger.info("Multimodal Few-Shot Learning for Personalized Pain Assessment")

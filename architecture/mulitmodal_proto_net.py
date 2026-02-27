@@ -5,7 +5,6 @@ from utils.logger import setup_logger
 
 from architecture.tcn import TemporalConvolutionalNetwork
 
-import logging
 
 
 class MultimodalPrototypicalNetwork(keras.Model):
@@ -45,9 +44,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.distance_metric = distance_metric
         self.num_tcn_blocks = num_tcn_blocks
         self.tcn_attention_pool_size = tcn_attention_pool_size
-        self.logger = setup_logger(
-            name="MultimodalPrototypicalNetwork", level=logging.INFO
-        )
+        self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
         # Create separate encoder for each modality
         self.modality_encoders = {}
         for modality_name in modality_names:
@@ -71,10 +68,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         else:
             raise ValueError(f"Unknown fusion method: {fusion_method}")
 
-        self.logger.info(
+        self.logger.debug(
             f"Initialized MultimodalPrototypicalNetwork with {len(modality_names)} modalities"
         )
-        self.logger.info(
+        self.logger.debug(
             f"Fusion method: {fusion_method}, Final embedding dim: {self.fused_embedding_dim}"
         )
 
@@ -92,8 +89,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             num_blocks=num_tcn_blocks,
             attention_pool_size=tcn_attention_pool_size,
         )
-        self.logger.info(f"Built CNN encoder with {modality_name}")
-        self.logger.info(model.summary())
+        self.logger.debug(f"Built CNN encoder with {modality_name}")
+        self.logger.debug(model.summary())
         return model
 
     def encode(self, x, training=False):

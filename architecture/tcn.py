@@ -1,9 +1,7 @@
 from typing import List, Any
 import tensorflow as tf
 from keras import Model
-from optree import PyTree
 from tensorflow import keras
-import logging
 
 from utils.logger import setup_logger
 
@@ -58,7 +56,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.kernel_size = kernel_size
         self.dropout_rate = dropout_rate
         self.attention_pool_size = max(1, int(attention_pool_size))
-        self.logger = setup_logger(name="TemporalConvolutionalNetwork", level=logging.INFO)
+        self.logger = setup_logger(name="TemporalConvolutionalNetwork")
         # Auto-generate filter list if not provided
         if filters_list is None:
             filters_list = [32 * (2**i) for i in range(num_blocks)]
@@ -84,7 +82,10 @@ class TemporalConvolutionalNetwork(keras.Model):
         )
         for i in range(num_blocks):
             block, new_inputs = self._build_tcn_block(
-                inputs=inputs, filters=filters_list[i], dilation_rate=dilation_rates[i], block_idx=i
+                inputs=inputs,
+                filters=filters_list[i],
+                dilation_rate=dilation_rates[i],
+                block_idx=i,
             )
             inputs = new_inputs
             self.tcn_blocks.append(block)
@@ -119,9 +120,9 @@ class TemporalConvolutionalNetwork(keras.Model):
         )
         self.embedding_norm = keras.layers.LayerNormalization(name="embedding_norm")
 
-        self.logger.info(f"Initialized TCN with {num_blocks} blocks")
-        self.logger.info(f"Filters: {filters_list}")
-        self.logger.info(f"Dilation rates: {dilation_rates}")
+        self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
+        self.logger.debug(f"Filters: {filters_list}")
+        self.logger.debug(f"Dilation rates: {dilation_rates}")
 
     def _build_tcn_block(
         self, inputs, filters: int, dilation_rate: int, block_idx: int

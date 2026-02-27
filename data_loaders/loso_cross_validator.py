@@ -1,5 +1,4 @@
 from typing import Dict, Optional, Generator
-import logging
 
 from utils.logger import setup_logger
 
@@ -40,7 +39,7 @@ class LOSOCrossValidator:
         self.seed = seed
         self.subjects = list(dataset.unique_subjects)
 
-        self.logger = setup_logger(__name__, level=logging.DEBUG)
+        self.logger = setup_logger(__name__)
 
     def __len__(self) -> int:
         """Number of folds (one per subject)."""
