@@ -12,8 +12,8 @@ class SixWayKShotSampler:
     """
     6-Way-K-Shot episodic sampler for meta-learning.
 
-    This sampler generates episodes for training and evaluating meta-learning
-    models on the pain dataset. Each episode contains:
+    This sampler generates tasks for training and evaluating meta-learning
+    models on the pain dataset. Each task contains:
     - Support set: K samples from each of the 6 pain levels
     - Query set: Q samples from each of the 6 pain levels
 
@@ -32,7 +32,7 @@ class SixWayKShotSampler:
         test_subject: Optional[int] = None,
         k_shot: int = 5,
         q_query: int = 5,
-        episodes_per_epoch: int = 100,
+        tasks_per_epoch: int = 100,
         seed: Optional[int] = None,
     ):
         """
@@ -45,7 +45,7 @@ class SixWayKShotSampler:
             test_subject: Held-out test subject ID
             k_shot: Number of support samples per class
             q_query: Number of query samples per class
-            episodes_per_epoch: Number of episodes per epoch
+            tasks_per_epoch: Number of tasks per epoch
             seed: Random seed
         """
         self.logger = setup_logger(__name__)
@@ -53,7 +53,7 @@ class SixWayKShotSampler:
         self.mode = mode
         self.k_shot = k_shot
         self.q_query = q_query
-        self.episodes_per_epoch = episodes_per_epoch
+        self.tasks_per_epoch = tasks_per_epoch
         self.seed = seed
         self.rng = np.random.default_rng(self.seed)
 
@@ -82,18 +82,18 @@ class SixWayKShotSampler:
         self.n_sensors = self.config.num_sensors
 
     def __len__(self) -> int:
-        """Number of episodes per epoch."""
-        return self.episodes_per_epoch
+        """Number of tasks per epoch."""
+        return self.tasks_per_epoch
 
     def __iter__(self) -> Generator[Dict[str, np.ndarray], None, None]:
-        """Iterate over episodes."""
-        for _ in range(self.episodes_per_epoch):
-            yield self._sample_episode()
+        """Iterate over tasks."""
+        for _ in range(self.tasks_per_epoch):
+            yield self._sample_task()
 
-    def _sample_episode(self) -> Dict[str, np.ndarray]:
-        """Sample a single episode."""
+    def _sample_task(self) -> Dict[str, np.ndarray]:
+        """Sample a single task."""
 
-        episode_dict = {"support_X": [], "support_y": [], "query_X": [], "query_y": []}
+        task_dict = {"support_X": [], "support_y": [], "query_X": [], "query_y": []}
 
         # For each of the 6 pain levels
         for class_id in range(self.config.n_way):
@@ -126,37 +126,37 @@ class SixWayKShotSampler:
             # Load support samples
             for idx in support_indices:
                 x = self.dataset.X[idx]
-                episode_dict["support_X"].append(x)
-                episode_dict["support_y"].append(class_id)
+                task_dict["support_X"].append(x)
+                task_dict["support_y"].append(class_id)
 
             # Load query samples
             for idx in query_indices:
                 x = self.dataset.X[idx]
-                episode_dict["query_X"].append(x)
-                episode_dict["query_y"].append(class_id)
+                task_dict["query_X"].append(x)
+                task_dict["query_y"].append(class_id)
 
         # Stack into arrays
-        episode_dict["support_X"] = np.stack(episode_dict["support_X"], axis=0)
-        episode_dict["support_y"] = np.array(episode_dict["support_y"])
-        episode_dict["query_X"] = np.stack(episode_dict["query_X"], axis=0)
-        episode_dict["query_y"] = np.array(episode_dict["query_y"])
+        task_dict["support_X"] = np.stack(task_dict["support_X"], axis=0)
+        task_dict["support_y"] = np.array(task_dict["support_y"])
+        task_dict["query_X"] = np.stack(task_dict["query_X"], axis=0)
+        task_dict["query_y"] = np.array(task_dict["query_y"])
 
-        return episode_dict
+        return task_dict
 
-    def get_episode(self, subject: Optional[int] = None) -> Dict[str, np.ndarray]:
+    def get_task(self, subject: Optional[int] = None) -> Dict[str, np.ndarray]:
         """
-        Get a single episode, optionally from a specific subject.
+        Get a single task, optionally from a specific subject.
 
         Args:
             subject: Optional subject ID (random if None)
 
         Returns:
-            Episode dictionary
+            Task dictionary
         """
         if subject is None:
             subject = self.rng.choice(self.active_subjects)
         normalize_mode = "subject" if self.mode == "train" else "support"
-        return self.dataset.sample_episode(
+        return self.dataset.sample_task(
             subject,
             self.k_shot,
             self.q_query,
@@ -164,17 +164,17 @@ class SixWayKShotSampler:
             rng=self.rng,
         )
 
-    def get_test_episode(self, k_shot: Optional[int] = None) -> Dict[str, np.ndarray]:
+    def get_test_task(self, k_shot: Optional[int] = None) -> Dict[str, np.ndarray]:
         """
-        Get an episode from the test subject.
+        Get an task from the test subject.
 
         Args:
             k_shot: Override default k_shot
 
         Returns:
-            Episode dictionary
+            Task dictionary
         """
-        return self.dataset.sample_episode(
+        return self.dataset.sample_task(
             subject=self.test_subject,
             k_shot=k_shot or self.k_shot,
             q_query=self.q_query,
@@ -187,11 +187,11 @@ class SixWayKShotSampler:
         Convert to TensorFlow Dataset.
 
         Args:
-            batch_size: Batch size (number of episodes)
+            batch_size: Batch size (number of tasks)
             prefetch: Prefetch buffer size
 
         Returns:
-            tf.data.Dataset yielding batched episodes
+            tf.data.Dataset yielding batched tasks
         """
         # Define output signature
         output_signature = {
@@ -208,13 +208,13 @@ class SixWayKShotSampler:
         }
 
         def generator():
-            for episode in self:
+            for task in self:
                 yield {
-                    "support_X": episode["support_X"].astype(np.float32),
-                    "support_y": episode["support_y"].astype(np.int32),
-                    "query_X": episode["query_X"].astype(np.float32),
-                    "query_y": episode["query_y"].astype(np.int32),
-                    "subject": np.int32(episode["subject"]),
+                    "support_X": task["support_X"].astype(np.float32),
+                    "support_y": task["support_y"].astype(np.int32),
+                    "query_X": task["query_X"].astype(np.float32),
+                    "query_y": task["query_y"].astype(np.int32),
+                    "subject": np.int32(task["subject"]),
                 }
 
         dataset = tf.data.Dataset.from_generator(
@@ -240,23 +240,23 @@ class SixWayKShotSampler:
         modality_names = self.config.modality_names
 
         def generator():
-            for episode in self:
+            for task in self:
                 # Split by modality
                 support_modalities = {
-                    name: episode["support_X"][:, :, i : i + 1].astype(np.float32)
+                    name: task["support_X"][:, :, i : i + 1].astype(np.float32)
                     for i, name in enumerate(modality_names)
                 }
                 query_modalities = {
-                    name: episode["query_X"][:, :, i : i + 1].astype(np.float32)
+                    name: task["query_X"][:, :, i : i + 1].astype(np.float32)
                     for i, name in enumerate(modality_names)
                 }
 
                 yield {
                     "support": support_modalities,
-                    "support_y": episode["support_y"].astype(np.int32),
+                    "support_y": task["support_y"].astype(np.int32),
                     "query": query_modalities,
-                    "query_y": episode["query_y"].astype(np.int32),
-                    "subject": np.int32(episode["subject"]),
+                    "query_y": task["query_y"].astype(np.int32),
+                    "subject": np.int32(task["subject"]),
                 }
 
         # Build output signature

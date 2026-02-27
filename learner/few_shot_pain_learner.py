@@ -116,7 +116,7 @@ class FewShotPainLearner:
         self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 
     def train_step(self, support_x, support_y, query_x, query_y):
-        """Single training step on one episode."""
+        """Single training step on one task."""
         with tf.GradientTape() as tape:
             logits = self.model(support_x, support_y, query_x, training=True)
             loss = self.loss_fn(query_y, logits)
@@ -132,16 +132,16 @@ class FewShotPainLearner:
 
         return loss, accuracy
 
-    def train_batch_step(self, episode_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
-        """Single optimizer update using a batch of episodes."""
+    def train_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
+        """Single optimizer update using a batch of tasks."""
         with tf.GradientTape() as tape:
             losses = []
             accuracies = []
-            for episode_dict in episode_batch:
-                support_x = tf.constant(episode_dict["support_X"], dtype=tf.float32)
-                support_y = tf.constant(episode_dict["support_y"], dtype=tf.int32)
-                query_x = tf.constant(episode_dict["query_X"], dtype=tf.float32)
-                query_y = tf.constant(episode_dict["query_y"], dtype=tf.int32)
+            for task_dict in task_batch:
+                support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
+                support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
+                query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
+                query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
 
                 logits = self.model(support_x, support_y, query_x, training=True)
                 loss = self.loss_fn(query_y, logits)
@@ -159,8 +159,8 @@ class FewShotPainLearner:
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
         return batch_loss, batch_acc
 
-    def evaluate_episode(self, support_x, support_y, query_x, query_y):
-        """Evaluate on one episode without updating weights."""
+    def evaluate_task(self, support_x, support_y, query_x, query_y):
+        """Evaluate on one task without updating weights."""
         logits = self.model(support_x, support_y, query_x, training=False)
         loss = self.loss_fn(query_y, logits)
 
@@ -205,19 +205,19 @@ class FewShotPainLearner:
         }
 
     def _evaluate_sampler_loss_and_metrics(
-        self, sampler, num_episodes: int
+        self, sampler, num_tasks: int
     ) -> tuple[float, dict]:
-        """Evaluate average loss and macro metrics on sampled episodes."""
+        """Evaluate average loss and macro metrics on sampled tasks."""
         losses = []
         all_true = []
         all_pred = []
-        for _ in range(num_episodes):
-            episode_dict = sampler.get_episode()
+        for _ in range(num_tasks):
+            task_dict = sampler.get_task()
 
-            support_x = tf.constant(episode_dict["support_X"], dtype=tf.float32)
-            support_y = tf.constant(episode_dict["support_y"], dtype=tf.int32)
-            query_x = tf.constant(episode_dict["query_X"], dtype=tf.float32)
-            query_y_np = episode_dict["query_y"].astype(np.int32)
+            support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
+            support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
+            query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
+            query_y_np = task_dict["query_y"].astype(np.int32)
             query_y = tf.constant(query_y_np, dtype=tf.int32)
 
             logits = self.model(support_x, support_y, query_x, training=False)
@@ -235,11 +235,11 @@ class FewShotPainLearner:
     def train(
         self,
         num_epochs: int = 10,
-        episodes_per_epoch: int = 100,
-        val_episodes: int = 20,
+        tasks_per_epoch: int = 100,
+        val_tasks: int = 20,
         training_progress_output_dir: str = "outputs/training_progress",
         k_shot_adaptation_steps: int = 10,
-        subject_eval_episodes: int = 20,
+        subject_eval_tasks: int = 20,
         train_log_every: int = 10,
         eval_log_every: int = 5,
     ):
@@ -306,17 +306,17 @@ class FewShotPainLearner:
                 # Training
                 epoch_train_losses = []
                 epoch_train_accs = []
-                processed_episodes = 0
+                processed_tasks = 0
 
-                for episode_start in range(0, episodes_per_epoch, self.train_batch_size):
+                for task_start in range(0, tasks_per_epoch, self.train_batch_size):
                     current_batch_size = min(
-                        self.train_batch_size, episodes_per_epoch - episode_start
+                        self.train_batch_size, tasks_per_epoch - task_start
                     )
-                    episode_batch = [
-                        train_sampler.get_episode() for _ in range(current_batch_size)
+                    task_batch = [
+                        train_sampler.get_task() for _ in range(current_batch_size)
                     ]
-                    loss, acc = self.train_batch_step(episode_batch)
-                    processed_episodes += current_batch_size
+                    loss, acc = self.train_batch_step(task_batch)
+                    processed_tasks += current_batch_size
 
                     epoch_train_losses.append(float(loss))
                     epoch_train_accs.append(float(acc))
@@ -326,8 +326,8 @@ class FewShotPainLearner:
                         event_type="train_update",
                         epoch=epoch + 1,
                         epoch_total=num_epochs,
-                        step=processed_episodes,
-                        step_total=episodes_per_epoch,
+                        step=processed_tasks,
+                        step_total=tasks_per_epoch,
                         loss=float(loss),
                         accuracy=float(acc),
                     )
@@ -336,8 +336,8 @@ class FewShotPainLearner:
                         total_folds=num_subjects,
                         epoch_idx=epoch + 1,
                         total_epochs=num_epochs,
-                        episode_idx=processed_episodes,
-                        total_episodes=episodes_per_epoch,
+                        task_idx=processed_tasks,
+                        total_tasks=tasks_per_epoch,
                         loss=float(loss),
                         metric_value=float(acc),
                         metric_name="accuracy",
@@ -347,15 +347,15 @@ class FewShotPainLearner:
                 epoch_val_losses = []
                 epoch_val_accs = []
 
-                for _ in range(val_episodes):
-                    episode_dict = val_sampler.get_episode()
+                for _ in range(val_tasks):
+                    task_dict = val_sampler.get_task()
 
-                    support_x = episode_dict["support_X"]
-                    support_y = episode_dict["support_y"]
-                    query_x = episode_dict["query_X"]
-                    query_y = episode_dict["query_y"]
+                    support_x = task_dict["support_X"]
+                    support_y = task_dict["support_y"]
+                    query_x = task_dict["query_X"]
+                    query_y = task_dict["query_y"]
 
-                    loss, acc = self.evaluate_episode(
+                    loss, acc = self.evaluate_task(
                         tf.constant(support_x, dtype=tf.float32),
                         tf.constant(support_y, dtype=tf.int32),
                         tf.constant(query_x, dtype=tf.float32),
@@ -371,7 +371,7 @@ class FewShotPainLearner:
                         epoch=epoch + 1,
                         epoch_total=num_epochs,
                         step=len(epoch_val_losses),
-                        step_total=val_episodes,
+                        step_total=val_tasks,
                         loss=float(loss),
                         accuracy=float(acc),
                     )
@@ -380,7 +380,7 @@ class FewShotPainLearner:
                         fold_idx=fold + 1,
                         total_folds=num_subjects,
                         step_idx=len(epoch_val_losses),
-                        total_steps=val_episodes,
+                        total_steps=val_tasks,
                         loss=float(loss),
                         metric_value=float(acc),
                         metric_name="accuracy",
@@ -405,7 +405,7 @@ class FewShotPainLearner:
 
             # Zero-shot performance (after training on M-1 subjects).
             zero_shot_loss, zero_shot_metrics = self._evaluate_sampler_loss_and_metrics(
-                test_sampler, num_episodes=subject_eval_episodes
+                test_sampler, num_tasks=subject_eval_tasks
             )
             csv_writer.write_event(
                 fold_idx=fold + 1,
@@ -435,11 +435,11 @@ class FewShotPainLearner:
             )
             adaptation_losses = []
             for _ in range(k_shot_adaptation_steps):
-                adapt_episode = test_sampler.get_episode()
-                support_x = tf.constant(adapt_episode["support_X"], dtype=tf.float32)
-                support_y = tf.constant(adapt_episode["support_y"], dtype=tf.int32)
-                query_x = tf.constant(adapt_episode["query_X"], dtype=tf.float32)
-                query_y = tf.constant(adapt_episode["query_y"], dtype=tf.int32)
+                adapt_task = test_sampler.get_task()
+                support_x = tf.constant(adapt_task["support_X"], dtype=tf.float32)
+                support_y = tf.constant(adapt_task["support_y"], dtype=tf.int32)
+                query_x = tf.constant(adapt_task["query_X"], dtype=tf.float32)
+                query_y = tf.constant(adapt_task["query_y"], dtype=tf.int32)
                 adapt_loss, _ = self.train_step(support_x, support_y, query_x, query_y)
                 adaptation_losses.append(float(adapt_loss))
             csv_writer.write_event(
@@ -451,7 +451,7 @@ class FewShotPainLearner:
 
             # K-shot performance (after adaptation).
             k_shot_loss, k_shot_metrics = self._evaluate_sampler_loss_and_metrics(
-                test_sampler, num_episodes=subject_eval_episodes
+                test_sampler, num_tasks=subject_eval_tasks
             )
             csv_writer.write_event(
                 fold_idx=fold + 1,

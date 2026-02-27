@@ -3,7 +3,7 @@
 """
 6-Way-K-Shot Meta-Learning Sampler for Multi-Modal Pain Dataset.
 
-This sampler creates meta-learning episodes from the BioVid pain dataset
+This sampler creates meta-learning tasks from the BioVid pain dataset
 with the following structure:
 - 6-way: 6 pain/temperature levels (classes)
 - K-shot: K support samples per class
@@ -204,7 +204,7 @@ class PainMetaDataset:
 
         return X, y
 
-    def sample_episode(
+    def sample_task(
         self,
         subject: int,
         k_shot: Optional[int] = None,
@@ -214,7 +214,7 @@ class PainMetaDataset:
         rng: Optional[np.random.Generator] = None,
     ) -> Dict[str, np.ndarray]:
         """
-        Sample a 6-way-K-shot episode from a single subject.
+        Sample a 6-way-K-shot task from a single subject.
 
         Args:
             subject: Subject ID to sample from
@@ -301,7 +301,7 @@ class PainMetaDataset:
             "subject": subject,
         }
 
-    def sample_meta_batch(
+    def sample_meta_task_batch(
         self,
         subjects: List[int],
         batch_size: int,
@@ -309,19 +309,19 @@ class PainMetaDataset:
         q_query: Optional[int] = None,
     ) -> List[Dict[str, np.ndarray]]:
         """
-        Sample a batch of episodes for meta-training.
+        Sample a batch of tasks for meta-training.
 
         Args:
             subjects: List of subject IDs to sample from
-            batch_size: Number of episodes to sample
+            batch_size: Number of tasks to sample
             k_shot: Support set size per class
             q_query: Query set size per class
 
         Returns:
-            List of episode dictionaries
+            List of task dictionaries
         """
         sampled_subjects = np.random.choice(subjects, size=batch_size, replace=True)
-        return [self.sample_episode(s, k_shot, q_query) for s in sampled_subjects]
+        return [self.sample_task(s, k_shot, q_query) for s in sampled_subjects]
 
     def leave_one_subject_out_split(self, test_subject: int) -> Tuple[List[int], int]:
         """

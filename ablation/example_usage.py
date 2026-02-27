@@ -35,21 +35,21 @@ def example_usage():
         normalize_per_subject=True,
     )
 
-    # Test basic episode sampling
+    # Test basic task sampling
     logger.debug("-" * 40)
-    logger.debug("Testing episode sampling...")
+    logger.debug("Testing task sampling...")
     logger.debug("-" * 40)
 
-    episode = dataset.sample_episode(subject=0, k_shot=3, q_query=3)
-    logger.debug(f"Support X shape: {episode['support_X'].shape}")
-    logger.debug(f"Support y shape: {episode['support_y'].shape}")
-    logger.debug(f"Query X shape: {episode['query_X'].shape}")
-    logger.debug(f"Query y shape: {episode['query_y'].shape}")
+    task = dataset.sample_task(subject=0, k_shot=3, q_query=3)
+    logger.debug(f"Support X shape: {task['support_X'].shape}")
+    logger.debug(f"Support y shape: {task['support_y'].shape}")
+    logger.debug(f"Query X shape: {task['query_X'].shape}")
+    logger.debug(f"Query y shape: {task['query_y'].shape}")
     logger.debug(
-        f"Support y distribution: {np.bincount(episode['support_y'], minlength=6)}"
+        f"Support y distribution: {np.bincount(task['support_y'], minlength=6)}"
     )
     logger.debug(
-        f"Query y distribution: {np.bincount(episode['query_y'], minlength=6)}"
+        f"Query y distribution: {np.bincount(task['query_y'], minlength=6)}"
     )
 
     # Test LOSO cross-validation
@@ -61,7 +61,7 @@ def example_usage():
         dataset=dataset,
         k_shot=config.k_shot,
         q_query=config.q_query,
-        episodes_per_epoch=10,
+        tasks_per_epoch=10,
     )
 
     logger.debug(f"Number of folds: {len(cv)}")
@@ -79,13 +79,13 @@ def example_usage():
     logger.debug("-" * 40)
 
     train_sampler = fold["train_sampler"]
-    for i, episode in enumerate(train_sampler):
+    for i, task in enumerate(train_sampler):
         if i >= 3:
             break
         logger.debug(
-            f"Episode {i}: "
-            f"support={episode['support_X'].shape}, "
-            f"query={episode['query_X'].shape}"
+            f"Task {i}: "
+            f"support={task['support_X'].shape}, "
+            f"query={task['query_X'].shape}"
         )
 
     # Test few-shot split

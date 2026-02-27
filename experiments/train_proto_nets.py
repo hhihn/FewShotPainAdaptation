@@ -32,7 +32,7 @@ def main():
         )
 
         cv_results = learner.train(
-            num_epochs=100, episodes_per_epoch=50, val_episodes=10
+            num_epochs=100, tasks_per_epoch=50, val_tasks=10
         )
         logger.info(cv_results)
         logger.info(f"Training with {fusion_method} complete!")

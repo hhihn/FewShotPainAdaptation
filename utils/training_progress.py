@@ -53,21 +53,21 @@ class TrainingProgressReporter:
         total_folds: int,
         epoch_idx: int,
         total_epochs: int,
-        episode_idx: int,
-        total_episodes: int,
+        task_idx: int,
+        total_tasks: int,
         loss: float,
         metric_value: float,
         metric_name: str = "accuracy",
     ) -> None:
-        if not self._should_log(episode_idx, total_episodes, self.train_log_every):
+        if not self._should_log(task_idx, total_tasks, self.train_log_every):
             return
         fold_pct = self._pct(fold_idx, total_folds)
         epoch_pct = self._pct(epoch_idx, total_epochs)
-        episode_pct = self._pct(episode_idx, total_episodes)
+        task_pct = self._pct(task_idx, total_tasks)
         self.logger.info(
             f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
             f"[Epoch {epoch_idx}/{total_epochs} | {epoch_pct:.1f}%] "
-            f"[Train episode {episode_idx}/{total_episodes} | {episode_pct:.1f}%] "
+            f"[Train task {task_idx}/{total_tasks} | {task_pct:.1f}%] "
             f"loss={loss:.4f}, {metric_name}={metric_value:.4f}"
         )
 

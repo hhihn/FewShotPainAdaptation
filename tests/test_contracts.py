@@ -70,7 +70,7 @@ class ContractTests(unittest.TestCase):
             dataset=dataset,
             k_shot=self.config.k_shot,
             q_query=self.config.q_query,
-            episodes_per_epoch=2,
+            tasks_per_epoch=2,
             seed=self.config.seed,
         )
 
@@ -90,13 +90,13 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(fold["n_train_subjects"], len(train_subjects))
             self.assertEqual(fold["n_val_subjects"], len(val_subjects))
 
-    def test_sampler_episode_contracts(self):
+    def test_sampler_task_contracts(self):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)
         cv = LOSOCrossValidator(
             dataset=dataset,
             k_shot=self.config.k_shot,
             q_query=self.config.q_query,
-            episodes_per_epoch=2,
+            tasks_per_epoch=2,
             seed=self.config.seed,
         )
 
@@ -108,9 +108,9 @@ class ContractTests(unittest.TestCase):
         )
 
         for sampler in samplers:
-            episode = sampler.get_episode()
+            task = sampler.get_task()
             self.assertEqual(
-                episode["support_X"].shape,
+                task["support_X"].shape,
                 (
                     self.config.n_way * self.config.k_shot,
                     self.config.sequence_length,
@@ -118,7 +118,7 @@ class ContractTests(unittest.TestCase):
                 ),
             )
             self.assertEqual(
-                episode["query_X"].shape,
+                task["query_X"].shape,
                 (
                     self.config.n_way * self.config.q_query,
                     self.config.sequence_length,
@@ -126,17 +126,17 @@ class ContractTests(unittest.TestCase):
                 ),
             )
             self.assertEqual(
-                episode["support_y"].shape, (self.config.n_way * self.config.k_shot,)
+                task["support_y"].shape, (self.config.n_way * self.config.k_shot,)
             )
             self.assertEqual(
-                episode["query_y"].shape, (self.config.n_way * self.config.q_query,)
+                task["query_y"].shape, (self.config.n_way * self.config.q_query,)
             )
-            self.assertIn("subject", episode)
+            self.assertIn("subject", task)
 
             support_counts = np.bincount(
-                episode["support_y"], minlength=self.config.n_way
+                task["support_y"], minlength=self.config.n_way
             )
-            query_counts = np.bincount(episode["query_y"], minlength=self.config.n_way)
+            query_counts = np.bincount(task["query_y"], minlength=self.config.n_way)
             self.assertTrue(np.all(support_counts == self.config.k_shot))
             self.assertTrue(np.all(query_counts == self.config.q_query))
 
@@ -150,7 +150,7 @@ class ContractTests(unittest.TestCase):
             deterministic_ops=self.config.deterministic_ops,
         )
 
-        results = learner.train(num_epochs=1, episodes_per_epoch=1, val_episodes=1)
+        results = learner.train(num_epochs=1, tasks_per_epoch=1, val_tasks=1)
 
         required_keys = {
             "train_losses",
