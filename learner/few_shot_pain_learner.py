@@ -469,7 +469,7 @@ class FewShotPainLearner:
                         fold_idx=fold + 1,
                         total_folds=num_subjects,
                         step_idx=epoch + 1,
-                        total_steps=val_tasks,
+                        total_steps=num_epochs,
                         loss=float(np.mean(epoch_val_losses)),
                         metric_value=float(np.mean(epoch_val_accs)),
                         metric_name="accuracy",

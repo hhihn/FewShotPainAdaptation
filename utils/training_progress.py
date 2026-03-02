@@ -8,7 +8,7 @@ class TrainingProgressReporter:
         self,
         logger: logging.Logger,
         train_log_every: int = 10,
-        eval_log_every: int = 5,
+        eval_log_every: int = 10,
     ):
         self.logger = logger
         self.train_log_every = max(1, int(train_log_every))
