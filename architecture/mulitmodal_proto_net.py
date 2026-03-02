@@ -4,6 +4,7 @@ from typing import Tuple
 from utils.logger import setup_logger
 
 from architecture.tcn import TemporalConvolutionalNetwork
+from architecture.fusion_transformer_ib import TransformerInformationBottleneckFusion
 
 
 class MultimodalPrototypicalNetwork(keras.Model):
@@ -20,6 +21,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "concat",
         distance_metric: str = "euclidean",
+        fusion_transformer_heads: int = 4,
+        fusion_transformer_layers: int = 2,
+        fusion_transformer_ffn_dim: int = 128,
+        fusion_ib_beta: float = 1e-3,
     ):
         """
         Args:
@@ -32,6 +37,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
             tcn_attention_pool_size: Downsample factor before TCN self-attention
+            fusion_transformer_heads: Number of attention heads in transformer fusion
+            fusion_transformer_layers: Number of transformer blocks in fusion
+            fusion_transformer_ffn_dim: FFN hidden size in transformer fusion
+            fusion_ib_beta: KL regularization weight for information bottleneck
         """
         super().__init__()
         self.sequence_length = sequence_length
@@ -43,6 +52,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.distance_metric = distance_metric
         self.num_tcn_blocks = num_tcn_blocks
         self.tcn_attention_pool_size = tcn_attention_pool_size
+        self.fusion_transformer_heads = fusion_transformer_heads
+        self.fusion_transformer_layers = fusion_transformer_layers
+        self.fusion_transformer_ffn_dim = fusion_transformer_ffn_dim
+        self.fusion_ib_beta = fusion_ib_beta
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
         # Create separate encoder for each modality
         self.modality_encoders = {}
@@ -52,18 +65,19 @@ class MultimodalPrototypicalNetwork(keras.Model):
             )
 
         # Fusion layer based on fusion method
-        if fusion_method == "concat":
-            self.fused_embedding_dim = embedding_dim * len(modality_names)
-            self.fusion_layer = keras.layers.Dense(embedding_dim, activation="relu")
-        elif fusion_method == "mean":
+        if fusion_method == "mean":
             self.fused_embedding_dim = embedding_dim
             self.fusion_layer = None
-        elif fusion_method == "attention":
-            self.fused_embedding_dim = embedding_dim * len(modality_names)
-            self.attention_weights = keras.layers.Dense(
-                len(modality_names), activation="softmax"
+        elif fusion_method == "transformer_ib":
+            self.fused_embedding_dim = embedding_dim
+            self.fusion_layer = TransformerInformationBottleneckFusion(
+                embedding_dim=embedding_dim,
+                num_modalities=len(modality_names),
+                num_heads=fusion_transformer_heads,
+                num_layers=fusion_transformer_layers,
+                ffn_dim=fusion_transformer_ffn_dim,
+                ib_beta=fusion_ib_beta,
             )
-            self.fusion_layer = keras.layers.Dense(embedding_dim, activation="relu")
         else:
             raise ValueError(f"Unknown fusion method: {fusion_method}")
 
@@ -116,43 +130,18 @@ class MultimodalPrototypicalNetwork(keras.Model):
             modality_embeddings.append(embedding)
 
         # Fuse embeddings
-        if self.fusion_method == "concat":
-            # Concatenate all embeddings
-            fused = tf.concat(
-                modality_embeddings, axis=1
-            )  # [batch, embedding_dim * num_modalities]
-            fused = self.fusion_layer(fused)  # [batch, embedding_dim]
-
-        elif self.fusion_method == "mean":
+        if self.fusion_method == "mean":
             # Simple mean of embeddings
             fused = tf.stack(
                 modality_embeddings, axis=1
             )  # [batch, num_modalities, embedding_dim]
             fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
 
-        elif self.fusion_method == "attention":
-            # Attention-based fusion
+        else:# self.fusion_method == "transformer_ib":
             stacked = tf.stack(
                 modality_embeddings, axis=1
             )  # [batch, num_modalities, embedding_dim]
-
-            # Compute attention weights
-            # Use mean of modality embeddings as query
-            query = tf.reduce_mean(
-                stacked, axis=1, keepdims=True
-            )  # [batch, 1, embedding_dim]
-            scores = tf.reduce_sum(stacked * query, axis=2)  # [batch, num_modalities]
-            weights = tf.nn.softmax(scores, axis=1)  # [batch, num_modalities]
-
-            # Apply weights
-            weighted = stacked * tf.expand_dims(
-                weights, axis=2
-            )  # [batch, num_modalities, embedding_dim]
-            fused_weighted = tf.reduce_sum(weighted, axis=1)  # [batch, embedding_dim]
-
-            # Concatenate original embeddings with weighted sum for richer representation
-            fused = tf.concat(modality_embeddings + [fused_weighted], axis=1)
-            fused = self.fusion_layer(fused)  # [batch, embedding_dim]
+            fused = self.fusion_layer(stacked, training=training)
 
         return fused
 

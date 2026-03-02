@@ -79,6 +79,10 @@ class FewShotPainLearner:
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
             "tcn_attention_pool_size": self.config.tcn_attention_pool_size,
+            "fusion_transformer_heads": self.config.fusion_transformer_heads,
+            "fusion_transformer_layers": self.config.fusion_transformer_layers,
+            "fusion_transformer_ffn_dim": self.config.fusion_transformer_ffn_dim,
+            "fusion_ib_beta": self.config.fusion_ib_beta,
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "sensor_idx": list(self.config.sensor_idx),
             "modality_names": list(self.config.modality_names),
@@ -112,6 +116,10 @@ class FewShotPainLearner:
             distance_metric=distance_metric,
             num_tcn_blocks=self.config.num_tcn_blocks,
             tcn_attention_pool_size=self.config.tcn_attention_pool_size,
+            fusion_transformer_heads=self.config.fusion_transformer_heads,
+            fusion_transformer_layers=self.config.fusion_transformer_layers,
+            fusion_transformer_ffn_dim=self.config.fusion_transformer_ffn_dim,
+            fusion_ib_beta=self.config.fusion_ib_beta,
         )
         self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 
@@ -119,7 +127,13 @@ class FewShotPainLearner:
         """Single training step on one task."""
         with tf.GradientTape() as tape:
             logits = self.model(support_x, support_y, query_x, training=True)
-            loss = self.loss_fn(query_y, logits)
+            task_loss = self.loss_fn(query_y, logits)
+            aux_loss = (
+                tf.add_n(self.model.losses)
+                if self.model.losses
+                else tf.constant(0.0, dtype=task_loss.dtype)
+            )
+            loss = task_loss + aux_loss
 
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
@@ -144,7 +158,13 @@ class FewShotPainLearner:
                 query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
 
                 logits = self.model(support_x, support_y, query_x, training=True)
-                loss = self.loss_fn(query_y, logits)
+                task_loss = self.loss_fn(query_y, logits)
+                aux_loss = (
+                    tf.add_n(self.model.losses)
+                    if self.model.losses
+                    else tf.constant(0.0, dtype=task_loss.dtype)
+                )
+                loss = task_loss + aux_loss
                 predictions = tf.argmax(logits, axis=1)
                 accuracy = tf.reduce_mean(
                     tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
@@ -162,7 +182,13 @@ class FewShotPainLearner:
     def evaluate_task(self, support_x, support_y, query_x, query_y):
         """Evaluate on one task without updating weights."""
         logits = self.model(support_x, support_y, query_x, training=False)
-        loss = self.loss_fn(query_y, logits)
+        task_loss = self.loss_fn(query_y, logits)
+        aux_loss = (
+            tf.add_n(self.model.losses)
+            if self.model.losses
+            else tf.constant(0.0, dtype=task_loss.dtype)
+        )
+        loss = task_loss + aux_loss
 
         predictions = tf.argmax(logits, axis=1)
         accuracy = tf.reduce_mean(

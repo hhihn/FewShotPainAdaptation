@@ -15,6 +15,10 @@ class PainDatasetConfig:
     num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
     embedding_dim: int = 64  # Encoder embedding dimension
     tcn_attention_pool_size: int = 8  # Downsample factor before self-attention
+    fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
+    fusion_transformer_layers: int = 2  # Number of transformer fusion layers
+    fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
+    fusion_ib_beta: float = 1e-3  # Information bottleneck KL weight
     clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
     # Sensors used
     painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
