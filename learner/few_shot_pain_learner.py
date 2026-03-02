@@ -24,6 +24,7 @@ class FewShotPainLearner:
         data_dir: str = "./dataset/np-dataset",
         learning_rate: float = 1e-3,
         fusion_method: str = "attention",
+        distance_metric: str = "cosine",
         seed: int = 42,
         deterministic_ops: bool = True,
     ):
@@ -40,6 +41,7 @@ class FewShotPainLearner:
         self.data_dir = data_dir
         self.learning_rate = learning_rate
         self.fusion_method = fusion_method
+        self.distance_metric = distance_metric
         self.seed = seed
         self.deterministic_ops = deterministic_ops
         self.embedding_dim = config.embedding_dim
@@ -64,7 +66,7 @@ class FewShotPainLearner:
         )
 
         # Initialize model
-        self._rebuild_model(distance_metric="euclidean", clear_session=False)
+        self._rebuild_model(clear_session=False)
         self.loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
         run_config = {
@@ -103,7 +105,7 @@ class FewShotPainLearner:
         self.logger.info(f"Modalities: {config.modality_names}")
         self.logger.info(f"Fusion method: {fusion_method}")
 
-    def _rebuild_model(self, distance_metric: str, clear_session: bool = True) -> None:
+    def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
         if clear_session:
             tf.keras.backend.clear_session()
@@ -117,7 +119,7 @@ class FewShotPainLearner:
             embedding_dim=self.embedding_dim,
             modality_names=self.config.modality_names,
             fusion_method=self.fusion_method,
-            distance_metric=distance_metric,
+            distance_metric=self.distance_metric,
             num_tcn_blocks=self.config.num_tcn_blocks,
             tcn_attention_pool_size=self.config.tcn_attention_pool_size,
             fusion_transformer_heads=self.config.fusion_transformer_heads,
@@ -362,7 +364,6 @@ class FewShotPainLearner:
 
             # Reset model for each fold and free memory from prior graph state.
             self._rebuild_model(
-                distance_metric="cosine",
                 clear_session=self.config.clear_session_per_fold,
             )
 

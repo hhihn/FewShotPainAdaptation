@@ -20,7 +20,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         tcn_attention_pool_size: int = 8,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "concat",
-        distance_metric: str = "euclidean",
+        distance_metric: str = "cosine",
         fusion_transformer_heads: int = 4,
         fusion_transformer_layers: int = 2,
         fusion_transformer_ffn_dim: int = 128,
@@ -130,20 +130,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
             encoder = self.modality_encoders[modality_name]
             embedding = encoder(modality_data, training=training)
             modality_embeddings.append(embedding)
-
+        fused = tf.stack(
+            modality_embeddings, axis=1
+        )  # [batch, num_modalities, embedding_dim]
         # Fuse embeddings
         if self.fusion_method == "mean":
             # Simple mean of embeddings
-            fused = tf.stack(
-                modality_embeddings, axis=1
-            )  # [batch, num_modalities, embedding_dim]
             fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
-
         else:  # self.fusion_method == "transformer_ib":
-            stacked = tf.stack(
-                modality_embeddings, axis=1
-            )  # [batch, num_modalities, embedding_dim]
-            fused = self.fusion_layer(stacked, training=training)
+            fused = self.fusion_layer(fused, training=training)
 
         return fused
 
