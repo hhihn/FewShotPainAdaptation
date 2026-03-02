@@ -205,6 +205,21 @@ class FewShotPainLearner:
 
         return loss, accuracy
 
+    def evaluate_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
+        """Evaluate a batch of tasks without updating weights."""
+        losses = []
+        accuracies = []
+        for task_dict in task_batch:
+            support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
+            support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
+            query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
+            query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
+            loss, accuracy = self.evaluate_task(support_x, support_y, query_x, query_y)
+            losses.append(loss)
+            accuracies.append(accuracy)
+
+        return tf.reduce_mean(tf.stack(losses)), tf.reduce_mean(tf.stack(accuracies))
+
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
         num_classes = self.config.num_stimuli_levels
@@ -304,10 +319,15 @@ class FewShotPainLearner:
         subject_eval_tasks: int = 20,
         train_log_every: int = 10,
         eval_log_every: int = 5,
+        val_batch_size: int = 32,
+        val_every_n_train_steps: int = 10,
     ):
         """
         Train on all subjects using leave-one-subject-out cross-validation.
         """
+        val_batch_size = max(1, int(val_batch_size))
+        val_every_n_train_steps = max(1, int(val_every_n_train_steps))
+
         cv_results = {
             "train_losses": [],
             "train_accuracies": [],
@@ -395,6 +415,8 @@ class FewShotPainLearner:
                 # Training
                 epoch_train_losses = []
                 epoch_train_accs = []
+                epoch_val_losses = []
+                epoch_val_accs = []
                 processed_tasks = 0
 
                 for task_start in range(0, tasks_per_epoch, self.train_batch_size):
@@ -432,37 +454,40 @@ class FewShotPainLearner:
                         metric_name="accuracy",
                     )
 
-                    # Validation
-                    epoch_val_losses = []
-                    epoch_val_accs = []
+                    should_run_validation = (
+                        (processed_tasks % val_every_n_train_steps == 0)
+                        or (processed_tasks == tasks_per_epoch)
+                    )
+                    if not should_run_validation:
+                        continue
 
-                    for _ in range(val_tasks):
-                        val_task_dict = val_sampler.get_task()
-
-                        val_support_x = val_task_dict["support_X"]
-                        val_support_y = val_task_dict["support_y"]
-                        val_query_x = val_task_dict["query_X"]
-                        val_query_y = val_task_dict["query_y"]
-
-                        val_loss, val_acc = self.evaluate_task(
-                            tf.constant(val_support_x, dtype=tf.float32),
-                            tf.constant(val_support_y, dtype=tf.int32),
-                            tf.constant(val_query_x, dtype=tf.float32),
-                            tf.constant(val_query_y, dtype=tf.int32),
+                    validation_losses = []
+                    validation_accs = []
+                    for val_task_start in range(0, val_tasks, val_batch_size):
+                        current_val_batch_size = min(
+                            val_batch_size, val_tasks - val_task_start
                         )
+                        val_task_batch = [
+                            val_sampler.get_task() for _ in range(current_val_batch_size)
+                        ]
+                        val_loss, val_acc = self.evaluate_batch_step(val_task_batch)
+                        validation_losses.append(float(val_loss))
+                        validation_accs.append(float(val_acc))
 
-                        epoch_val_losses.append(float(val_loss))
-                        epoch_val_accs.append(float(val_acc))
+                    mean_val_loss = float(np.mean(validation_losses))
+                    mean_val_acc = float(np.mean(validation_accs))
+                    epoch_val_losses.append(mean_val_loss)
+                    epoch_val_accs.append(mean_val_acc)
                     csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
                         event_type="validation_step",
                         epoch=epoch + 1,
                         epoch_total=num_epochs,
-                        step=epoch + 1,
-                        step_total=val_tasks,
-                        loss=float(np.mean(epoch_val_losses)),
-                        accuracy=float(np.mean(epoch_val_accs)),
+                        step=processed_tasks,
+                        step_total=tasks_per_epoch,
+                        loss=mean_val_loss,
+                        accuracy=mean_val_acc,
                     )
                     progress.log_eval_step(
                         stage="Validation",
@@ -470,15 +495,25 @@ class FewShotPainLearner:
                         total_folds=num_subjects,
                         step_idx=processed_tasks,
                         total_steps=tasks_per_epoch,
-                        loss=float(np.mean(epoch_val_losses)),
-                        metric_value=float(np.mean(epoch_val_accs)),
+                        loss=mean_val_loss,
+                        metric_value=mean_val_acc,
                         metric_name="accuracy",
+                    )
+                    self.logger.info(
+                        f"[Fold {fold + 1}/{num_subjects}] "
+                        f"[Epoch {epoch + 1}/{num_epochs}] "
+                        f"[Validation @ train_task {processed_tasks}/{tasks_per_epoch}] "
+                        f"mean_loss={mean_val_loss:.4f}, mean_accuracy={mean_val_acc:.4f}"
                     )
 
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
-                avg_val_loss = np.mean(epoch_val_losses)
-                avg_val_acc = np.mean(epoch_val_accs)
+                avg_val_loss = (
+                    float(np.mean(epoch_val_losses)) if epoch_val_losses else float("nan")
+                )
+                avg_val_acc = (
+                    float(np.mean(epoch_val_accs)) if epoch_val_accs else float("nan")
+                )
 
                 fold_results["train_losses"].append(avg_train_loss)
                 fold_results["train_accuracies"].append(avg_train_acc)
