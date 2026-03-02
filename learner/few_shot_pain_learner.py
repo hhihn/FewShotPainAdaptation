@@ -3,6 +3,8 @@ import tensorflow as tf
 from tensorflow import keras
 import json
 import gc
+import io
+import os
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -84,6 +86,8 @@ class FewShotPainLearner:
             "fusion_transformer_ffn_dim": self.config.fusion_transformer_ffn_dim,
             "fusion_ib_beta": self.config.fusion_ib_beta,
             "clear_session_per_fold": self.config.clear_session_per_fold,
+            "single_loso_fold": self.config.single_loso_fold,
+            "single_loso_test_subject": self.config.single_loso_test_subject,
             "sensor_idx": list(self.config.sensor_idx),
             "modality_names": list(self.config.modality_names),
         }
@@ -258,12 +262,38 @@ class FewShotPainLearner:
         y_pred = np.concatenate(all_pred, axis=0)
         return float(np.mean(losses)), self._compute_macro_metrics(y_true, y_pred)
 
+    def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
+        """Build model and save model architecture summaries to a text file."""
+        support_x = tf.constant(sample_task["support_X"], dtype=tf.float32)
+        support_y = tf.constant(sample_task["support_y"], dtype=tf.int32)
+        query_x = tf.constant(sample_task["query_X"], dtype=tf.float32)
+        _ = self.model(support_x, support_y, query_x, training=False)
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as fp:
+            fp.write("=== MultimodalPrototypicalNetwork Summary ===\n")
+            full_summary = io.StringIO()
+            self.model.summary(print_fn=lambda line: full_summary.write(line + "\n"))
+            fp.write(full_summary.getvalue())
+            fp.write("\n")
+
+            fp.write("=== Modality Encoder Summaries ===\n")
+            for modality_name, encoder in self.model.modality_encoders.items():
+                fp.write(f"\n--- Encoder: {modality_name} ---\n")
+                encoder_summary = io.StringIO()
+                encoder.summary(print_fn=lambda line: encoder_summary.write(line + "\n"))
+                fp.write(encoder_summary.getvalue())
+
+        return output_path
+
     def train(
         self,
         num_epochs: int = 10,
         tasks_per_epoch: int = 100,
         val_tasks: int = 20,
         training_progress_output_dir: str = "outputs/training_progress",
+        save_model_architecture_first_run: bool = True,
+        model_architecture_output_path: str = "outputs/model_architecture/model_summary.txt",
         k_shot_adaptation_steps: int = 10,
         subject_eval_tasks: int = 20,
         train_log_every: int = 10,
@@ -290,17 +320,35 @@ class FewShotPainLearner:
             "k_shot_recalls": [],
             "k_shot_f1s": [],
             "training_progress_files": [],
+            "model_architecture_file": None,
         }
 
-        num_subjects = len(self.cv.subjects)
+        if self.config.single_loso_fold:
+            if self.config.single_loso_test_subject is not None:
+                selected_subject = self.config.single_loso_test_subject
+                if selected_subject not in self.cv.subjects:
+                    raise ValueError(
+                        f"single_loso_test_subject={selected_subject} is not in available subjects."
+                    )
+                fold_subjects = [selected_subject]
+            else:
+                fold_subjects = [self.cv.subjects[0]]
+            self.logger.info(
+                f"single_loso_fold=True: running only one fold with held-out subject={fold_subjects[0]}"
+            )
+        else:
+            fold_subjects = self.cv.subjects
+
+        num_subjects = len(fold_subjects)
         progress = TrainingProgressReporter(
             logger=self.logger,
             train_log_every=train_log_every,
             eval_log_every=eval_log_every,
         )
         csv_writer = TrainingProgressCSVWriter(output_dir=training_progress_output_dir)
+        architecture_saved = False
 
-        for fold, test_subject in enumerate(self.cv.subjects):
+        for fold, test_subject in enumerate(fold_subjects):
             progress.log_fold_start(
                 fold_idx=fold + 1, total_folds=num_subjects, test_subject=test_subject
             )
@@ -320,6 +368,16 @@ class FewShotPainLearner:
             train_sampler = fold_dict["train_sampler"]
             val_sampler = fold_dict["val_sampler"]
             test_sampler = fold_dict["test_sampler"]
+
+            if save_model_architecture_first_run and not architecture_saved:
+                sample_task = train_sampler.get_task()
+                architecture_path = self._save_model_architecture(
+                    sample_task=sample_task,
+                    output_path=model_architecture_output_path,
+                )
+                cv_results["model_architecture_file"] = architecture_path
+                architecture_saved = True
+                self.logger.info(f"Saved model architecture to {architecture_path}")
 
             fold_results = {
                 "train_losses": [],

@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 from dataclasses import dataclass
 
 
@@ -20,6 +20,8 @@ class PainDatasetConfig:
     fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
     fusion_ib_beta: float = 1e-3  # Information bottleneck KL weight
     clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
+    single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
+    single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
     # Sensors used
     painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
     # Modality information
