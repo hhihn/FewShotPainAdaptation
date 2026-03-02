@@ -133,9 +133,7 @@ class ContractTests(unittest.TestCase):
             )
             self.assertIn("subject", task)
 
-            support_counts = np.bincount(
-                task["support_y"], minlength=self.config.n_way
-            )
+            support_counts = np.bincount(task["support_y"], minlength=self.config.n_way)
             query_counts = np.bincount(task["query_y"], minlength=self.config.n_way)
             self.assertTrue(np.all(support_counts == self.config.k_shot))
             self.assertTrue(np.all(query_counts == self.config.q_query))

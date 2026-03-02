@@ -171,7 +171,9 @@ class FewShotPainLearner:
                 loss = task_loss + aux_loss
                 predictions = tf.argmax(logits, axis=1)
                 accuracy = tf.reduce_mean(
-                    tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
+                    tf.cast(
+                        tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32
+                    )
                 )
                 losses.append(loss)
                 accuracies.append(accuracy)
@@ -281,7 +283,9 @@ class FewShotPainLearner:
             for modality_name, encoder in self.model.modality_encoders.items():
                 fp.write(f"\n--- Encoder: {modality_name} ---\n")
                 encoder_summary = io.StringIO()
-                encoder.summary(print_fn=lambda line: encoder_summary.write(line + "\n"))
+                encoder.summary(
+                    print_fn=lambda line: encoder_summary.write(line + "\n")
+                )
                 fp.write(encoder_summary.getvalue())
 
         return output_path

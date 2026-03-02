@@ -69,9 +69,13 @@ class TransformerInformationBottleneckFusion(keras.layers.Layer):
 
         for i in range(self.num_layers):
             attn_out = self.attn_layers[i](x, x, training=training)
-            x = self.norm1_layers[i](x + self.dropout_layers[i](attn_out, training=training))
+            x = self.norm1_layers[i](
+                x + self.dropout_layers[i](attn_out, training=training)
+            )
             ffn_out = self.ffn_layers[i](x, training=training)
-            x = self.norm2_layers[i](x + self.dropout_layers[i](ffn_out, training=training))
+            x = self.norm2_layers[i](
+                x + self.dropout_layers[i](ffn_out, training=training)
+            )
 
         pooled = tf.reduce_mean(x, axis=1)
         mu = self.mu_head(pooled)
@@ -89,4 +93,3 @@ class TransformerInformationBottleneckFusion(keras.layers.Layer):
         self.add_loss(self.ib_beta * kl_mean)
 
         return self.output_norm(z)
-

@@ -78,7 +78,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 ffn_dim=fusion_transformer_ffn_dim,
                 ib_beta=fusion_ib_beta,
             )
-            self.logger.debug(f"Build Fusion Model:")
+            self.logger.debug("Build Fusion Model:")
             self.logger.debug(self.fusion_layer)
         else:
             raise ValueError(f"Unknown fusion method: {fusion_method}")
@@ -139,7 +139,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             )  # [batch, num_modalities, embedding_dim]
             fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
 
-        else:# self.fusion_method == "transformer_ib":
+        else:  # self.fusion_method == "transformer_ib":
             stacked = tf.stack(
                 modality_embeddings, axis=1
             )  # [batch, num_modalities, embedding_dim]

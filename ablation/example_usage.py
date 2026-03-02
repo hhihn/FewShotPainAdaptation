@@ -48,9 +48,7 @@ def example_usage():
     logger.debug(
         f"Support y distribution: {np.bincount(task['support_y'], minlength=6)}"
     )
-    logger.debug(
-        f"Query y distribution: {np.bincount(task['query_y'], minlength=6)}"
-    )
+    logger.debug(f"Query y distribution: {np.bincount(task['query_y'], minlength=6)}")
 
     # Test LOSO cross-validation
     logger.debug("-" * 40)
