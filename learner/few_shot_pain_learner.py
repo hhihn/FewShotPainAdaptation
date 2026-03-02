@@ -432,48 +432,48 @@ class FewShotPainLearner:
                         metric_name="accuracy",
                     )
 
-                # Validation
-                epoch_val_losses = []
-                epoch_val_accs = []
+                    # Validation
+                    epoch_val_losses = []
+                    epoch_val_accs = []
 
-                for _ in range(val_tasks):
-                    val_task_dict = val_sampler.get_task()
+                    for _ in range(val_tasks):
+                        val_task_dict = val_sampler.get_task()
 
-                    val_support_x = val_task_dict["support_X"]
-                    val_support_y = val_task_dict["support_y"]
-                    val_query_x = val_task_dict["query_X"]
-                    val_query_y = val_task_dict["query_y"]
+                        val_support_x = val_task_dict["support_X"]
+                        val_support_y = val_task_dict["support_y"]
+                        val_query_x = val_task_dict["query_X"]
+                        val_query_y = val_task_dict["query_y"]
 
-                    val_loss, val_acc = self.evaluate_task(
-                        tf.constant(val_support_x, dtype=tf.float32),
-                        tf.constant(val_support_y, dtype=tf.int32),
-                        tf.constant(val_query_x, dtype=tf.float32),
-                        tf.constant(val_query_y, dtype=tf.int32),
-                    )
+                        val_loss, val_acc = self.evaluate_task(
+                            tf.constant(val_support_x, dtype=tf.float32),
+                            tf.constant(val_support_y, dtype=tf.int32),
+                            tf.constant(val_query_x, dtype=tf.float32),
+                            tf.constant(val_query_y, dtype=tf.int32),
+                        )
 
-                    epoch_val_losses.append(float(val_loss))
-                    epoch_val_accs.append(float(val_acc))
-                    csv_writer.write_event(
-                        fold_idx=fold + 1,
-                        test_subject=test_subject,
-                        event_type="validation_step",
-                        epoch=epoch + 1,
-                        epoch_total=num_epochs,
-                        step=len(epoch_val_losses),
-                        step_total=val_tasks,
-                        loss=float(val_loss),
-                        accuracy=float(val_acc),
-                    )
-                    progress.log_eval_step(
-                        stage="Validation",
-                        fold_idx=fold + 1,
-                        total_folds=num_subjects,
-                        step_idx=len(epoch_val_losses),
-                        total_steps=val_tasks,
-                        loss=float(val_loss),
-                        metric_value=float(val_acc),
-                        metric_name="accuracy",
-                    )
+                        epoch_val_losses.append(float(val_loss))
+                        epoch_val_accs.append(float(val_acc))
+                        csv_writer.write_event(
+                            fold_idx=fold + 1,
+                            test_subject=test_subject,
+                            event_type="validation_step",
+                            epoch=epoch + 1,
+                            epoch_total=num_epochs,
+                            step=len(epoch_val_losses),
+                            step_total=val_tasks,
+                            loss=float(val_loss),
+                            accuracy=float(val_acc),
+                        )
+                        progress.log_eval_step(
+                            stage="Validation",
+                            fold_idx=fold + 1,
+                            total_folds=num_subjects,
+                            step_idx=len(epoch_val_losses),
+                            total_steps=val_tasks,
+                            loss=float(val_loss),
+                            metric_value=float(val_acc),
+                            metric_name="accuracy",
+                        )
 
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
