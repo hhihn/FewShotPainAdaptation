@@ -374,22 +374,22 @@ class FewShotPainLearner:
                 epoch_val_accs = []
 
                 for _ in range(val_tasks):
-                    task_dict = val_sampler.get_task()
+                    val_task_dict = val_sampler.get_task()
 
-                    support_x = task_dict["support_X"]
-                    support_y = task_dict["support_y"]
-                    query_x = task_dict["query_X"]
-                    query_y = task_dict["query_y"]
+                    val_support_x = val_task_dict["support_X"]
+                    val_support_y = val_task_dict["support_y"]
+                    val_query_x = val_task_dict["query_X"]
+                    val_query_y = val_task_dict["query_y"]
 
-                    loss, acc = self.evaluate_task(
-                        tf.constant(support_x, dtype=tf.float32),
-                        tf.constant(support_y, dtype=tf.int32),
-                        tf.constant(query_x, dtype=tf.float32),
-                        tf.constant(query_y, dtype=tf.int32),
+                    val_loss, val_acc = self.evaluate_task(
+                        tf.constant(val_support_x, dtype=tf.float32),
+                        tf.constant(val_support_y, dtype=tf.int32),
+                        tf.constant(val_query_x, dtype=tf.float32),
+                        tf.constant(val_query_y, dtype=tf.int32),
                     )
 
-                    epoch_val_losses.append(float(loss))
-                    epoch_val_accs.append(float(acc))
+                    epoch_val_losses.append(float(val_loss))
+                    epoch_val_accs.append(float(val_acc))
                     csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
@@ -398,8 +398,8 @@ class FewShotPainLearner:
                         epoch_total=num_epochs,
                         step=len(epoch_val_losses),
                         step_total=val_tasks,
-                        loss=float(loss),
-                        accuracy=float(acc),
+                        loss=float(val_loss),
+                        accuracy=float(val_acc),
                     )
                     progress.log_eval_step(
                         stage="Validation",
@@ -407,8 +407,8 @@ class FewShotPainLearner:
                         total_folds=num_subjects,
                         step_idx=len(epoch_val_losses),
                         total_steps=val_tasks,
-                        loss=float(loss),
-                        metric_value=float(acc),
+                        loss=float(val_loss),
+                        metric_value=float(val_acc),
                         metric_name="accuracy",
                     )
 

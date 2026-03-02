@@ -78,6 +78,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 ffn_dim=fusion_transformer_ffn_dim,
                 ib_beta=fusion_ib_beta,
             )
+            self.logger.debug(f"Build Fusion Model:")
+            self.logger.debug(self.fusion_layer)
         else:
             raise ValueError(f"Unknown fusion method: {fusion_method}")
 
