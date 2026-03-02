@@ -453,27 +453,27 @@ class FewShotPainLearner:
 
                         epoch_val_losses.append(float(val_loss))
                         epoch_val_accs.append(float(val_acc))
-                        csv_writer.write_event(
-                            fold_idx=fold + 1,
-                            test_subject=test_subject,
-                            event_type="validation_step",
-                            epoch=epoch + 1,
-                            epoch_total=num_epochs,
-                            step=len(epoch_val_losses),
-                            step_total=val_tasks,
-                            loss=float(val_loss),
-                            accuracy=float(val_acc),
-                        )
-                        progress.log_eval_step(
-                            stage="Validation",
-                            fold_idx=fold + 1,
-                            total_folds=num_subjects,
-                            step_idx=len(epoch_val_losses),
-                            total_steps=val_tasks,
-                            loss=float(val_loss),
-                            metric_value=float(val_acc),
-                            metric_name="accuracy",
-                        )
+                    csv_writer.write_event(
+                        fold_idx=fold + 1,
+                        test_subject=test_subject,
+                        event_type="validation_step",
+                        epoch=epoch + 1,
+                        epoch_total=num_epochs,
+                        step=epoch + 1,
+                        step_total=val_tasks,
+                        loss=float(np.mean(epoch_val_losses)),
+                        accuracy=float(np.mean(epoch_val_accs)),
+                    )
+                    progress.log_eval_step(
+                        stage="Validation",
+                        fold_idx=fold + 1,
+                        total_folds=num_subjects,
+                        step_idx=epoch + 1,
+                        total_steps=val_tasks,
+                        loss=float(np.mean(epoch_val_losses)),
+                        metric_value=float(np.mean(epoch_val_accs)),
+                        metric_name="accuracy",
+                    )
 
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
