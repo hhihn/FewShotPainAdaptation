@@ -1,4 +1,19 @@
 import logging
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass(frozen=True)
+class _ProgressScope:
+    """Common scope fields reused across progress logs."""
+
+    fold_idx: int
+    total_folds: int
+    epoch_idx: Optional[int] = None
+    total_epochs: Optional[int] = None
+    step_idx: Optional[int] = None
+    total_steps: Optional[int] = None
+    step_label: Optional[str] = None
 
 
 class TrainingProgressReporter:
@@ -24,12 +39,47 @@ class TrainingProgressReporter:
     def _should_log(current: int, total: int, interval: int) -> bool:
         return current == 1 or current % interval == 0 or current == total
 
+    def _compose_scope_prefix(self, scope: _ProgressScope) -> str:
+        parts = [
+            (
+                f"[Fold {scope.fold_idx}/{scope.total_folds} | "
+                f"{self._pct(scope.fold_idx, scope.total_folds):.1f}%]"
+            )
+        ]
+        if scope.epoch_idx is not None and scope.total_epochs is not None:
+            parts.append(
+                f"[Epoch {scope.epoch_idx}/{scope.total_epochs} | "
+                f"{self._pct(scope.epoch_idx, scope.total_epochs):.1f}%]"
+            )
+        if (
+            scope.step_idx is not None
+            and scope.total_steps is not None
+            and scope.step_label is not None
+        ):
+            parts.append(
+                f"[{scope.step_label} {scope.step_idx}/{scope.total_steps} | "
+                f"{self._pct(scope.step_idx, scope.total_steps):.1f}%]"
+            )
+        return " ".join(parts)
+
+    def _log_metric_line(
+        self,
+        scope: _ProgressScope,
+        loss: float,
+        metric_value: float,
+        metric_name: str,
+    ) -> None:
+        self.logger.info(
+            f"{self._compose_scope_prefix(scope)} "
+            f"loss={loss:.4f}, {metric_name}={metric_value:.4f}"
+        )
+
     def log_fold_start(
         self, fold_idx: int, total_folds: int, test_subject: int
     ) -> None:
-        fold_pct = self._pct(fold_idx, total_folds)
+        scope = _ProgressScope(fold_idx=fold_idx, total_folds=total_folds)
         self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] Start - held-out subject={test_subject}"
+            f"{self._compose_scope_prefix(scope)} Start - held-out subject={test_subject}"
         )
 
     def log_fold_complete(
@@ -40,38 +90,14 @@ class TrainingProgressReporter:
         test_loss: float,
         test_accuracy: float,
     ) -> None:
-        fold_pct = self._pct(fold_idx, total_folds)
+        scope = _ProgressScope(fold_idx=fold_idx, total_folds=total_folds)
         self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
+            f"{self._compose_scope_prefix(scope)} "
             f"Complete - held-out subject={test_subject}, "
             f"test_loss={test_loss:.4f}, test_accuracy={test_accuracy:.4f}"
         )
 
-    def log_train_step(
-        self,
-        fold_idx: int,
-        total_folds: int,
-        epoch_idx: int,
-        total_epochs: int,
-        task_idx: int,
-        total_tasks: int,
-        loss: float,
-        metric_value: float,
-        metric_name: str = "accuracy",
-    ) -> None:
-        if not self._should_log(task_idx, total_tasks, self.train_log_every):
-            return
-        fold_pct = self._pct(fold_idx, total_folds)
-        epoch_pct = self._pct(epoch_idx, total_epochs)
-        task_pct = self._pct(task_idx, total_tasks)
-        self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
-            f"[Epoch {epoch_idx}/{total_epochs} | {epoch_pct:.1f}%] "
-            f"[Train task {task_idx}/{total_tasks} | {task_pct:.1f}%] "
-            f"loss={loss:.4f}, {metric_name}={metric_value:.4f}"
-        )
-
-    def log_eval_step(
+    def log_step(
         self,
         stage: str,
         fold_idx: int,
@@ -81,15 +107,27 @@ class TrainingProgressReporter:
         loss: float,
         metric_value: float,
         metric_name: str = "accuracy",
+        epoch_idx: Optional[int] = None,
+        total_epochs: Optional[int] = None,
+        log_every: Optional[int] = None,
     ) -> None:
-        if not self._should_log(step_idx, total_steps, self.eval_log_every):
+        interval = self.eval_log_every if log_every is None else max(1, int(log_every))
+        if not self._should_log(step_idx, total_steps, interval):
             return
-        fold_pct = self._pct(fold_idx, total_folds)
-        step_pct = self._pct(step_idx, total_steps)
-        self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
-            f"[{stage} {step_idx}/{total_steps} | {step_pct:.1f}%] "
-            f"loss={loss:.4f}, {metric_name}={metric_value:.4f}"
+        scope = _ProgressScope(
+            fold_idx=fold_idx,
+            total_folds=total_folds,
+            epoch_idx=epoch_idx,
+            total_epochs=total_epochs,
+            step_idx=step_idx,
+            total_steps=total_steps,
+            step_label=stage,
+        )
+        self._log_metric_line(
+            scope=scope,
+            loss=loss,
+            metric_value=metric_value,
+            metric_name=metric_name,
         )
 
     def log_adaptation_start(
@@ -99,9 +137,9 @@ class TrainingProgressReporter:
         test_subject: int,
         adaptation_steps: int,
     ) -> None:
-        fold_pct = self._pct(fold_idx, total_folds)
+        scope = _ProgressScope(fold_idx=fold_idx, total_folds=total_folds)
         self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
+            f"{self._compose_scope_prefix(scope)} "
             f"Adapting on held-out subject={test_subject} for {adaptation_steps} gradient steps"
         )
 
@@ -114,9 +152,9 @@ class TrainingProgressReporter:
         loss: float,
         metrics: dict,
     ) -> None:
-        fold_pct = self._pct(fold_idx, total_folds)
+        scope = _ProgressScope(fold_idx=fold_idx, total_folds=total_folds)
         self.logger.info(
-            f"[Fold {fold_idx}/{total_folds} | {fold_pct:.1f}%] "
+            f"{self._compose_scope_prefix(scope)} "
             f"[{stage} subject={test_subject}] "
             f"loss={loss:.4f}, "
             f"accuracy={metrics['accuracy']:.4f}, "

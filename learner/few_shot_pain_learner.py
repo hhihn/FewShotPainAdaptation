@@ -442,16 +442,18 @@ class FewShotPainLearner:
                         loss=float(loss),
                         accuracy=float(acc),
                     )
-                    progress.log_train_step(
+                    progress.log_step(
+                        stage="Train task",
                         fold_idx=fold + 1,
                         total_folds=num_subjects,
                         epoch_idx=epoch + 1,
                         total_epochs=num_epochs,
-                        task_idx=processed_tasks,
-                        total_tasks=tasks_per_epoch,
+                        step_idx=processed_tasks,
+                        total_steps=tasks_per_epoch,
                         loss=float(loss),
                         metric_value=float(acc),
                         metric_name="accuracy",
+                        log_every=train_log_every,
                     )
 
                     should_run_validation = (
@@ -489,7 +491,7 @@ class FewShotPainLearner:
                         loss=mean_val_loss,
                         accuracy=mean_val_acc,
                     )
-                    progress.log_eval_step(
+                    progress.log_step(
                         stage="Validation",
                         fold_idx=fold + 1,
                         total_folds=num_subjects,
@@ -498,6 +500,7 @@ class FewShotPainLearner:
                         loss=mean_val_loss,
                         metric_value=mean_val_acc,
                         metric_name="accuracy",
+                        log_every=eval_log_every,
                     )
                     self.logger.info(
                         f"[Fold {fold + 1}/{num_subjects}] "
