@@ -73,9 +73,6 @@ class LOSOCrossValidator:
             mode="train",
             train_subjects=train_subjects_final,
             test_subject=test_subject,
-            k_shot=self.k_shot,
-            q_query=self.q_query,
-            tasks_per_epoch=self.tasks_per_epoch,
             seed=fold_seed,
         )
 
@@ -84,9 +81,6 @@ class LOSOCrossValidator:
             mode="val",
             train_subjects=val_subjects,
             test_subject=test_subject,
-            k_shot=self.k_shot,
-            q_query=self.q_query,
-            tasks_per_epoch=self.config.val_tasks,
             seed=val_seed,
         )
 
@@ -95,9 +89,6 @@ class LOSOCrossValidator:
             mode="test",
             train_subjects=train_subjects,
             test_subject=test_subject,
-            k_shot=self.k_shot,
-            q_query=self.q_query,
-            tasks_per_epoch=self.config.subject_eval_tasks,
             seed=test_seed,
         )
 

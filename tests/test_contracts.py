@@ -143,8 +143,6 @@ class ContractTests(unittest.TestCase):
             data_dir=str(self.data_dir),
             learning_rate=1e-3,
             fusion_method="mean",
-            seed=self.config.seed,
-            deterministic_ops=self.config.deterministic_ops,
         )
 
         results = learner.train()

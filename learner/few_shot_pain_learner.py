@@ -25,8 +25,6 @@ class FewShotPainLearner:
         learning_rate: float = 1e-3,
         fusion_method: str = "attention",
         distance_metric: str = "cosine",
-        seed: int = 42,
-        deterministic_ops: bool = True,
     ):
         """
         Args:
@@ -34,16 +32,14 @@ class FewShotPainLearner:
             data_dir: Directory containing numpy files
             learning_rate: Outer loop learning rate
             fusion_method: 'concat', 'mean', or 'attention'
-            seed: Global random seed for reproducibility
-            deterministic_ops: Enforce deterministic TensorFlow ops where possible
         """
         self.config = config
         self.data_dir = data_dir
         self.learning_rate = learning_rate
         self.fusion_method = fusion_method
         self.distance_metric = distance_metric
-        self.seed = seed
-        self.deterministic_ops = deterministic_ops
+        self.seed = int(config.seed)
+        self.deterministic_ops = bool(config.deterministic_ops)
         self.embedding_dim = config.embedding_dim
         self.train_batch_size = max(1, int(config.train_batch_size))
         self.logger = setup_logger("few_shot_pain_learner")

@@ -30,9 +30,6 @@ class SixWayKShotSampler:
         mode: str = "train",
         train_subjects: Optional[List[int]] = None,
         test_subject: Optional[int] = None,
-        k_shot: int = 5,
-        q_query: int = 5,
-        tasks_per_epoch: int = 100,
         seed: Optional[int] = None,
     ):
         """
@@ -43,17 +40,14 @@ class SixWayKShotSampler:
             mode: 'train', 'val', or 'test'
             train_subjects: List of training subject IDs
             test_subject: Held-out test subject ID
-            k_shot: Number of support samples per class
-            q_query: Number of query samples per class
-            tasks_per_epoch: Number of tasks per epoch
             seed: Random seed
         """
         self.logger = setup_logger(__name__)
         self.dataset = dataset
         self.mode = mode
-        self.k_shot = k_shot
-        self.q_query = q_query
-        self.tasks_per_epoch = tasks_per_epoch
+        self.config = dataset.config
+        self.k_shot = self.config.k_shot
+        self.q_query = self.config.q_query
         self.seed = seed
         self.rng = np.random.default_rng(self.seed)
 
@@ -66,13 +60,15 @@ class SixWayKShotSampler:
 
         if mode == "train":
             self.active_subjects = train_subjects
+            self.tasks_per_epoch = self.config.tasks_per_epoch
         elif mode == "val":
             # Use a subset of training subjects for validation
             self.active_subjects = train_subjects[-5:]  # Last 5 subjects
+            self.tasks_per_epoch = self.config.val_tasks
         else:  # test
             self.active_subjects = [test_subject]
+            self.tasks_per_epoch = self.config.subject_eval_tasks
 
-        self.config = dataset.config
         self.n_way = self.config.n_way
 
         # Precompute shapes
@@ -107,7 +103,7 @@ class SixWayKShotSampler:
                 ):
                     pooled_indices.extend(self.dataset.index[subject][class_id])
 
-            if len(pooled_indices) < self.config.k_shot + self.config.q_query:
+            if len(pooled_indices) < self.k_shot + self.q_query:
                 self.logger.warning(
                     f"Class {class_id} has only {len(pooled_indices)} samples across "
                     f"all {len(self.active_subjects)} training subjects"
@@ -116,12 +112,12 @@ class SixWayKShotSampler:
             # Randomly sample K + Q samples from the pooled indices
             sampled_indices = self.rng.choice(
                 pooled_indices,
-                size=min(self.config.k_shot + self.config.q_query, len(pooled_indices)),
+                size=min(self.k_shot + self.q_query, len(pooled_indices)),
                 replace=False,
             )
 
-            support_indices = sampled_indices[: self.config.k_shot]
-            query_indices = sampled_indices[self.config.k_shot :]
+            support_indices = sampled_indices[: self.k_shot]
+            query_indices = sampled_indices[self.k_shot :]
 
             # Load support samples
             for idx in support_indices:
