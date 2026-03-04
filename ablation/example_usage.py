@@ -57,9 +57,6 @@ def example_usage():
 
     cv = LOSOCrossValidator(
         dataset=dataset,
-        k_shot=config.k_shot,
-        q_query=config.q_query,
-        tasks_per_epoch=10,
     )
 
     logger.debug(f"Number of folds: {len(cv)}")

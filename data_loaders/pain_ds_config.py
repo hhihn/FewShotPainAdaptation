@@ -38,6 +38,15 @@ class PainDatasetConfig:
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
     train_batch_size: int = 2  # Number of tasks per optimizer update
+    num_epochs: int = 10  # Number of epochs per fold
+    tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
+    val_tasks: int = 20  # Number of validation tasks per validation run
+    subject_eval_tasks: int = 20  # Number of held-out subject eval tasks
+    k_shot_adaptation_steps: int = 10  # Inner-loop adaptation steps on held-out subject
+    train_log_every: int = 10  # Log train metrics every N sampled train tasks
+    eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
+    val_batch_size: int = 32  # Validation task batch size
+    val_every_n_train_steps: int = 10  # Run validation every N sampled train tasks
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
 

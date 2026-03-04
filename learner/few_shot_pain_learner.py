@@ -60,8 +60,6 @@ class FewShotPainLearner:
 
         self.cv = LOSOCrossValidator(
             dataset=self.dataset,
-            k_shot=config.k_shot,
-            q_query=config.q_query,
             seed=self.seed,
         )
 
@@ -80,6 +78,15 @@ class FewShotPainLearner:
             "k_shot": self.config.k_shot,
             "q_query": self.config.q_query,
             "train_batch_size": self.train_batch_size,
+            "num_epochs": self.config.num_epochs,
+            "tasks_per_epoch": self.config.tasks_per_epoch,
+            "val_tasks": self.config.val_tasks,
+            "subject_eval_tasks": self.config.subject_eval_tasks,
+            "k_shot_adaptation_steps": self.config.k_shot_adaptation_steps,
+            "train_log_every": self.config.train_log_every,
+            "eval_log_every": self.config.eval_log_every,
+            "val_batch_size": self.config.val_batch_size,
+            "val_every_n_train_steps": self.config.val_every_n_train_steps,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
             "tcn_attention_pool_size": self.config.tcn_attention_pool_size,
@@ -309,24 +316,22 @@ class FewShotPainLearner:
 
     def train(
         self,
-        num_epochs: int = 10,
-        tasks_per_epoch: int = 100,
-        val_tasks: int = 20,
         training_progress_output_dir: str = "outputs/training_progress",
         save_model_architecture_first_run: bool = True,
         model_architecture_output_path: str = "outputs/model_architecture/model_summary.txt",
-        k_shot_adaptation_steps: int = 10,
-        subject_eval_tasks: int = 20,
-        train_log_every: int = 10,
-        eval_log_every: int = 5,
-        val_batch_size: int = 32,
-        val_every_n_train_steps: int = 10,
     ):
         """
         Train on all subjects using leave-one-subject-out cross-validation.
         """
-        val_batch_size = max(1, int(val_batch_size))
-        val_every_n_train_steps = max(1, int(val_every_n_train_steps))
+        num_epochs = max(1, int(self.config.num_epochs))
+        tasks_per_epoch = max(1, int(self.config.tasks_per_epoch))
+        val_tasks = max(1, int(self.config.val_tasks))
+        subject_eval_tasks = max(1, int(self.config.subject_eval_tasks))
+        k_shot_adaptation_steps = max(1, int(self.config.k_shot_adaptation_steps))
+        train_log_every = max(1, int(self.config.train_log_every))
+        eval_log_every = max(1, int(self.config.eval_log_every))
+        val_batch_size = max(1, int(self.config.val_batch_size))
+        val_every_n_train_steps = max(1, int(self.config.val_every_n_train_steps))
 
         cv_results = {
             "train_losses": [],

@@ -17,9 +17,6 @@ class LOSOCrossValidator:
     def __init__(
         self,
         dataset: PainMetaDataset,
-        k_shot: int = 5,
-        q_query: int = 5,
-        tasks_per_epoch: int = 100,
         seed: Optional[int] = None,
     ):
         """
@@ -27,15 +24,13 @@ class LOSOCrossValidator:
 
         Args:
             dataset: PainMetaDataset instance
-            k_shot: Support set size per class
-            q_query: Query set size per class
-            tasks_per_epoch: Tasks per training epoch
             seed: Random seed
         """
         self.dataset = dataset
-        self.k_shot = k_shot
-        self.q_query = q_query
-        self.tasks_per_epoch = tasks_per_epoch
+        self.config = dataset.config
+        self.k_shot = self.config.k_shot
+        self.q_query = self.config.q_query
+        self.tasks_per_epoch = self.config.tasks_per_epoch
         self.seed = seed
         self.subjects = list(dataset.unique_subjects)
 
@@ -91,7 +86,7 @@ class LOSOCrossValidator:
             test_subject=test_subject,
             k_shot=self.k_shot,
             q_query=self.q_query,
-            tasks_per_epoch=self.tasks_per_epoch // 5,
+            tasks_per_epoch=self.config.val_tasks,
             seed=val_seed,
         )
 
@@ -102,7 +97,7 @@ class LOSOCrossValidator:
             test_subject=test_subject,
             k_shot=self.k_shot,
             q_query=self.q_query,
-            tasks_per_epoch=20,  # Fewer tasks for testing
+            tasks_per_epoch=self.config.subject_eval_tasks,
             seed=test_seed,
         )
 

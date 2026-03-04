@@ -8,7 +8,11 @@ logger = setup_logger("FewShotPainLearner")
 
 def main():
     """Example usage of the few-shot pain learner."""
-    config = PainDatasetConfig()
+    config = PainDatasetConfig(
+        num_epochs=100,
+        tasks_per_epoch=50,
+        val_tasks=10,
+    )
     print(tf.config.list_physical_devices())
     print("Num GPUs Available: ", len(tf.config.list_physical_devices("MPS")))
 
@@ -31,7 +35,7 @@ def main():
             deterministic_ops=config.deterministic_ops,
         )
 
-        cv_results = learner.train(num_epochs=100, tasks_per_epoch=50, val_tasks=10)
+        cv_results = learner.train()
         logger.info(cv_results)
         logger.info(f"Training with {fusion_method} complete!")
 

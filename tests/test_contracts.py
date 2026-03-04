@@ -57,6 +57,11 @@ class ContractTests(unittest.TestCase):
             num_stimuli_levels=6,
             k_shot=1,
             q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            subject_eval_tasks=1,
+            single_loso_fold=False,
             seed=7,
             deterministic_ops=True,
         )
@@ -68,9 +73,6 @@ class ContractTests(unittest.TestCase):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)
         cv = LOSOCrossValidator(
             dataset=dataset,
-            k_shot=self.config.k_shot,
-            q_query=self.config.q_query,
-            tasks_per_epoch=2,
             seed=self.config.seed,
         )
 
@@ -94,9 +96,6 @@ class ContractTests(unittest.TestCase):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)
         cv = LOSOCrossValidator(
             dataset=dataset,
-            k_shot=self.config.k_shot,
-            q_query=self.config.q_query,
-            tasks_per_epoch=2,
             seed=self.config.seed,
         )
 
@@ -148,7 +147,7 @@ class ContractTests(unittest.TestCase):
             deterministic_ops=self.config.deterministic_ops,
         )
 
-        results = learner.train(num_epochs=1, tasks_per_epoch=1, val_tasks=1)
+        results = learner.train()
 
         required_keys = {
             "train_losses",
