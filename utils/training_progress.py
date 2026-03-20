@@ -68,11 +68,17 @@ class TrainingProgressReporter:
         loss: float,
         metric_value: float,
         metric_name: str,
+        extra_metrics: Optional[dict[str, float]] = None,
     ) -> None:
-        self.logger.info(
+        message = (
             f"{self._compose_scope_prefix(scope)} "
             f"loss={loss:.4f}, {metric_name}={metric_value:.4f}"
         )
+        if extra_metrics:
+            message += "".join(
+                f", {name}={value:.4f}" for name, value in extra_metrics.items()
+            )
+        self.logger.info(message)
 
     def log_fold_start(
         self, fold_idx: int, total_folds: int, test_subject: int
@@ -107,6 +113,7 @@ class TrainingProgressReporter:
         loss: float,
         metric_value: float,
         metric_name: str = "accuracy",
+        extra_metrics: Optional[dict[str, float]] = None,
         epoch_idx: Optional[int] = None,
         total_epochs: Optional[int] = None,
         log_every: Optional[int] = None,
@@ -128,6 +135,7 @@ class TrainingProgressReporter:
             loss=loss,
             metric_value=metric_value,
             metric_name=metric_name,
+            extra_metrics=extra_metrics,
         )
 
     def log_adaptation_start(

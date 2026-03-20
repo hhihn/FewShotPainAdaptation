@@ -210,18 +210,14 @@ class FewShotPainLearner:
 
     def evaluate_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
         """Evaluate a batch of tasks without updating weights."""
-        losses = []
-        accuracies = []
-        for task_dict in task_batch:
-            support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
-            support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
-            query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
-            query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
-            loss, accuracy = self.evaluate_task(support_x, support_y, query_x, query_y)
-            losses.append(loss)
-            accuracies.append(accuracy)
-
-        return tf.reduce_mean(tf.stack(losses)), tf.reduce_mean(tf.stack(accuracies))
+        batch_loss, metrics = self._evaluate_task_batch_loss_and_metrics(
+            task_batch,
+            include_aux_loss=True,
+        )
+        return (
+            tf.constant(batch_loss, dtype=tf.float32),
+            tf.constant(metrics["accuracy"], dtype=tf.float32),
+        )
 
     @staticmethod
     def _split_similarity_scores(
@@ -246,6 +242,64 @@ class FewShotPainLearner:
             "intra_class_similarity": float(np.mean(intra_class_scores)),
             "inter_class_similarity": float(np.mean(inter_class_scores)),
         }
+
+    def _evaluate_task_batch_loss_and_metrics(
+        self,
+        task_batch: list[dict],
+        include_aux_loss: bool = False,
+    ) -> tuple[float, dict]:
+        """Evaluate a task batch and aggregate classification/similarity metrics."""
+        losses = []
+        all_true = []
+        all_pred = []
+        all_intra_class_scores = []
+        all_inter_class_scores = []
+
+        for task_dict in task_batch:
+            support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
+            support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
+            query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
+            query_y_np = task_dict["query_y"].astype(np.int32)
+            query_y = tf.constant(query_y_np, dtype=tf.int32)
+
+            logits, similarity_scores = self.model(
+                support_x,
+                support_y,
+                query_x,
+                training=False,
+                return_similarity_scores=True,
+            )
+            task_loss = self.loss_fn(query_y, logits)
+            if include_aux_loss:
+                aux_loss = (
+                    tf.add_n(self.model.losses)
+                    if self.model.losses
+                    else tf.constant(0.0, dtype=task_loss.dtype)
+                )
+                loss = task_loss + aux_loss
+            else:
+                loss = task_loss
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
+            intra_class_scores, inter_class_scores = self._split_similarity_scores(
+                similarity_scores.numpy(), query_y_np
+            )
+
+            losses.append(float(loss))
+            all_true.append(query_y_np)
+            all_pred.append(pred)
+            all_intra_class_scores.append(intra_class_scores)
+            all_inter_class_scores.append(inter_class_scores)
+
+        y_true = np.concatenate(all_true, axis=0)
+        y_pred = np.concatenate(all_pred, axis=0)
+        metrics = self._compute_macro_metrics(y_true, y_pred)
+        metrics.update(
+            self._compute_similarity_metrics(
+                np.concatenate(all_intra_class_scores, axis=0),
+                np.concatenate(all_inter_class_scores, axis=0),
+            )
+        )
+        return float(np.mean(losses)), metrics
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
@@ -284,49 +338,10 @@ class FewShotPainLearner:
         self, sampler, num_tasks: int
     ) -> tuple[float, dict]:
         """Evaluate average loss plus classification/similarity metrics on tasks."""
-        losses = []
-        all_true = []
-        all_pred = []
-        all_intra_class_scores = []
-        all_inter_class_scores = []
-        for _ in range(num_tasks):
-            task_dict = sampler.get_task()
-
-            support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
-            support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
-            query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
-            query_y_np = task_dict["query_y"].astype(np.int32)
-            query_y = tf.constant(query_y_np, dtype=tf.int32)
-
-            logits, similarity_scores = self.model(
-                support_x,
-                support_y,
-                query_x,
-                training=False,
-                return_similarity_scores=True,
-            )
-            loss = self.loss_fn(query_y, logits)
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
-            intra_class_scores, inter_class_scores = self._split_similarity_scores(
-                similarity_scores.numpy(), query_y_np
-            )
-
-            losses.append(float(loss))
-            all_true.append(query_y_np)
-            all_pred.append(pred)
-            all_intra_class_scores.append(intra_class_scores)
-            all_inter_class_scores.append(inter_class_scores)
-
-        y_true = np.concatenate(all_true, axis=0)
-        y_pred = np.concatenate(all_pred, axis=0)
-        metrics = self._compute_macro_metrics(y_true, y_pred)
-        metrics.update(
-            self._compute_similarity_metrics(
-                np.concatenate(all_intra_class_scores, axis=0),
-                np.concatenate(all_inter_class_scores, axis=0),
-            )
+        return self._evaluate_task_batch_loss_and_metrics(
+            [sampler.get_task() for _ in range(num_tasks)],
+            include_aux_loss=False,
         )
-        return float(np.mean(losses)), metrics
 
     def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
         """Build model and save model architecture summaries to a text file."""
@@ -514,6 +529,8 @@ class FewShotPainLearner:
 
                     validation_losses = []
                     validation_accs = []
+                    validation_intra_class_similarities = []
+                    validation_inter_class_similarities = []
                     for val_task_start in range(0, val_tasks, val_batch_size):
                         current_val_batch_size = min(
                             val_batch_size, val_tasks - val_task_start
@@ -521,12 +538,27 @@ class FewShotPainLearner:
                         val_task_batch = [
                             val_sampler.get_task() for _ in range(current_val_batch_size)
                         ]
-                        val_loss, val_acc = self.evaluate_batch_step(val_task_batch)
-                        validation_losses.append(float(val_loss))
-                        validation_accs.append(float(val_acc))
+                        val_loss, val_metrics = self._evaluate_task_batch_loss_and_metrics(
+                            val_task_batch,
+                            include_aux_loss=True,
+                        )
+                        validation_losses.append(val_loss)
+                        validation_accs.append(val_metrics["accuracy"])
+                        validation_intra_class_similarities.append(
+                            val_metrics["intra_class_similarity"]
+                        )
+                        validation_inter_class_similarities.append(
+                            val_metrics["inter_class_similarity"]
+                        )
 
                     mean_val_loss = float(np.mean(validation_losses))
                     mean_val_acc = float(np.mean(validation_accs))
+                    mean_val_intra_class_similarity = float(
+                        np.mean(validation_intra_class_similarities)
+                    )
+                    mean_val_inter_class_similarity = float(
+                        np.mean(validation_inter_class_similarities)
+                    )
                     epoch_val_losses.append(mean_val_loss)
                     epoch_val_accs.append(mean_val_acc)
                     csv_writer.write_event(
@@ -539,6 +571,8 @@ class FewShotPainLearner:
                         step_total=tasks_per_epoch,
                         loss=mean_val_loss,
                         accuracy=mean_val_acc,
+                        intra_class_similarity=mean_val_intra_class_similarity,
+                        inter_class_similarity=mean_val_inter_class_similarity,
                     )
                     progress.log_step(
                         stage="Validation",
@@ -549,13 +583,20 @@ class FewShotPainLearner:
                         loss=mean_val_loss,
                         metric_value=mean_val_acc,
                         metric_name="accuracy",
+                        extra_metrics={
+                            "intra_class_similarity": mean_val_intra_class_similarity,
+                            "inter_class_similarity": mean_val_inter_class_similarity,
+                        },
                         log_every=eval_log_every,
                     )
                     self.logger.info(
                         f"[Fold {fold + 1}/{num_subjects}] "
                         f"[Epoch {epoch + 1}/{num_epochs}] "
                         f"[Validation @ train_task {processed_tasks}/{tasks_per_epoch}] "
-                        f"mean_loss={mean_val_loss:.4f}, mean_accuracy={mean_val_acc:.4f}"
+                        f"mean_loss={mean_val_loss:.4f}, "
+                        f"mean_accuracy={mean_val_acc:.4f}, "
+                        f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
+                        f"inter_class_similarity={mean_val_inter_class_similarity:.4f}"
                     )
 
                 avg_train_loss = np.mean(epoch_train_losses)
