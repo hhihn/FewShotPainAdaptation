@@ -96,6 +96,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             key_dim=attention_key_dim,
             dropout=attention_dropout,
             name="self_attention",
+            kernel_initializer="he_normal",
         )
 
         # Optional temporal downsampling before attention to avoid OOM on long sequences.
@@ -105,7 +106,7 @@ class TemporalConvolutionalNetwork(keras.Model):
                 pool_size=self.attention_pool_size,
                 strides=self.attention_pool_size,
                 padding="valid",
-                name="attention_pool",
+                name="attention_pool"
             )
 
         # Normalization after attention
@@ -116,7 +117,7 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         # Final embedding layers
         self.embedding_dense = keras.layers.Dense(
-            embedding_dim, activation="relu", name="embedding_dense"
+            embedding_dim, activation="relu", name="embedding_dense", kernel_initializer="he_normal"
         )
         self.embedding_norm = keras.layers.LayerNormalization(name="embedding_norm")
 
@@ -136,6 +137,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             dilation_rate=dilation_rate,
             padding="same",
             activation="relu",
+            kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_conv1",
         )(inputs)
         x = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_bn1")(x)
@@ -146,6 +148,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             dilation_rate=dilation_rate,
             padding="same",
             activation="relu",
+            kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_conv2",
         )(x)
         x = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_bn2")(x)
@@ -158,6 +161,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             filters,
             kernel_size=1,
             padding="same",
+            kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_residual_proj",
         )(inputs)
 
