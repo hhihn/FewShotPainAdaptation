@@ -122,7 +122,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.embedding_dense_out = keras.layers.Dense(
             embedding_dim, activation="relu", name="embedding_dense_out", kernel_initializer="he_normal"
         )
-        self.embedding_dense_out_normalized = keras.layers.LayerNormalization(name="attention_norm")
+        self.embedding_dense_out_normalized = keras.layers.LayerNormalization(name="embedding_dense_out_normalized")
 
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
         self.logger.debug(f"Filters: {filters_list}")
