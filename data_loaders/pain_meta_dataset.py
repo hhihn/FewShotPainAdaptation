@@ -168,6 +168,44 @@ class PainMetaDataset:
 
         return (data - mean) / std
 
+    def _normalize_data_by_subjects(
+        self, data: np.ndarray, subjects: np.ndarray
+    ) -> np.ndarray:
+        """Normalize each sample using the statistics of its source subject."""
+        if not self.normalize or data.size == 0:
+            return data
+
+        if not self.normalize_per_subject:
+            return self._normalize_data(data)
+
+        normalized = data.copy()
+        for subject in np.unique(subjects):
+            subject_mask = subjects == subject
+            normalized[subject_mask] = self._normalize_data(
+                normalized[subject_mask],
+                int(subject),
+            )
+        return normalized
+
+    @staticmethod
+    def _resolve_total_samples_to_draw(
+        available_count: int,
+        k_shot: int,
+        q_query: int,
+        allow_partial_query: bool,
+    ) -> int:
+        """Resolve how many samples may be drawn while preserving k-shot support."""
+        requested_total = k_shot + q_query
+        if available_count < k_shot:
+            raise ValueError(
+                f"Only {available_count} samples available, but at least {k_shot} are required for support."
+            )
+        if not allow_partial_query and available_count < requested_total:
+            raise ValueError(
+                f"Only {available_count} samples available, but {requested_total} are required."
+            )
+        return max(min(available_count, requested_total), k_shot)
+
     @staticmethod
     def _compute_batch_stats(data: np.ndarray) -> Dict[str, np.ndarray]:
         """Compute mean/std stats from a batch [n, seq_len, n_sensors]."""
@@ -212,6 +250,7 @@ class PainMetaDataset:
         seed: Optional[int] = None,
         normalize_mode: str = "subject",
         rng: Optional[np.random.Generator] = None,
+        allow_partial_query: bool = False,
     ) -> Dict[str, np.ndarray]:
         """
         Sample a 6-way-K-shot task from a single subject.
@@ -226,6 +265,8 @@ class PainMetaDataset:
                 - 'support': normalize both support/query using support-set stats only
                 - 'none': no normalization
             rng: Optional numpy Generator to control sampling deterministically
+            allow_partial_query: If True, keep k-shot support and use all remaining
+                samples for query when a subject has fewer than k_shot + q_query items
 
         Returns:
             Dictionary containing:
@@ -234,8 +275,32 @@ class PainMetaDataset:
                 - query_X: [n_way * q_query, seq_len, n_sensors]
                 - query_y: [n_way * q_query]
         """
+        return self.sample_task_from_subjects(
+            subjects=[subject],
+            k_shot=k_shot,
+            q_query=q_query,
+            seed=seed,
+            normalize_mode=normalize_mode,
+            rng=rng,
+            allow_partial_query=allow_partial_query,
+        )
+
+    def sample_task_from_subjects(
+        self,
+        subjects: List[int],
+        k_shot: Optional[int] = None,
+        q_query: Optional[int] = None,
+        seed: Optional[int] = None,
+        normalize_mode: str = "subject",
+        rng: Optional[np.random.Generator] = None,
+        allow_partial_query: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        """Sample one task by pooling each class across the provided subjects."""
         k_shot = k_shot or self.config.k_shot
         q_query = q_query or self.config.q_query
+        selected_subjects = [int(subject) for subject in subjects]
+        if not selected_subjects:
+            raise ValueError("subjects must contain at least one subject id")
 
         if rng is not None:
             local_rng = rng
@@ -244,40 +309,53 @@ class PainMetaDataset:
         else:
             local_rng = np.random.default_rng()
 
-        support_X, support_y = [], []
-        query_X, query_y = [], []
+        support_X, support_y, support_subjects = [], [], []
+        query_X, query_y, query_subjects = [], [], []
 
         for class_id in range(self.config.n_way):
-            # Get indices for this class
-            indices = self.index[subject][class_id]
+            pooled_indices = []
+            pooled_subject_ids = []
+            for subject in selected_subjects:
+                indices = self.index[subject][class_id]
+                pooled_indices.extend(indices.tolist())
+                pooled_subject_ids.extend([subject] * len(indices))
 
-            if len(indices) < k_shot + q_query:
-                raise ValueError(
-                    f"Subject {subject}, class {class_id} has only {len(indices)} samples, "
-                    f"but {k_shot + q_query} are needed."
-                )
+            total_to_sample = self._resolve_total_samples_to_draw(
+                available_count=len(pooled_indices),
+                k_shot=k_shot,
+                q_query=q_query,
+                allow_partial_query=allow_partial_query,
+            )
+            sampled_positions = local_rng.choice(
+                len(pooled_indices), size=total_to_sample, replace=False
+            )
+            pooled_indices = np.asarray(pooled_indices, dtype=np.int64)
+            pooled_subject_ids = np.asarray(pooled_subject_ids, dtype=np.int32)
 
-            # Random sample
-            sampled = local_rng.choice(indices, size=k_shot + q_query, replace=False)
-            support_idx = sampled[:k_shot]
-            query_idx = sampled[k_shot : k_shot + q_query]
+            sampled_indices = pooled_indices[sampled_positions]
+            sampled_subject_ids = pooled_subject_ids[sampled_positions]
+            support_idx = sampled_indices[:k_shot]
+            query_idx = sampled_indices[k_shot:]
+            support_subject_ids = sampled_subject_ids[:k_shot]
+            query_subject_ids = sampled_subject_ids[k_shot:]
 
-            # Get data
             support_X.append(self.X[support_idx])
             support_y.append(self.y[support_idx])
+            support_subjects.append(support_subject_ids)
             query_X.append(self.X[query_idx])
             query_y.append(self.y[query_idx])
+            query_subjects.append(query_subject_ids)
 
-        # Concatenate
         support_X = np.concatenate(support_X, axis=0)
         support_y = np.concatenate(support_y, axis=0)
+        support_subjects = np.concatenate(support_subjects, axis=0)
         query_X = np.concatenate(query_X, axis=0)
         query_y = np.concatenate(query_y, axis=0)
+        query_subjects = np.concatenate(query_subjects, axis=0)
 
-        # Normalize
         if normalize_mode == "subject":
-            support_X = self._normalize_data(support_X, subject)
-            query_X = self._normalize_data(query_X, subject)
+            support_X = self._normalize_data_by_subjects(support_X, support_subjects)
+            query_X = self._normalize_data_by_subjects(query_X, query_subjects)
         elif normalize_mode == "support":
             stats = self._compute_batch_stats(support_X)
             support_X = self._apply_stats(support_X, stats)
@@ -289,16 +367,16 @@ class PainMetaDataset:
                 f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'support', or 'none'."
             )
 
-        # Shuffle
         support_perm = local_rng.permutation(len(support_y))
         query_perm = local_rng.permutation(len(query_y))
+        task_subject = selected_subjects[0] if len(selected_subjects) == 1 else -1
 
         return {
             "support_X": support_X[support_perm],
             "support_y": support_y[support_perm],
             "query_X": query_X[query_perm],
             "query_y": query_y[query_perm],
-            "subject": subject,
+            "subject": task_subject,
         }
 
     def sample_meta_task_batch(

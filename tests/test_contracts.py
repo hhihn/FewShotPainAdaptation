@@ -137,6 +137,65 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(np.all(support_counts == self.config.k_shot))
             self.assertTrue(np.all(query_counts == self.config.q_query))
 
+        expected_train_subject = (
+            -1 if len(fold["train_subjects"]) > 1 else fold["train_subjects"][0]
+        )
+        expected_val_subject = (
+            -1 if len(fold["val_subjects"]) > 1 else fold["val_subjects"][0]
+        )
+        self.assertEqual(fold["train_sampler"].get_task()["subject"], expected_train_subject)
+        self.assertEqual(fold["val_sampler"].get_task()["subject"], expected_val_subject)
+        self.assertEqual(
+            fold["test_sampler"].get_task()["subject"],
+            int(dataset.unique_subjects[0]),
+        )
+
+    def test_test_sampler_uses_available_query_budget(self):
+        tmp = tempfile.TemporaryDirectory()
+        data_dir = Path(tmp.name)
+        _write_synthetic_dataset(data_dir, num_subjects=4)
+        config = PainDatasetConfig(
+            sequence_length=2500,
+            n_way=6,
+            num_stimuli_levels=6,
+            k_shot=3,
+            q_query=2,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            subject_eval_tasks=1,
+            single_loso_fold=False,
+            seed=7,
+            deterministic_ops=True,
+        )
+        try:
+            dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
+            cv = LOSOCrossValidator(dataset=dataset, seed=config.seed)
+            fold = cv.get_fold(test_subject=int(dataset.unique_subjects[0]))
+
+            train_task = fold["train_sampler"].get_task()
+            train_support_counts = np.bincount(
+                train_task["support_y"], minlength=config.n_way
+            )
+            train_query_counts = np.bincount(
+                train_task["query_y"], minlength=config.n_way
+            )
+            self.assertEqual(train_task["subject"], -1)
+            self.assertTrue(np.all(train_support_counts == config.k_shot))
+            self.assertTrue(np.all(train_query_counts == config.q_query))
+
+            test_task = fold["test_sampler"].get_task()
+            test_support_counts = np.bincount(
+                test_task["support_y"], minlength=config.n_way
+            )
+            test_query_counts = np.bincount(
+                test_task["query_y"], minlength=config.n_way
+            )
+            self.assertTrue(np.all(test_support_counts == config.k_shot))
+            self.assertTrue(np.all(test_query_counts == 1))
+        finally:
+            tmp.cleanup()
+
     def test_training_contracts_smoke(self):
         learner = FewShotPainLearner(
             config=self.config,

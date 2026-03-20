@@ -88,56 +88,24 @@ class SixWayKShotSampler:
 
     def _sample_task(self) -> Dict[str, np.ndarray]:
         """Sample a single task."""
-
-        task_dict = {"support_X": [], "support_y": [], "query_X": [], "query_y": []}
-
-        # For each of the 6 pain levels
-        for class_id in range(self.config.n_way):
-            # Pool all samples from all training subjects for this class
-            pooled_indices = []
-
-            for subject in self.active_subjects:
-                if (
-                    subject in self.dataset.index
-                    and class_id in self.dataset.index[subject]
-                ):
-                    pooled_indices.extend(self.dataset.index[subject][class_id])
-
-            if len(pooled_indices) < self.k_shot + self.q_query:
-                self.logger.warning(
-                    f"Class {class_id} has only {len(pooled_indices)} samples across "
-                    f"all {len(self.active_subjects)} training subjects"
-                )
-
-            # Randomly sample K + Q samples from the pooled indices
-            sampled_indices = self.rng.choice(
-                pooled_indices,
-                size=min(self.k_shot + self.q_query, len(pooled_indices)),
-                replace=False,
+        if self.mode in {"train", "val"}:
+            normalize_mode = "subject" if self.mode == "train" else "support"
+            return self.dataset.sample_task_from_subjects(
+                subjects=self.active_subjects,
+                k_shot=self.k_shot,
+                q_query=self.q_query,
+                normalize_mode=normalize_mode,
+                rng=self.rng,
             )
 
-            support_indices = sampled_indices[: self.k_shot]
-            query_indices = sampled_indices[self.k_shot :]
-
-            # Load support samples
-            for idx in support_indices:
-                x = self.dataset.X[idx]
-                task_dict["support_X"].append(x)
-                task_dict["support_y"].append(class_id)
-
-            # Load query samples
-            for idx in query_indices:
-                x = self.dataset.X[idx]
-                task_dict["query_X"].append(x)
-                task_dict["query_y"].append(class_id)
-
-        # Stack into arrays
-        task_dict["support_X"] = np.stack(task_dict["support_X"], axis=0)
-        task_dict["support_y"] = np.array(task_dict["support_y"])
-        task_dict["query_X"] = np.stack(task_dict["query_X"], axis=0)
-        task_dict["query_y"] = np.array(task_dict["query_y"])
-
-        return task_dict
+        return self.dataset.sample_task(
+            subject=self.test_subject,
+            k_shot=self.k_shot,
+            q_query=self.q_query,
+            normalize_mode="support",
+            rng=self.rng,
+            allow_partial_query=True,
+        )
 
     def get_task(self, subject: Optional[int] = None) -> Dict[str, np.ndarray]:
         """
@@ -149,16 +117,17 @@ class SixWayKShotSampler:
         Returns:
             Task dictionary
         """
-        if subject is None:
-            subject = self.rng.choice(self.active_subjects)
-        normalize_mode = "subject" if self.mode == "train" else "support"
-        return self.dataset.sample_task(
-            subject,
-            self.k_shot,
-            self.q_query,
-            normalize_mode=normalize_mode,
-            rng=self.rng,
-        )
+        if subject is not None:
+            normalize_mode = "subject" if self.mode == "train" else "support"
+            return self.dataset.sample_task(
+                subject,
+                self.k_shot,
+                self.q_query,
+                normalize_mode=normalize_mode,
+                rng=self.rng,
+                allow_partial_query=self.mode == "test",
+            )
+        return self._sample_task()
 
     def get_test_task(self, k_shot: Optional[int] = None) -> Dict[str, np.ndarray]:
         """
@@ -176,6 +145,7 @@ class SixWayKShotSampler:
             q_query=self.q_query,
             normalize_mode="support",
             rng=self.rng,
+            allow_partial_query=True,
         )
 
     def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:
@@ -197,9 +167,9 @@ class SixWayKShotSampler:
             ),
             "support_y": tf.TensorSpec(shape=(self.support_size,), dtype=tf.int32),
             "query_X": tf.TensorSpec(
-                shape=(self.query_size, self.seq_len, self.n_sensors), dtype=tf.float32
+                shape=(None, self.seq_len, self.n_sensors), dtype=tf.float32
             ),
-            "query_y": tf.TensorSpec(shape=(self.query_size,), dtype=tf.int32),
+            "query_y": tf.TensorSpec(shape=(None,), dtype=tf.int32),
             "subject": tf.TensorSpec(shape=(), dtype=tf.int32),
         }
 
