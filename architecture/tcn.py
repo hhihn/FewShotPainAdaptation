@@ -115,14 +115,10 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.global_pool = keras.layers.GlobalAveragePooling1D(name="global_pool")
 
         # Final embedding layers
-        self.embedding_dense_hidden = keras.layers.Dense(
-            embedding_dim, activation="relu", name="embedding_dense_hidden", kernel_initializer="he_normal"
+        self.embedding_dense = keras.layers.Dense(
+            embedding_dim, activation="relu", name="embedding_dense"
         )
-        self.embedding_dropout = keras.layers.Dropout(dropout_rate, name="embedding_hidden_dropout")
-        self.embedding_dense_out = keras.layers.Dense(
-            embedding_dim, activation="relu", name="embedding_dense_out", kernel_initializer="he_normal"
-        )
-        self.embedding_dense_out_normalized = keras.layers.LayerNormalization(name="embedding_dense_out_normalized")
+        self.embedding_norm = keras.layers.LayerNormalization(name="embedding_norm")
 
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
         self.logger.debug(f"Filters: {filters_list}")
@@ -204,10 +200,8 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.debug(f"After global pool: {tf.shape(x)}")
 
         # Final embedding
-        x = self.embedding_dense_hidden(x)
-        x = self.embedding_dropout(x, training=training)
-        x = self.embedding_dense_out(x)
-        x = self.embedding_dense_out_normalized(x)
+        x = self.embedding_dense(x)
+        x = self.embedding_norm(x)
 
         return x
 
