@@ -216,11 +216,6 @@ class PainMetaDataset:
             "std": np.std(data, axis=(0, 1), keepdims=True) + 1e-8,
         }
 
-    def compute_subject_group_stats(self, subjects: List[int]) -> Dict[str, np.ndarray]:
-        """Compute one mean/std pair over all samples from the provided subjects."""
-        subject_mask = np.isin(self.subjects, np.asarray(subjects))
-        return self._compute_batch_stats(self.X[subject_mask])
-
     @staticmethod
     def _apply_stats(data: np.ndarray, stats: Dict[str, np.ndarray]) -> np.ndarray:
         """Normalize a batch with externally provided stats."""
@@ -258,7 +253,6 @@ class PainMetaDataset:
         normalize_mode: str = "subject",
         rng: Optional[np.random.Generator] = None,
         allow_partial_query: bool = False,
-        normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Sample an N-way-K-shot task from a single subject.
@@ -275,8 +269,6 @@ class PainMetaDataset:
             rng: Optional numpy Generator to control sampling deterministically
             allow_partial_query: If True, keep k-shot support and use all remaining
                 samples for query when a subject has fewer than k_shot + q_query items
-            normalization_stats: Optional externally provided stats for group-level
-                normalization
 
         Returns:
             Dictionary containing:
@@ -293,7 +285,6 @@ class PainMetaDataset:
             normalize_mode=normalize_mode,
             rng=rng,
             allow_partial_query=allow_partial_query,
-            normalization_stats=normalization_stats,
         )
 
     def sample_task_from_subjects(
@@ -305,7 +296,6 @@ class PainMetaDataset:
         normalize_mode: str = "subject",
         rng: Optional[np.random.Generator] = None,
         allow_partial_query: bool = False,
-        normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """Sample one task by pooling each class across the provided subjects."""
         k_shot = k_shot or self.config.k_shot
@@ -368,14 +358,6 @@ class PainMetaDataset:
         if normalize_mode == "subject":
             support_X = self._normalize_data_by_subjects(support_X, support_subjects)
             query_X = self._normalize_data_by_subjects(query_X, query_subjects)
-        elif normalize_mode == "group":
-            stats = (
-                normalization_stats
-                if normalization_stats is not None
-                else self.compute_subject_group_stats(selected_subjects)
-            )
-            support_X = self._apply_stats(support_X, stats)
-            query_X = self._apply_stats(query_X, stats)
         elif normalize_mode == "support":
             stats = self._compute_batch_stats(support_X)
             support_X = self._apply_stats(support_X, stats)
@@ -384,7 +366,7 @@ class PainMetaDataset:
             pass
         else:
             raise ValueError(
-                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'group', 'support', or 'none'."
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'support', or 'none'."
             )
 
         support_perm = local_rng.permutation(len(support_y))
