@@ -76,6 +76,11 @@ class SixWayKShotSampler:
         self.query_size = self.n_way * self.q_query
         self.seq_len = self.config.sequence_length
         self.n_sensors = self.config.num_sensors
+        self.group_normalization_stats = None
+        if mode in {"train", "val"}:
+            self.group_normalization_stats = self.dataset.compute_subject_group_stats(
+                self.active_subjects
+            )
 
     def __len__(self) -> int:
         """Number of tasks per epoch."""
@@ -89,13 +94,13 @@ class SixWayKShotSampler:
     def _sample_task(self) -> Dict[str, np.ndarray]:
         """Sample a single task."""
         if self.mode in {"train", "val"}:
-            normalize_mode = "subject" if self.mode == "train" else "support"
             return self.dataset.sample_task_from_subjects(
                 subjects=self.active_subjects,
                 k_shot=self.k_shot,
                 q_query=self.q_query,
-                normalize_mode=normalize_mode,
+                normalize_mode="group",
                 rng=self.rng,
+                normalization_stats=self.group_normalization_stats,
             )
 
         return self.dataset.sample_task(
@@ -118,7 +123,7 @@ class SixWayKShotSampler:
             Task dictionary
         """
         if subject is not None:
-            normalize_mode = "subject" if self.mode == "train" else "support"
+            normalize_mode = "group" if self.mode in {"train", "val"} else "support"
             return self.dataset.sample_task(
                 subject,
                 self.k_shot,
@@ -126,6 +131,7 @@ class SixWayKShotSampler:
                 normalize_mode=normalize_mode,
                 rng=self.rng,
                 allow_partial_query=self.mode == "test",
+                normalization_stats=self.group_normalization_stats,
             )
         return self._sample_task()
 
