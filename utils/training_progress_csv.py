@@ -37,6 +37,8 @@ class TrainingProgressCSVWriter:
             "precision",
             "recall",
             "f1",
+            "intra_class_similarity",
+            "inter_class_similarity",
         ]
         self._writer = csv.DictWriter(self._file, fieldnames=fieldnames)
         self._writer.writeheader()
@@ -54,6 +56,8 @@ class TrainingProgressCSVWriter:
         precision: Optional[float] = None,
         recall: Optional[float] = None,
         f1: Optional[float] = None,
+        intra_class_similarity: Optional[float] = None,
+        inter_class_similarity: Optional[float] = None,
         epoch: Optional[int] = None,
         epoch_total: Optional[int] = None,
         step: Optional[int] = None,
@@ -78,6 +82,8 @@ class TrainingProgressCSVWriter:
                 "precision": precision,
                 "recall": recall,
                 "f1": f1,
+                "intra_class_similarity": intra_class_similarity,
+                "inter_class_similarity": inter_class_similarity,
             }
         )
 

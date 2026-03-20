@@ -153,7 +153,7 @@ class TrainingProgressReporter:
         metrics: dict,
     ) -> None:
         scope = _ProgressScope(fold_idx=fold_idx, total_folds=total_folds)
-        self.logger.info(
+        message = (
             f"{self._compose_scope_prefix(scope)} "
             f"[{stage} subject={test_subject}] "
             f"loss={loss:.4f}, "
@@ -162,3 +162,9 @@ class TrainingProgressReporter:
             f"recall={metrics['recall']:.4f}, "
             f"f1={metrics['f1']:.4f}"
         )
+        if "intra_class_similarity" in metrics and "inter_class_similarity" in metrics:
+            message += (
+                f", intra_class_similarity={metrics['intra_class_similarity']:.4f}, "
+                f"inter_class_similarity={metrics['inter_class_similarity']:.4f}"
+            )
+        self.logger.info(message)

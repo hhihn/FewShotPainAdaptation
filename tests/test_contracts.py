@@ -154,6 +154,10 @@ class ContractTests(unittest.TestCase):
             "val_accuracies",
             "test_losses",
             "test_accuracies",
+            "zero_shot_intra_class_similarities",
+            "zero_shot_inter_class_similarities",
+            "k_shot_intra_class_similarities",
+            "k_shot_inter_class_similarities",
         }
         self.assertTrue(required_keys.issubset(results.keys()))
 

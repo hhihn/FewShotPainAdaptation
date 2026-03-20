@@ -174,7 +174,41 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return distances
 
-    def call(self, support_x, support_y, query_x, training=False):
+    def compute_similarity_scores(self, query_embeddings, prototype_embeddings):
+        """
+        Compute similarity scores between query and class prototypes.
+
+        Returns:
+            similarities: [num_queries, num_classes]
+        """
+        if self.distance_metric == "cosine":
+            query_norm = tf.nn.l2_normalize(query_embeddings, axis=1)
+            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=1)
+            return tf.matmul(query_norm, tf.transpose(prototype_norm))
+
+        return -self.compute_distances(query_embeddings, prototype_embeddings)
+
+    def _compute_prototypes(self, support_embeddings, support_y):
+        """Compute class prototypes as the mean support embedding per class."""
+        prototypes = []
+
+        for class_id in range(self.num_classes):
+            mask = tf.cast(tf.equal(support_y, class_id), tf.float32)
+            count = tf.reduce_sum(mask)
+            class_embeddings = support_embeddings * tf.expand_dims(mask, 1)
+            prototype = tf.reduce_sum(class_embeddings, axis=0) / (count + 1e-8)
+            prototypes.append(prototype)
+
+        return tf.stack(prototypes, axis=0)
+
+    def call(
+        self,
+        support_x,
+        support_y,
+        query_x,
+        training=False,
+        return_similarity_scores: bool = False,
+    ):
         """
         Forward pass for few-shot learning.
 
@@ -195,19 +229,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
 
         # Compute class prototypes as mean of support embeddings per class
-        prototypes = []
-
-        for class_id in range(self.num_classes):
-            # Create mask for samples belonging to this class
-            mask = tf.cast(tf.equal(support_y, class_id), tf.float32)
-            count = tf.reduce_sum(mask)
-
-            # Compute mean embedding for this class
-            class_embeddings = support_embeddings * tf.expand_dims(mask, 1)
-            prototype = tf.reduce_sum(class_embeddings, axis=0) / (count + 1e-8)
-            prototypes.append(prototype)
-
-        prototypes = tf.stack(prototypes, axis=0)  # [num_classes, embedding_dim]
+        prototypes = self._compute_prototypes(support_embeddings, support_y)
 
         self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
 
@@ -216,5 +238,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         # Convert distances to logits (lower distance = higher probability)
         logits = -distances
+
+        if return_similarity_scores:
+            similarity_scores = self.compute_similarity_scores(
+                query_embeddings, prototypes
+            )
+            return logits, similarity_scores
 
         return logits

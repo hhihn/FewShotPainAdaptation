@@ -223,6 +223,30 @@ class FewShotPainLearner:
 
         return tf.reduce_mean(tf.stack(losses)), tf.reduce_mean(tf.stack(accuracies))
 
+    @staticmethod
+    def _split_similarity_scores(
+        similarity_scores: np.ndarray, y_true: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Split query-to-prototype similarities into intra/inter-class groups."""
+        row_indices = np.arange(len(y_true))
+        intra_class_scores = similarity_scores[row_indices, y_true]
+
+        inter_class_mask = np.ones_like(similarity_scores, dtype=bool)
+        inter_class_mask[row_indices, y_true] = False
+        inter_class_scores = similarity_scores[inter_class_mask]
+
+        return intra_class_scores, inter_class_scores
+
+    @staticmethod
+    def _compute_similarity_metrics(
+        intra_class_scores: np.ndarray, inter_class_scores: np.ndarray
+    ) -> dict:
+        """Aggregate similarity statistics using the existing metric dict shape."""
+        return {
+            "intra_class_similarity": float(np.mean(intra_class_scores)),
+            "inter_class_similarity": float(np.mean(inter_class_scores)),
+        }
+
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
         num_classes = self.config.num_stimuli_levels
@@ -259,10 +283,12 @@ class FewShotPainLearner:
     def _evaluate_sampler_loss_and_metrics(
         self, sampler, num_tasks: int
     ) -> tuple[float, dict]:
-        """Evaluate average loss and macro metrics on sampled tasks."""
+        """Evaluate average loss plus classification/similarity metrics on tasks."""
         losses = []
         all_true = []
         all_pred = []
+        all_intra_class_scores = []
+        all_inter_class_scores = []
         for _ in range(num_tasks):
             task_dict = sampler.get_task()
 
@@ -272,17 +298,35 @@ class FewShotPainLearner:
             query_y_np = task_dict["query_y"].astype(np.int32)
             query_y = tf.constant(query_y_np, dtype=tf.int32)
 
-            logits = self.model(support_x, support_y, query_x, training=False)
+            logits, similarity_scores = self.model(
+                support_x,
+                support_y,
+                query_x,
+                training=False,
+                return_similarity_scores=True,
+            )
             loss = self.loss_fn(query_y, logits)
             pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
+            intra_class_scores, inter_class_scores = self._split_similarity_scores(
+                similarity_scores.numpy(), query_y_np
+            )
 
             losses.append(float(loss))
             all_true.append(query_y_np)
             all_pred.append(pred)
+            all_intra_class_scores.append(intra_class_scores)
+            all_inter_class_scores.append(inter_class_scores)
 
         y_true = np.concatenate(all_true, axis=0)
         y_pred = np.concatenate(all_pred, axis=0)
-        return float(np.mean(losses)), self._compute_macro_metrics(y_true, y_pred)
+        metrics = self._compute_macro_metrics(y_true, y_pred)
+        metrics.update(
+            self._compute_similarity_metrics(
+                np.concatenate(all_intra_class_scores, axis=0),
+                np.concatenate(all_inter_class_scores, axis=0),
+            )
+        )
+        return float(np.mean(losses)), metrics
 
     def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
         """Build model and save model architecture summaries to a text file."""
@@ -341,11 +385,15 @@ class FewShotPainLearner:
             "zero_shot_precisions": [],
             "zero_shot_recalls": [],
             "zero_shot_f1s": [],
+            "zero_shot_intra_class_similarities": [],
+            "zero_shot_inter_class_similarities": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
             "k_shot_recalls": [],
             "k_shot_f1s": [],
+            "k_shot_intra_class_similarities": [],
+            "k_shot_inter_class_similarities": [],
             "training_progress_files": [],
             "model_architecture_file": None,
         }
@@ -544,6 +592,8 @@ class FewShotPainLearner:
                 precision=zero_shot_metrics["precision"],
                 recall=zero_shot_metrics["recall"],
                 f1=zero_shot_metrics["f1"],
+                intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
+                inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
             )
             progress.log_subject_summary(
                 stage="Zero-shot",
@@ -590,6 +640,8 @@ class FewShotPainLearner:
                 precision=k_shot_metrics["precision"],
                 recall=k_shot_metrics["recall"],
                 f1=k_shot_metrics["f1"],
+                intra_class_similarity=k_shot_metrics["intra_class_similarity"],
+                inter_class_similarity=k_shot_metrics["inter_class_similarity"],
             )
             progress.log_subject_summary(
                 stage="K-shot",
@@ -613,11 +665,23 @@ class FewShotPainLearner:
             cv_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
             cv_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
             cv_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
+            cv_results["zero_shot_intra_class_similarities"].append(
+                zero_shot_metrics["intra_class_similarity"]
+            )
+            cv_results["zero_shot_inter_class_similarities"].append(
+                zero_shot_metrics["inter_class_similarity"]
+            )
             cv_results["k_shot_losses"].append(k_shot_loss)
             cv_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
             cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
             cv_results["k_shot_recalls"].append(k_shot_metrics["recall"])
             cv_results["k_shot_f1s"].append(k_shot_metrics["f1"])
+            cv_results["k_shot_intra_class_similarities"].append(
+                k_shot_metrics["intra_class_similarity"]
+            )
+            cv_results["k_shot_inter_class_similarities"].append(
+                k_shot_metrics["inter_class_similarity"]
+            )
             csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
@@ -651,6 +715,16 @@ class FewShotPainLearner:
         )
         self.logger.info(
             f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            "Average Zero-shot Similarities: "
+            f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(
+            "Average K-shot Similarities: "
+            f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
         )
         self.logger.info(f"{'=' * 60}\n")
 
