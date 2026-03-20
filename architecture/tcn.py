@@ -116,12 +116,13 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
-            embedding_dim * 2, activation="relu", name="embedding_dense_hidden", kernel_initializer="he_normal"
+            embedding_dim, activation="relu", name="embedding_dense_hidden", kernel_initializer="he_normal"
         )
         self.embedding_dropout = keras.layers.Dropout(dropout_rate, name="embedding_hidden_dropout")
         self.embedding_dense_out = keras.layers.Dense(
-            embedding_dim, activation=None, name="embedding_dense_out"
+            embedding_dim, activation="relu", name="embedding_dense_out", kernel_initializer="he_normal"
         )
+        self.embedding_dense_out_normalized = keras.layers.LayerNormalization(name="attention_norm")
 
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
         self.logger.debug(f"Filters: {filters_list}")
@@ -206,6 +207,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         x = self.embedding_dense_hidden(x)
         x = self.embedding_dropout(x, training=training)
         x = self.embedding_dense_out(x)
+        x = self.embedding_dense_out_normalized(x)
 
         return x
 
