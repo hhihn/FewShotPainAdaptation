@@ -104,6 +104,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             num_blocks=num_tcn_blocks,
             attention_pool_size=tcn_attention_pool_size,
         )
+
         self.logger.debug(f"Built CNN encoder with {modality_name}")
         self.logger.debug(model.summary())
         return model
