@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-6-Way-K-Shot Meta-Learning Sampler for Multi-Modal Pain Dataset.
+N-Way-K-Shot Meta-Learning Sampler for Multi-Modal Pain Dataset.
 
 This sampler creates meta-learning tasks from the BioVid pain dataset
 with the following structure:
-- 6-way: 6 pain/temperature levels (classes)
+- N-way: configurable pain/temperature levels (classes)
 - K-shot: K support samples per class
 - Q-query: Q query samples per class for evaluation
 
@@ -31,7 +31,7 @@ class PainMetaDataset:
     - 8 repetitions per level
     - 6 sensor modalities
 
-    Provides episodic sampling for meta-learning with 6-way-K-shot tasks.
+    Provides episodic sampling for meta-learning with N-way-K-shot tasks.
     """
 
     def __init__(
@@ -52,6 +52,7 @@ class PainMetaDataset:
         """
         self.logger = setup_logger("PainMetaDataset")
         self.config = config or PainDatasetConfig()
+        self.task_class_ids = tuple(int(class_id) for class_id in self.config.task_class_ids)
         self.data_dir = Path(data_dir)
         self.logger.debug(f"Data directory: {self.data_dir}")
         self.normalize = normalize
@@ -98,6 +99,7 @@ class PainMetaDataset:
         self.logger.info(f"  Number of subjects: {self.num_subjects}")
         self.logger.info(f"  Samples per subject: ~{len(self.y) // self.num_subjects}")
         self.logger.info(f"  Classes: {np.unique(self.y)}")
+        self.logger.info(f"  Task classes: {self.task_class_ids}")
 
     def _build_index(self):
         """Build index mapping (subject, class) -> sample indices."""
@@ -107,11 +109,11 @@ class PainMetaDataset:
             self.index[subject] = {}
             subject_mask = self.subjects == subject
 
-            for class_id in range(self.config.n_way):
-                class_mask = self.y == class_id
+            for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
+                class_mask = self.y == raw_class_id
                 combined_mask = subject_mask & class_mask
                 indices = np.where(combined_mask)[0]
-                self.index[subject][class_id] = indices
+                self.index[subject][episodic_class_id] = indices
 
         # Verify index
         self._verify_index()
@@ -121,13 +123,13 @@ class PainMetaDataset:
         min_samples_per_class = float("inf")
 
         for subject in self.unique_subjects:
-            for class_id in range(self.config.n_way):
-                n_samples = len(self.index[subject][class_id])
+            for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
+                n_samples = len(self.index[subject][episodic_class_id])
                 min_samples_per_class = min(min_samples_per_class, n_samples)
 
                 if n_samples < self.config.k_shot + self.config.q_query:
                     warnings.warn(
-                        f"Subject {subject}, class {class_id} has only {n_samples} samples, "
+                        f"Subject {subject}, raw class {raw_class_id} has only {n_samples} samples, "
                         f"but {self.config.k_shot + self.config.q_query} are needed for sampling."
                     )
 
@@ -259,7 +261,7 @@ class PainMetaDataset:
         normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """
-        Sample a 6-way-K-shot task from a single subject.
+        Sample an N-way-K-shot task from a single subject.
 
         Args:
             subject: Subject ID to sample from
@@ -350,10 +352,10 @@ class PainMetaDataset:
             query_subject_ids = sampled_subject_ids[k_shot:]
 
             support_X.append(self.X[support_idx])
-            support_y.append(self.y[support_idx])
+            support_y.append(np.full(k_shot, class_id, dtype=np.int32))
             support_subjects.append(support_subject_ids)
             query_X.append(self.X[query_idx])
-            query_y.append(self.y[query_idx])
+            query_y.append(np.full(len(query_idx), class_id, dtype=np.int32))
             query_subjects.append(query_subject_ids)
 
         support_X = np.concatenate(support_X, axis=0)
@@ -461,9 +463,9 @@ class PainMetaDataset:
             eval_idx = shuffled_indices[k_shot:]
 
             support_X.append(self.X[support_idx])
-            support_y.append(self.y[support_idx])
+            support_y.append(np.full(len(support_idx), class_id, dtype=np.int32))
             eval_X.append(self.X[eval_idx])
-            eval_y.append(self.y[eval_idx])
+            eval_y.append(np.full(len(eval_idx), class_id, dtype=np.int32))
 
         support_X = np.concatenate(support_X, axis=0)
         support_y = np.concatenate(support_y, axis=0)

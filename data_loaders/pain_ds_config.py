@@ -12,7 +12,7 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 3  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
     embedding_dim: int = 128  # Encoder embedding dimension
     tcn_attention_pool_size: int = 8  # Downsample factor before self-attention
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
@@ -34,7 +34,11 @@ class PainDatasetConfig:
     sensor_idx = [1, 4, 5]
 
     # Meta-learning settings
-    n_way: int = 6  # Number of classes per task (all 6 pain levels)
+    task_class_ids: Tuple[int, ...] = (
+        0,
+        5,
+    )  # Raw dataset labels included in each task
+    n_way: int = 6  # Number of classes per task; derived from task_class_ids
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
     train_batch_size: int = 2  # Number of tasks per optimizer update
@@ -54,3 +58,11 @@ class PainDatasetConfig:
     data_path: str = "X_pre.npy"
     labels_path: str = "y_heater.npy"
     subjects_path: str = "subjects.npy"
+
+    def __post_init__(self) -> None:
+        self.task_class_ids = tuple(int(class_id) for class_id in self.task_class_ids)
+        if not self.task_class_ids:
+            raise ValueError("task_class_ids must contain at least one class id")
+        if len(set(self.task_class_ids)) != len(self.task_class_ids):
+            raise ValueError("task_class_ids must be unique")
+        self.n_way = len(self.task_class_ids)

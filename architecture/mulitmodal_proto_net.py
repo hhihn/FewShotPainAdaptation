@@ -30,7 +30,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         Args:
             sequence_length: Length of temporal sequence
             num_sensors: Number of sensor channels
-            num_classes: Number of pain levels (6-way)
+            num_classes: Number of task classes
             embedding_dim: Dimension of embedding space per modality
             modality_names: Names of modalities (EDA, ECG, EMG)
             fusion_method: 'concat', 'mean', 'attention'
@@ -214,7 +214,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         Args:
             support_x: [n_way * k_shot, sequence_length, num_sensors]
-            support_y: [n_way * k_shot] (class labels 0-5)
+            support_y: [n_way * k_shot] (class labels 0 to n_way - 1)
             query_x: [n_way * q_query, sequence_length, num_sensors]
             training: Whether in training mode
 

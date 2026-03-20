@@ -71,6 +71,7 @@ class FewShotPainLearner:
             "fusion_method": self.fusion_method,
             "sequence_length": self.config.sequence_length,
             "n_way": self.config.n_way,
+            "task_class_ids": list(self.config.task_class_ids),
             "k_shot": self.config.k_shot,
             "q_query": self.config.q_query,
             "train_batch_size": self.train_batch_size,
@@ -118,7 +119,7 @@ class FewShotPainLearner:
         self.model = MultimodalPrototypicalNetwork(
             sequence_length=self.config.sequence_length,
             num_sensors=num_sensors,
-            num_classes=self.config.num_stimuli_levels,
+            num_classes=self.config.n_way,
             embedding_dim=self.embedding_dim,
             modality_names=self.config.modality_names,
             fusion_method=self.fusion_method,
@@ -303,7 +304,7 @@ class FewShotPainLearner:
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
-        num_classes = self.config.num_stimuli_levels
+        num_classes = self.config.n_way
         conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
         for truth, pred in zip(y_true, y_pred):
             conf_mat[int(truth), int(pred)] += 1

@@ -46,7 +46,7 @@ def _build_model(config: PainDatasetConfig, fusion_method: str) -> MultimodalPro
     return MultimodalPrototypicalNetwork(
         sequence_length=config.sequence_length,
         num_sensors=len(config.sensor_idx),
-        num_classes=config.num_stimuli_levels,
+        num_classes=config.n_way,
         embedding_dim=config.embedding_dim,
         modality_names=config.modality_names,
         fusion_method=fusion_method,

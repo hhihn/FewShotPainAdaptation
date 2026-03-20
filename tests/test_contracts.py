@@ -225,6 +225,33 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(len(results[key]), n_folds)
             self.assertTrue(np.all(np.isfinite(results[key])))
 
+    def test_two_way_task_class_mapping(self):
+        config = PainDatasetConfig(
+            sequence_length=2500,
+            num_stimuli_levels=6,
+            task_class_ids=(0, 5),
+            k_shot=1,
+            q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            subject_eval_tasks=1,
+            single_loso_fold=False,
+            seed=7,
+            deterministic_ops=True,
+        )
+        self.assertEqual(config.n_way, 2)
+
+        dataset = PainMetaDataset(data_dir=str(self.data_dir), config=config)
+        cv = LOSOCrossValidator(dataset=dataset, seed=config.seed)
+        fold = cv.get_fold(test_subject=int(dataset.unique_subjects[0]))
+        task = fold["test_sampler"].get_task()
+
+        self.assertEqual(task["support_X"].shape[0], 2 * config.k_shot)
+        self.assertEqual(task["query_X"].shape[0], 2 * config.q_query)
+        self.assertTrue(np.array_equal(np.unique(task["support_y"]), np.array([0, 1])))
+        self.assertTrue(np.array_equal(np.unique(task["query_y"]), np.array([0, 1])))
+
 
 if __name__ == "__main__":
     unittest.main()
