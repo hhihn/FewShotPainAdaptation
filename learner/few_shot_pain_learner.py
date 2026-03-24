@@ -483,6 +483,7 @@ class FewShotPainLearner:
                 epoch_val_losses = []
                 epoch_val_accs = []
                 processed_tasks = 0
+                processed_batches = 0
 
                 for task_start in range(0, tasks_per_epoch, self.train_batch_size):
                     current_batch_size = min(
@@ -493,6 +494,7 @@ class FewShotPainLearner:
                     ]
                     loss, acc = self.train_batch_step(task_batch)
                     processed_tasks += current_batch_size
+                    processed_batches += 1
 
                     epoch_train_losses.append(float(loss))
                     epoch_train_accs.append(float(acc))
@@ -522,7 +524,7 @@ class FewShotPainLearner:
                     )
 
                     should_run_validation = (
-                        (processed_tasks % val_every_n_train_steps == 0)
+                        (processed_batches % val_every_n_train_steps == 0)
                         or (processed_tasks == tasks_per_epoch)
                     )
                     if not should_run_validation:
@@ -593,7 +595,8 @@ class FewShotPainLearner:
                     self.logger.info(
                         f"[Fold {fold + 1}/{num_subjects}] "
                         f"[Epoch {epoch + 1}/{num_epochs}] "
-                        f"[Validation @ train_task {processed_tasks}/{tasks_per_epoch}] "
+                        f"[Validation @ train_batch {processed_batches}] "
+                        f"[train_task {processed_tasks}/{tasks_per_epoch}] "
                         f"mean_loss={mean_val_loss:.4f}, "
                         f"mean_accuracy={mean_val_acc:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "

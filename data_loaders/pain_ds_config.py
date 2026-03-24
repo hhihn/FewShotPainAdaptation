@@ -12,7 +12,7 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 2  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
     embedding_dim: int = 128  # Encoder embedding dimension
     tcn_attention_pool_size: int = 8  # Downsample factor before self-attention
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
@@ -38,10 +38,10 @@ class PainDatasetConfig:
         0,
         5,
     )  # Raw dataset labels included in each task
-    n_way: int = 6  # Number of classes per task; derived from task_class_ids
+    n_way: int = len(task_class_ids)  # Number of classes per task; derived from task_class_ids
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
-    train_batch_size: int = 8  # Number of tasks per optimizer update
+    train_batch_size: int = 32  # Number of tasks per optimizer update
     num_epochs: int = 10  # Number of epochs per fold
     tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
     val_tasks: int = 20  # Number of validation tasks per validation run
@@ -50,7 +50,7 @@ class PainDatasetConfig:
     train_log_every: int = 10  # Log train metrics every N sampled train tasks
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
-    val_every_n_train_steps: int = 10  # Run validation every N sampled train tasks
+    val_every_n_train_steps: int = 10  # Run validation every N processed train batches
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
 
