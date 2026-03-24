@@ -372,7 +372,7 @@ class FewShotPainLearner:
                     print_fn=lambda line: encoder_summary.write(line + "\n")
                 )
                 fp.write(encoder_summary.getvalue())
-
+        print(self.model.summary())
         return output_path
 
     def train(
