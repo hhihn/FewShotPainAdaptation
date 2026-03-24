@@ -62,22 +62,23 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.pooling_size = pooling_size
         self.attention_pool_size = max(1, int(attention_pool_size))
         self.logger = setup_logger(name="TemporalConvolutionalNetwork")
+
         # Auto-generate filter list if not provided
         if filters_list is None:
-            filters_list = [32 * (2**i) for i in range(num_blocks)]
+            self.filters_list = [32 * (2**i) for i in range(num_blocks)]
+        else:
+            self.filters_list = filters_list
 
-        # Auto-generate dilation rates if not provided
+        # Auto-generate pooling rates if not provided
         if self.pooling_size is None:
             self.pooling_size = 3
 
         if self.strides is None:
             self.strides = 2
 
-        assert len(filters_list) == num_blocks, (
+        assert len(self.filters_list) == num_blocks, (
             "filters_list length must match num_blocks"
         )
-
-        self.filters_list = filters_list
 
         # Build cnn blocks
         self.cnn_blocks = []
