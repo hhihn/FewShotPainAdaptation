@@ -14,7 +14,7 @@ class PainDatasetConfig:
     num_sensors: int = 3  # Number of modalities
     num_tcn_blocks: int = 3  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        64,  # Number of Filters in the Convolutional Layers
+        64,  64, 64# Number of Filters in the Convolutional Layers
     )
     strides: int = 2 # Stride in Convolutional Layer
     pooling_size: int = 2 # Pooling in Convolutional Blocks
