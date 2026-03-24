@@ -143,8 +143,12 @@ class ContractTests(unittest.TestCase):
         expected_val_subject = (
             -1 if len(fold["val_subjects"]) > 1 else fold["val_subjects"][0]
         )
-        self.assertEqual(fold["train_sampler"].get_task()["subject"], expected_train_subject)
-        self.assertEqual(fold["val_sampler"].get_task()["subject"], expected_val_subject)
+        self.assertEqual(
+            fold["train_sampler"].get_task()["subject"], expected_train_subject
+        )
+        self.assertEqual(
+            fold["val_sampler"].get_task()["subject"], expected_val_subject
+        )
         self.assertEqual(
             fold["test_sampler"].get_task()["subject"],
             int(dataset.unique_subjects[0]),
