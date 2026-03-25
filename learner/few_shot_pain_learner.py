@@ -209,9 +209,7 @@ class FewShotPainLearner:
 
         return loss, accuracy
 
-    def evaluate_batch_step(
-        self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, tf.Tensor]:
+    def evaluate_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
         """Evaluate a batch of tasks without updating weights."""
         batch_loss, metrics = self._evaluate_task_batch_loss_and_metrics(
             task_batch,
@@ -526,8 +524,9 @@ class FewShotPainLearner:
                     )
 
                     should_run_validation = (
-                        processed_batches % val_every_n_train_steps == 0
-                    ) or (processed_tasks == tasks_per_epoch)
+                        (processed_batches % val_every_n_train_steps == 0)
+                        or (processed_tasks == tasks_per_epoch)
+                    )
                     if not should_run_validation:
                         continue
 
@@ -540,14 +539,11 @@ class FewShotPainLearner:
                             val_batch_size, val_tasks - val_task_start
                         )
                         val_task_batch = [
-                            val_sampler.get_task()
-                            for _ in range(current_val_batch_size)
+                            val_sampler.get_task() for _ in range(current_val_batch_size)
                         ]
-                        val_loss, val_metrics = (
-                            self._evaluate_task_batch_loss_and_metrics(
-                                val_task_batch,
-                                include_aux_loss=True,
-                            )
+                        val_loss, val_metrics = self._evaluate_task_batch_loss_and_metrics(
+                            val_task_batch,
+                            include_aux_loss=True,
                         )
                         validation_losses.append(val_loss)
                         validation_accs.append(val_metrics["accuracy"])
@@ -610,9 +606,7 @@ class FewShotPainLearner:
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
                 avg_val_loss = (
-                    float(np.mean(epoch_val_losses))
-                    if epoch_val_losses
-                    else float("nan")
+                    float(np.mean(epoch_val_losses)) if epoch_val_losses else float("nan")
                 )
                 avg_val_acc = (
                     float(np.mean(epoch_val_accs)) if epoch_val_accs else float("nan")

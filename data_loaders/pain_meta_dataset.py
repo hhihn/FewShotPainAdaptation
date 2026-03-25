@@ -52,9 +52,7 @@ class PainMetaDataset:
         """
         self.logger = setup_logger("PainMetaDataset")
         self.config = config or PainDatasetConfig()
-        self.task_class_ids = tuple(
-            int(class_id) for class_id in self.config.task_class_ids
-        )
+        self.task_class_ids = tuple(int(class_id) for class_id in self.config.task_class_ids)
         self.data_dir = Path(data_dir)
         self.logger.debug(f"Data directory: {self.data_dir}")
         self.normalize = normalize
