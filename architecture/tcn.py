@@ -29,6 +29,8 @@ class TemporalConvolutionalNetwork(keras.Model):
         num_attention_heads: int = 4,
         attention_key_dim: int = 32,
         attention_dropout: float = 0.2,
+        strides: int = 2,
+        pooling_size: int = 2,
         attention_pool_size: int = 8,
         name: str = "tcn_network",
     ):
@@ -44,6 +46,8 @@ class TemporalConvolutionalNetwork(keras.Model):
             num_attention_heads: Number of attention heads
             attention_key_dim: Key dimension per attention head
             attention_dropout: Dropout in attention layer
+            strides: Stride used by temporal pooling between TCN blocks
+            pooling_size: Pool size used between TCN blocks
             attention_pool_size: Downsampling factor before self-attention.
                 Values > 1 reduce memory from O(L^2) to O((L/pool)^2).
             name: Name of the model
@@ -55,6 +59,8 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.num_blocks = num_blocks
         self.kernel_size = kernel_size
         self.dropout_rate = dropout_rate
+        self.strides = strides
+        self.pooling_size = pooling_size
         self.attention_pool_size = max(1, int(attention_pool_size))
         self.logger = setup_logger(name="TemporalConvolutionalNetwork")
         # Auto-generate filter list if not provided
@@ -169,7 +175,11 @@ class TemporalConvolutionalNetwork(keras.Model):
         )(inputs)
         residual_add = keras.layers.Add(name=f"tcn_block_{block_idx}_add")([x, residual])
         residual_norm = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_resnorm")(residual_add)
-        outputs = keras.layers.MaxPool1D(pool_size=2)(residual_norm)
+        outputs = keras.layers.MaxPool1D(
+            pool_size=self.pooling_size,
+            strides=self.strides,
+            name=f"tcn_block_{block_idx}_pool",
+        )(residual_norm)
 
         return keras.Model(
             inputs=inputs, outputs=outputs, name=f"tcn_block_{block_idx}"
@@ -192,6 +202,11 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         self.logger.debug(f"After TCN blocks: {tf.shape(x)}")
 
+        if self.attention_pool is not None:
+            x = self.attention_pool(x)
+
+        attention_output = self.attention(x, x, training=training)
+        x = self.attention_norm(x + attention_output)
         self.logger.debug(f"After attention: {tf.shape(x)}")
 
         # Global pooling
@@ -218,5 +233,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             "dilation_rates": self.dilation_rates,
             "kernel_size": self.kernel_size,
             "dropout_rate": self.dropout_rate,
+            "strides": self.strides,
+            "pooling_size": self.pooling_size,
             "attention_pool_size": self.attention_pool_size,
         }

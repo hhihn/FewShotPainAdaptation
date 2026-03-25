@@ -16,9 +16,15 @@ class PainDatasetConfig:
     filters_list: Optional[List[int]] = (
         8, 16, 32, # Number of Filters in the Convolutional Layers
     )
-    strides: int = 2 # Stride in Convolutional Layer
-    pooling_size: int = 2 # Pooling in Convolutional Blocks
+    tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
+    tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
+    strides: int = 2 # Stride used by temporal pooling between TCN blocks
+    pooling_size: int = 2 # Pool size used between TCN blocks
+    tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
     embedding_dim: int = 128  # Encoder embedding dimension
+    tcn_attention_heads: int = 4  # Number of self-attention heads inside the TCN
+    tcn_attention_key_dim: int = 32  # Key dimension per TCN attention head
+    tcn_attention_dropout: float = 0.2  # Dropout inside the TCN attention layer
     tcn_attention_pool_size: int = 0  # Downsample factor before self-attention
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
     fusion_transformer_layers: int = 2  # Number of transformer fusion layers
@@ -89,3 +95,29 @@ class PainDatasetConfig:
             raise ValueError("supcon_loss_weight must be non-negative")
         if self.supcon_temperature <= 0:
             raise ValueError("supcon_temperature must be > 0")
+        if self.tcn_kernel_size <= 0:
+            raise ValueError("tcn_kernel_size must be > 0")
+        if self.strides <= 0:
+            raise ValueError("strides must be > 0")
+        if self.pooling_size <= 0:
+            raise ValueError("pooling_size must be > 0")
+        if self.tcn_dropout_rate < 0 or self.tcn_dropout_rate >= 1:
+            raise ValueError("tcn_dropout_rate must be in [0, 1)")
+        if self.tcn_attention_heads <= 0:
+            raise ValueError("tcn_attention_heads must be > 0")
+        if self.tcn_attention_key_dim <= 0:
+            raise ValueError("tcn_attention_key_dim must be > 0")
+        if self.tcn_attention_dropout < 0 or self.tcn_attention_dropout >= 1:
+            raise ValueError("tcn_attention_dropout must be in [0, 1)")
+        if self.tcn_attention_pool_size < 0:
+            raise ValueError("tcn_attention_pool_size must be >= 0")
+        if self.tcn_dilation_rates is not None:
+            self.tcn_dilation_rates = [
+                int(dilation_rate) for dilation_rate in self.tcn_dilation_rates
+            ]
+            if len(self.tcn_dilation_rates) != self.num_tcn_blocks:
+                raise ValueError(
+                    "tcn_dilation_rates length must match num_tcn_blocks"
+                )
+            if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
+                raise ValueError("tcn_dilation_rates values must be > 0")

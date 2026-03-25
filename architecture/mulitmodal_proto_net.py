@@ -17,9 +17,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
         num_classes: int = 6,
         embedding_dim: int = 64,
         num_tcn_blocks: int = 3,
+        tcn_dilation_rates: Optional[List[int]] = None,
+        tcn_kernel_size: int = 3,
         strides: int = 2,
         pooling_size: int = 2,
         filters_list: Optional[List[int]] = None,
+        tcn_dropout_rate: float = 0.3,
+        tcn_attention_heads: int = 4,
+        tcn_attention_key_dim: int = 32,
+        tcn_attention_dropout: float = 0.2,
         tcn_attention_pool_size: int = 8,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "mean",
@@ -42,6 +48,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
             fusion_method: 'concat', 'mean', 'attention'
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
+            tcn_dilation_rates: Dilation rate per TCN block
+            tcn_kernel_size: Kernel size used by Conv1D layers inside each TCN block
+            strides: Stride used by temporal pooling between TCN blocks
+            pooling_size: Pool size used between TCN blocks
+            tcn_dropout_rate: Dropout rate inside each TCN encoder
+            tcn_attention_heads: Number of TCN self-attention heads
+            tcn_attention_key_dim: Key dimension per TCN attention head
+            tcn_attention_dropout: Dropout used by the TCN self-attention layer
             tcn_attention_pool_size: Downsample factor before TCN self-attention
             fusion_transformer_heads: Number of attention heads in transformer fusion
             fusion_transformer_layers: Number of transformer blocks in fusion
@@ -58,9 +72,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.distance_metric = distance_metric
         self.classifier_mode = classifier_mode
         self.num_tcn_blocks = num_tcn_blocks
+        self.tcn_dilation_rates = tcn_dilation_rates
+        self.tcn_kernel_size = tcn_kernel_size
         self.strides = strides
         self.pooling_size = pooling_size
         self.filters_list = filters_list
+        self.tcn_dropout_rate = tcn_dropout_rate
+        self.tcn_attention_heads = tcn_attention_heads
+        self.tcn_attention_key_dim = tcn_attention_key_dim
+        self.tcn_attention_dropout = tcn_attention_dropout
         self.tcn_attention_pool_size = tcn_attention_pool_size
         self.fusion_transformer_heads = fusion_transformer_heads
         self.fusion_transformer_layers = fusion_transformer_layers
@@ -72,8 +92,17 @@ class MultimodalPrototypicalNetwork(keras.Model):
         for modality_name in modality_names:
             self.modality_encoders[modality_name] = self._build_encoder(
                 modality_name=modality_name,
+                sequence_length=sequence_length,
                 embedding_dim=embedding_dim,
                 num_tcn_blocks=num_tcn_blocks,
+                tcn_dilation_rates=tcn_dilation_rates,
+                tcn_kernel_size=tcn_kernel_size,
+                strides=strides,
+                pooling_size=pooling_size,
+                tcn_dropout_rate=tcn_dropout_rate,
+                tcn_attention_heads=tcn_attention_heads,
+                tcn_attention_key_dim=tcn_attention_key_dim,
+                tcn_attention_dropout=tcn_attention_dropout,
                 tcn_attention_pool_size=tcn_attention_pool_size,
                 filters_list=filters_list,
             )
@@ -108,16 +137,34 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def _build_encoder(
         self,
         modality_name: str,
+        sequence_length: int,
         embedding_dim: int,
         num_tcn_blocks: int,
+        tcn_dilation_rates: Optional[List[int]],
+        tcn_kernel_size: int,
+        strides: int,
+        pooling_size: int,
+        tcn_dropout_rate: float,
+        tcn_attention_heads: int,
+        tcn_attention_key_dim: int,
+        tcn_attention_dropout: float,
         tcn_attention_pool_size: int,
         filters_list: Optional[List[int]] = None,
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
         model = TemporalConvolutionalNetwork(
             name=f"tcn_{modality_name}",
+            sequence_length=sequence_length,
             embedding_dim=embedding_dim,
             num_blocks=num_tcn_blocks,
+            dilation_rates=tcn_dilation_rates,
+            kernel_size=tcn_kernel_size,
+            dropout_rate=tcn_dropout_rate,
+            num_attention_heads=tcn_attention_heads,
+            attention_key_dim=tcn_attention_key_dim,
+            attention_dropout=tcn_attention_dropout,
+            strides=strides,
+            pooling_size=pooling_size,
             attention_pool_size=tcn_attention_pool_size,
             filters_list=filters_list,
         )
