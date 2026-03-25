@@ -113,7 +113,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
 
         # Global pooling
-        self.flattened = keras.layers.Flatten(name="flattened")
+        self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
@@ -167,7 +167,6 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_residual_proj",
         )(inputs)
-
         residual_add = keras.layers.Add(name=f"tcn_block_{block_idx}_add")([x, residual])
         residual_norm = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_resnorm")(residual_add)
         outputs = keras.layers.MaxPool1D(pool_size=2)(residual_norm)
@@ -193,24 +192,18 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         self.logger.debug(f"After TCN blocks: {tf.shape(x)}")
 
-        # Self-attention
-        attention_x = x
-        if self.attention_pool is not None:
-            attention_x = self.attention_pool(attention_x)
-
-        attention_out = self.attention(attention_x, attention_x, training=training)
-        x = self.attention_norm(attention_x + attention_out)
-
         self.logger.debug(f"After attention: {tf.shape(x)}")
 
         # Global pooling
-        x = self.flattened(x)
+        x = self.global_pooling(x)
 
         self.logger.debug(f"After global pool: {tf.shape(x)}")
 
         # Final embedding
         x = self.embedding_dense_hidden(x)
+        x = keras.layers.Dropout(rate=self.dropout_rate, name="embedding_dense_hidden_dropout")(x)
         x = self.embedding_dense(x)
+        x = keras.layers.Dropout(rate=self.dropout_rate, name="embedding_dense_hidden")(x)
         x = self.embedding_norm(x)
 
         return x
