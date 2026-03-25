@@ -116,6 +116,9 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.global_pool = keras.layers.GlobalAveragePooling1D(name="global_pool")
 
         # Final embedding layers
+        self.embedding_dense_hidden = keras.layers.Dense(
+            embedding_dim * 2, activation="relu", name="embedding_dense_hidden", kernel_initializer="he_normal"
+        )
         self.embedding_dense = keras.layers.Dense(
             embedding_dim, activation="relu", name="embedding_dense", kernel_initializer="he_normal"
         )
@@ -165,7 +168,9 @@ class TemporalConvolutionalNetwork(keras.Model):
             name=f"tcn_block_{block_idx}_residual_proj",
         )(inputs)
 
-        outputs = keras.layers.Add(name=f"tcn_block_{block_idx}_add")([x, residual])
+        residual_add = keras.layers.Add(name=f"tcn_block_{block_idx}_add")([x, residual])
+        residual_norm = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_resnorm")(residual_add)
+        outputs = keras.layers.MaxPool1D(pool_size=2)(residual_norm)
 
         return keras.Model(
             inputs=inputs, outputs=outputs, name=f"tcn_block_{block_idx}"
@@ -204,6 +209,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.debug(f"After global pool: {tf.shape(x)}")
 
         # Final embedding
+        x = self.embedding_dense_hidden(x)
         x = self.embedding_dense(x)
         x = self.embedding_norm(x)
 

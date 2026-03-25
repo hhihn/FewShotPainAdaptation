@@ -12,14 +12,14 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 3  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        32, # Number of Filters in the Convolutional Layers
+        8, 16, 32, # Number of Filters in the Convolutional Layers
     )
     strides: int = 2 # Stride in Convolutional Layer
     pooling_size: int = 2 # Pooling in Convolutional Blocks
     embedding_dim: int = 128  # Encoder embedding dimension
-    tcn_attention_pool_size: int = 2  # Downsample factor before self-attention
+    tcn_attention_pool_size: int = 0  # Downsample factor before self-attention
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
     fusion_transformer_layers: int = 2  # Number of transformer fusion layers
     fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
