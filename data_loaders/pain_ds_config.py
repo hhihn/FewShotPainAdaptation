@@ -49,7 +49,7 @@ class PainDatasetConfig:
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
     task_normalize_mode: str = "subject"  # Episodic normalization: subject, support, or none
-    classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
+    classifier_mode: str = "soft_knn"  # Episodic classifier: prototype or soft_knn
     supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
     train_batch_size: int = 20  # Number of tasks per optimizer update
