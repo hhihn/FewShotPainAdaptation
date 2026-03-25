@@ -42,6 +42,8 @@ class FewShotPainLearner:
         self.deterministic_ops = bool(config.deterministic_ops)
         self.embedding_dim = config.embedding_dim
         self.train_batch_size = max(1, int(config.train_batch_size))
+        self.supcon_loss_weight = float(config.supcon_loss_weight)
+        self.supcon_temperature = float(config.supcon_temperature)
         self.logger = setup_logger("few_shot_pain_learner")
         set_global_reproducibility(
             seed=self.seed,
@@ -74,6 +76,8 @@ class FewShotPainLearner:
             "task_class_ids": list(self.config.task_class_ids),
             "k_shot": self.config.k_shot,
             "q_query": self.config.q_query,
+            "supcon_loss_weight": self.supcon_loss_weight,
+            "supcon_temperature": self.supcon_temperature,
             "train_batch_size": self.train_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
@@ -136,17 +140,114 @@ class FewShotPainLearner:
         )
         self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
 
+    def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
+        """Return regularization losses added by submodules, or zero if absent."""
+        if not self.model.losses:
+            return tf.constant(0.0, dtype=dtype)
+        return tf.add_n(self.model.losses)
+
+    def _compute_supervised_contrastive_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute a label-aware contrastive loss over one episode."""
+        if self.supcon_loss_weight <= 0:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+        logits = tf.matmul(
+            normalized_embeddings, normalized_embeddings, transpose_b=True
+        )
+        logits = logits / tf.cast(self.supcon_temperature, logits.dtype)
+
+        batch_size = tf.shape(labels)[0]
+        labels = tf.reshape(labels, (-1, 1))
+        positive_mask = tf.cast(tf.equal(labels, tf.transpose(labels)), logits.dtype)
+        logits_mask = tf.ones_like(positive_mask) - tf.eye(
+            batch_size, dtype=logits.dtype
+        )
+        positive_mask = positive_mask * logits_mask
+
+        logits = logits - tf.reduce_max(logits, axis=1, keepdims=True)
+        exp_logits = tf.exp(logits) * logits_mask
+        log_prob = logits - tf.math.log(
+            tf.reduce_sum(exp_logits, axis=1, keepdims=True) + 1e-8
+        )
+
+        positive_counts = tf.reduce_sum(positive_mask, axis=1)
+        mean_log_prob_pos = tf.math.divide_no_nan(
+            tf.reduce_sum(positive_mask * log_prob, axis=1),
+            positive_counts,
+        )
+        valid_anchor_mask = tf.cast(positive_counts > 0, logits.dtype)
+
+        return -tf.math.divide_no_nan(
+            tf.reduce_sum(mean_log_prob_pos * valid_anchor_mask),
+            tf.reduce_sum(valid_anchor_mask),
+        )
+
+    def _forward_task(
+        self,
+        support_x: tf.Tensor,
+        support_y: tf.Tensor,
+        query_x: tf.Tensor,
+        query_y: tf.Tensor,
+        training: bool,
+        include_aux_loss: bool,
+        return_similarity_scores: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run one task and compute classification plus optional embedding losses."""
+        episode_outputs = self.model.forward_episode(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=training,
+        )
+        logits = episode_outputs["logits"]
+        task_loss = self.loss_fn(query_y, logits)
+        model_aux_loss = self._compute_model_aux_loss(dtype=task_loss.dtype)
+
+        embeddings = tf.concat(
+            [episode_outputs["support_embeddings"], episode_outputs["query_embeddings"]],
+            axis=0,
+        )
+        labels = tf.concat([support_y, query_y], axis=0)
+        contrastive_loss = (
+            tf.cast(self.supcon_loss_weight, task_loss.dtype)
+            * self._compute_supervised_contrastive_loss(embeddings, labels)
+        )
+
+        total_aux_loss = model_aux_loss + contrastive_loss
+        total_loss = task_loss + total_aux_loss if include_aux_loss else task_loss
+
+        outputs = {
+            "logits": logits,
+            "loss": total_loss,
+            "task_loss": task_loss,
+            "contrastive_loss": contrastive_loss,
+            "model_aux_loss": model_aux_loss,
+            "support_embeddings": episode_outputs["support_embeddings"],
+            "query_embeddings": episode_outputs["query_embeddings"],
+            "prototypes": episode_outputs["prototypes"],
+        }
+        if return_similarity_scores:
+            outputs["similarity_scores"] = self.model.compute_similarity_scores(
+                episode_outputs["query_embeddings"], episode_outputs["prototypes"]
+            )
+        return outputs
+
     def train_step(self, support_x, support_y, query_x, query_y):
         """Single training step on one task."""
         with tf.GradientTape() as tape:
-            logits = self.model(support_x, support_y, query_x, training=True)
-            task_loss = self.loss_fn(query_y, logits)
-            aux_loss = (
-                tf.add_n(self.model.losses)
-                if self.model.losses
-                else tf.constant(0.0, dtype=task_loss.dtype)
+            task_outputs = self._forward_task(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                query_y=query_y,
+                training=True,
+                include_aux_loss=True,
             )
-            loss = task_loss + aux_loss
+            logits = task_outputs["logits"]
+            loss = task_outputs["loss"]
 
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
@@ -159,25 +260,31 @@ class FewShotPainLearner:
 
         return loss, accuracy
 
-    def train_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
+    def train_batch_step(
+        self, task_batch: list[dict]
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Single optimizer update using a batch of tasks."""
         with tf.GradientTape() as tape:
             losses = []
             accuracies = []
+            contrastive_losses = []
             for task_dict in task_batch:
                 support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
                 support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
                 query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
                 query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
 
-                logits = self.model(support_x, support_y, query_x, training=True)
-                task_loss = self.loss_fn(query_y, logits)
-                aux_loss = (
-                    tf.add_n(self.model.losses)
-                    if self.model.losses
-                    else tf.constant(0.0, dtype=task_loss.dtype)
+                task_outputs = self._forward_task(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    query_y=query_y,
+                    training=True,
+                    include_aux_loss=True,
                 )
-                loss = task_loss + aux_loss
+                logits = task_outputs["logits"]
+                loss = task_outputs["loss"]
+                contrastive_loss = task_outputs["contrastive_loss"]
                 predictions = tf.argmax(logits, axis=1)
                 accuracy = tf.reduce_mean(
                     tf.cast(
@@ -186,24 +293,28 @@ class FewShotPainLearner:
                 )
                 losses.append(loss)
                 accuracies.append(accuracy)
+                contrastive_losses.append(contrastive_loss)
 
             batch_loss = tf.reduce_mean(tf.stack(losses))
             batch_acc = tf.reduce_mean(tf.stack(accuracies))
+            batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
 
         gradients = tape.gradient(batch_loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return batch_loss, batch_acc
+        return batch_loss, batch_acc, batch_contrastive_loss
 
     def evaluate_task(self, support_x, support_y, query_x, query_y):
         """Evaluate on one task without updating weights."""
-        logits = self.model(support_x, support_y, query_x, training=False)
-        task_loss = self.loss_fn(query_y, logits)
-        aux_loss = (
-            tf.add_n(self.model.losses)
-            if self.model.losses
-            else tf.constant(0.0, dtype=task_loss.dtype)
+        task_outputs = self._forward_task(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            query_y=query_y,
+            training=False,
+            include_aux_loss=True,
         )
-        loss = task_loss + aux_loss
+        logits = task_outputs["logits"]
+        loss = task_outputs["loss"]
 
         predictions = tf.argmax(logits, axis=1)
         accuracy = tf.reduce_mean(
@@ -214,7 +325,7 @@ class FewShotPainLearner:
 
     def evaluate_batch_step(
         self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Evaluate a batch of tasks without updating weights."""
         batch_loss, metrics = self._evaluate_task_batch_loss_and_metrics(
             task_batch,
@@ -223,6 +334,7 @@ class FewShotPainLearner:
         return (
             tf.constant(batch_loss, dtype=tf.float32),
             tf.constant(metrics["accuracy"], dtype=tf.float32),
+            tf.constant(metrics["contrastive_loss"], dtype=tf.float32),
         )
 
     @staticmethod
@@ -256,6 +368,7 @@ class FewShotPainLearner:
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate classification/similarity metrics."""
         losses = []
+        contrastive_losses = []
         all_true = []
         all_pred = []
         all_intra_class_scores = []
@@ -268,29 +381,26 @@ class FewShotPainLearner:
             query_y_np = task_dict["query_y"].astype(np.int32)
             query_y = tf.constant(query_y_np, dtype=tf.int32)
 
-            logits, similarity_scores = self.model(
+            task_outputs = self._forward_task(
                 support_x,
                 support_y,
                 query_x,
+                query_y,
                 training=False,
+                include_aux_loss=include_aux_loss,
                 return_similarity_scores=True,
             )
-            task_loss = self.loss_fn(query_y, logits)
-            if include_aux_loss:
-                aux_loss = (
-                    tf.add_n(self.model.losses)
-                    if self.model.losses
-                    else tf.constant(0.0, dtype=task_loss.dtype)
-                )
-                loss = task_loss + aux_loss
-            else:
-                loss = task_loss
+            logits = task_outputs["logits"]
+            similarity_scores = task_outputs["similarity_scores"]
+            loss = task_outputs["loss"]
             pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
             intra_class_scores, inter_class_scores = self._split_similarity_scores(
                 similarity_scores.numpy(), query_y_np
             )
 
             losses.append(float(loss))
+            if include_aux_loss:
+                contrastive_losses.append(float(task_outputs["contrastive_loss"]))
             all_true.append(query_y_np)
             all_pred.append(pred)
             all_intra_class_scores.append(intra_class_scores)
@@ -305,6 +415,8 @@ class FewShotPainLearner:
                 np.concatenate(all_inter_class_scores, axis=0),
             )
         )
+        if include_aux_loss:
+            metrics["contrastive_loss"] = float(np.mean(contrastive_losses))
         return float(np.mean(losses)), metrics
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -497,7 +609,7 @@ class FewShotPainLearner:
                     task_batch = [
                         train_sampler.get_task() for _ in range(current_batch_size)
                     ]
-                    loss, acc = self.train_batch_step(task_batch)
+                    loss, acc, contrastive_loss = self.train_batch_step(task_batch)
                     processed_tasks += current_batch_size
                     processed_batches += 1
 
@@ -512,6 +624,7 @@ class FewShotPainLearner:
                         step=processed_tasks,
                         step_total=tasks_per_epoch,
                         loss=float(loss),
+                        contrastive_loss=float(contrastive_loss),
                         accuracy=float(acc),
                     )
                     progress.log_step(
@@ -525,17 +638,22 @@ class FewShotPainLearner:
                         loss=float(loss),
                         metric_value=float(acc),
                         metric_name="accuracy",
+                        extra_metrics={
+                            "contrastive_loss": float(contrastive_loss),
+                        },
                         log_every=train_log_every,
                     )
 
                     should_run_validation = (
-                        processed_batches % val_every_n_train_steps == 0
-                    ) or (processed_tasks == tasks_per_epoch)
+                        (processed_batches % val_every_n_train_steps == 0)
+                        or (processed_tasks == tasks_per_epoch)
+                    )
                     if not should_run_validation:
                         continue
 
                     validation_losses = []
                     validation_accs = []
+                    validation_contrastive_losses = []
                     validation_intra_class_similarities = []
                     validation_inter_class_similarities = []
                     for val_task_start in range(0, val_tasks, val_batch_size):
@@ -543,17 +661,17 @@ class FewShotPainLearner:
                             val_batch_size, val_tasks - val_task_start
                         )
                         val_task_batch = [
-                            val_sampler.get_task()
-                            for _ in range(current_val_batch_size)
+                            val_sampler.get_task() for _ in range(current_val_batch_size)
                         ]
-                        val_loss, val_metrics = (
-                            self._evaluate_task_batch_loss_and_metrics(
-                                val_task_batch,
-                                include_aux_loss=True,
-                            )
+                        val_loss, val_metrics = self._evaluate_task_batch_loss_and_metrics(
+                            val_task_batch,
+                            include_aux_loss=True,
                         )
                         validation_losses.append(val_loss)
                         validation_accs.append(val_metrics["accuracy"])
+                        validation_contrastive_losses.append(
+                            val_metrics["contrastive_loss"]
+                        )
                         validation_intra_class_similarities.append(
                             val_metrics["intra_class_similarity"]
                         )
@@ -563,6 +681,9 @@ class FewShotPainLearner:
 
                     mean_val_loss = float(np.mean(validation_losses))
                     mean_val_acc = float(np.mean(validation_accs))
+                    mean_val_contrastive_loss = float(
+                        np.mean(validation_contrastive_losses)
+                    )
                     mean_val_intra_class_similarity = float(
                         np.mean(validation_intra_class_similarities)
                     )
@@ -580,6 +701,7 @@ class FewShotPainLearner:
                         step=processed_tasks,
                         step_total=tasks_per_epoch,
                         loss=mean_val_loss,
+                        contrastive_loss=mean_val_contrastive_loss,
                         accuracy=mean_val_acc,
                         intra_class_similarity=mean_val_intra_class_similarity,
                         inter_class_similarity=mean_val_inter_class_similarity,
@@ -594,6 +716,7 @@ class FewShotPainLearner:
                         metric_value=mean_val_acc,
                         metric_name="accuracy",
                         extra_metrics={
+                            "contrastive_loss": mean_val_contrastive_loss,
                             "intra_class_similarity": mean_val_intra_class_similarity,
                             "inter_class_similarity": mean_val_inter_class_similarity,
                         },
@@ -606,6 +729,7 @@ class FewShotPainLearner:
                         f"[train_task {processed_tasks}/{tasks_per_epoch}] "
                         f"mean_loss={mean_val_loss:.4f}, "
                         f"mean_accuracy={mean_val_acc:.4f}, "
+                        f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
                         f"inter_class_similarity={mean_val_inter_class_similarity:.4f}"
                     )
@@ -613,9 +737,7 @@ class FewShotPainLearner:
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
                 avg_val_loss = (
-                    float(np.mean(epoch_val_losses))
-                    if epoch_val_losses
-                    else float("nan")
+                    float(np.mean(epoch_val_losses)) if epoch_val_losses else float("nan")
                 )
                 avg_val_acc = (
                     float(np.mean(epoch_val_accs)) if epoch_val_accs else float("nan")

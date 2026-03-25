@@ -1,6 +1,6 @@
 import tensorflow as tf
-from tensorflow import keras, strided_slice
-from typing import Tuple, Optional, List
+from tensorflow import keras
+from typing import Tuple
 from utils.logger import setup_logger
 
 from architecture.tcn import TemporalConvolutionalNetwork
@@ -17,12 +17,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         num_classes: int = 6,
         embedding_dim: int = 64,
         num_tcn_blocks: int = 3,
-        strides: int = 2,
-        pooling_size: int = 2,
-        filters_list: Optional[List[int]] = None,
         tcn_attention_pool_size: int = 8,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
-        fusion_method: str = "mean",
+        fusion_method: str = "concat",
         distance_metric: str = "cosine",
         fusion_transformer_heads: int = 4,
         fusion_transformer_layers: int = 2,
@@ -36,9 +33,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
             num_classes: Number of task classes
             embedding_dim: Dimension of embedding space per modality
             modality_names: Names of modalities (EDA, ECG, EMG)
-            filters_list: List of filters in each convolution layer
-            strides: Strides of convolution layers
-            pooling_size: Size of pooling layer
             fusion_method: 'concat', 'mean', 'attention'
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
@@ -57,9 +51,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.fusion_method = fusion_method
         self.distance_metric = distance_metric
         self.num_tcn_blocks = num_tcn_blocks
-        self.strides = strides
-        self.pooling_size = pooling_size
-        self.filters_list = filters_list
         self.tcn_attention_pool_size = tcn_attention_pool_size
         self.fusion_transformer_heads = fusion_transformer_heads
         self.fusion_transformer_layers = fusion_transformer_layers
@@ -70,13 +61,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.modality_encoders = {}
         for modality_name in modality_names:
             self.modality_encoders[modality_name] = self._build_encoder(
-                modality_name=modality_name,
-                embedding_dim=embedding_dim,
-                num_tcn_blocks=num_tcn_blocks,
-                tcn_attention_pool_size=tcn_attention_pool_size,
-                filters_list=filters_list,
-                strides=strides,
-                pooling_size=pooling_size
+                modality_name, embedding_dim, num_tcn_blocks, tcn_attention_pool_size
             )
 
         # Fusion layer based on fusion method
@@ -110,10 +95,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         modality_name: str,
         embedding_dim: int,
         num_tcn_blocks: int,
-        strides: int,
         tcn_attention_pool_size: int,
-        pooling_size: int,
-        filters_list: Optional[List[int]] = None,
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
         model = TemporalConvolutionalNetwork(
@@ -121,9 +103,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
             embedding_dim=embedding_dim,
             num_blocks=num_tcn_blocks,
             attention_pool_size=tcn_attention_pool_size,
-            strides=strides,
-            filters_list=filters_list,
-            pooling_size=pooling_size
         )
 
         self.logger.debug(f"Built CNN encoder with {modality_name}")
@@ -223,6 +202,28 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return tf.stack(prototypes, axis=0)
 
+    def forward_episode(self, support_x, support_y, query_x, training=False):
+        """Run one episode and return logits plus intermediate embedding tensors."""
+        support_embeddings = self.encode(support_x, training=training)
+        query_embeddings = self.encode(query_x, training=training)
+
+        self.logger.debug(f"Support embeddings shape: {tf.shape(support_embeddings)}")
+        self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
+
+        prototypes = self._compute_prototypes(support_embeddings, support_y)
+        self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
+
+        distances = self.compute_distances(query_embeddings, prototypes)
+        logits = -distances
+
+        return {
+            "support_embeddings": support_embeddings,
+            "query_embeddings": query_embeddings,
+            "prototypes": prototypes,
+            "distances": distances,
+            "logits": logits,
+        }
+
     def call(
         self,
         support_x,
@@ -243,27 +244,17 @@ class MultimodalPrototypicalNetwork(keras.Model):
         Returns:
             logits: [n_way * q_query, n_way]
         """
-        # Encode all samples
-        support_embeddings = self.encode(support_x, training=training)
-        query_embeddings = self.encode(query_x, training=training)
-
-        self.logger.debug(f"Support embeddings shape: {tf.shape(support_embeddings)}")
-        self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
-
-        # Compute class prototypes as mean of support embeddings per class
-        prototypes = self._compute_prototypes(support_embeddings, support_y)
-
-        self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
-
-        # Compute distances to prototypes
-        distances = self.compute_distances(query_embeddings, prototypes)
-
-        # Convert distances to logits (lower distance = higher probability)
-        logits = -distances
+        episode_outputs = self.forward_episode(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=training,
+        )
+        logits = episode_outputs["logits"]
 
         if return_similarity_scores:
             similarity_scores = self.compute_similarity_scores(
-                query_embeddings, prototypes
+                episode_outputs["query_embeddings"], episode_outputs["prototypes"]
             )
             return logits, similarity_scores
 
