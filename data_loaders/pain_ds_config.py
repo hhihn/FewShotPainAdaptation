@@ -48,9 +48,9 @@ class PainDatasetConfig:
     )  # Number of classes per task; derived from task_class_ids
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
-    supcon_loss_weight: float = 0.1  # Weight for supervised contrastive embedding loss
-    supcon_temperature: float = 0.1  # Temperature for supervised contrastive loss
-    train_batch_size: int = 16  # Number of tasks per optimizer update
+    supcon_loss_weight: float = 1.0  # Weight for supervised contrastive embedding loss
+    supcon_temperature: float = 0.01  # Temperature for supervised contrastive loss
+    train_batch_size: int = 20  # Number of tasks per optimizer update
     num_epochs: int = 10  # Number of epochs per fold
     tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
     val_tasks: int = 20  # Number of validation tasks per validation run

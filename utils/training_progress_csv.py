@@ -33,6 +33,7 @@ class TrainingProgressCSVWriter:
             "step",
             "step_total",
             "loss",
+            "task_loss",
             "contrastive_loss",
             "accuracy",
             "precision",
@@ -40,6 +41,7 @@ class TrainingProgressCSVWriter:
             "f1",
             "intra_class_similarity",
             "inter_class_similarity",
+            "similarity_margin",
         ]
         self._writer = csv.DictWriter(self._file, fieldnames=fieldnames)
         self._writer.writeheader()
@@ -53,6 +55,7 @@ class TrainingProgressCSVWriter:
         test_subject: int,
         event_type: str,
         loss: float,
+        task_loss: Optional[float] = None,
         contrastive_loss: Optional[float] = None,
         accuracy: Optional[float] = None,
         precision: Optional[float] = None,
@@ -60,6 +63,7 @@ class TrainingProgressCSVWriter:
         f1: Optional[float] = None,
         intra_class_similarity: Optional[float] = None,
         inter_class_similarity: Optional[float] = None,
+        similarity_margin: Optional[float] = None,
         epoch: Optional[int] = None,
         epoch_total: Optional[int] = None,
         step: Optional[int] = None,
@@ -80,6 +84,7 @@ class TrainingProgressCSVWriter:
                 "step": step,
                 "step_total": step_total,
                 "loss": loss,
+                "task_loss": task_loss,
                 "contrastive_loss": contrastive_loss,
                 "accuracy": accuracy,
                 "precision": precision,
@@ -87,6 +92,7 @@ class TrainingProgressCSVWriter:
                 "f1": f1,
                 "intra_class_similarity": intra_class_similarity,
                 "inter_class_similarity": inter_class_similarity,
+                "similarity_margin": similarity_margin,
             }
         )
 
