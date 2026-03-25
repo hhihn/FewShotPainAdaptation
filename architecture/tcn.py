@@ -113,7 +113,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
 
         # Global pooling
-        self.global_pool = keras.layers.GlobalAveragePooling1D(name="global_pool")
+        self.flattened = keras.layers.Flatten(name="flattened")
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
@@ -204,7 +204,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.debug(f"After attention: {tf.shape(x)}")
 
         # Global pooling
-        x = self.global_pool(x)
+        x = self.flattened(x)
 
         self.logger.debug(f"After global pool: {tf.shape(x)}")
 
