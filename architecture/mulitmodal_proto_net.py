@@ -202,6 +202,28 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return tf.stack(prototypes, axis=0)
 
+    def forward_episode(self, support_x, support_y, query_x, training=False):
+        """Run one episode and return logits plus intermediate embedding tensors."""
+        support_embeddings = self.encode(support_x, training=training)
+        query_embeddings = self.encode(query_x, training=training)
+
+        self.logger.debug(f"Support embeddings shape: {tf.shape(support_embeddings)}")
+        self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
+
+        prototypes = self._compute_prototypes(support_embeddings, support_y)
+        self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
+
+        distances = self.compute_distances(query_embeddings, prototypes)
+        logits = -distances
+
+        return {
+            "support_embeddings": support_embeddings,
+            "query_embeddings": query_embeddings,
+            "prototypes": prototypes,
+            "distances": distances,
+            "logits": logits,
+        }
+
     def call(
         self,
         support_x,
@@ -222,27 +244,17 @@ class MultimodalPrototypicalNetwork(keras.Model):
         Returns:
             logits: [n_way * q_query, n_way]
         """
-        # Encode all samples
-        support_embeddings = self.encode(support_x, training=training)
-        query_embeddings = self.encode(query_x, training=training)
-
-        self.logger.debug(f"Support embeddings shape: {tf.shape(support_embeddings)}")
-        self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
-
-        # Compute class prototypes as mean of support embeddings per class
-        prototypes = self._compute_prototypes(support_embeddings, support_y)
-
-        self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
-
-        # Compute distances to prototypes
-        distances = self.compute_distances(query_embeddings, prototypes)
-
-        # Convert distances to logits (lower distance = higher probability)
-        logits = -distances
+        episode_outputs = self.forward_episode(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=training,
+        )
+        logits = episode_outputs["logits"]
 
         if return_similarity_scores:
             similarity_scores = self.compute_similarity_scores(
-                query_embeddings, prototypes
+                episode_outputs["query_embeddings"], episode_outputs["prototypes"]
             )
             return logits, similarity_scores
 
