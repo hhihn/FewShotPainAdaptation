@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow import keras
-from typing import Tuple
+from typing import Tuple, Optional, List
 from utils.logger import setup_logger
 
 from architecture.tcn import TemporalConvolutionalNetwork
@@ -17,9 +17,12 @@ class MultimodalPrototypicalNetwork(keras.Model):
         num_classes: int = 6,
         embedding_dim: int = 64,
         num_tcn_blocks: int = 3,
+        strides: int = 2,
+        pooling_size: int = 2,
+        filters_list: Optional[List[int]] = None,
         tcn_attention_pool_size: int = 8,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
-        fusion_method: str = "concat",
+        fusion_method: str = "mean",
         distance_metric: str = "cosine",
         fusion_transformer_heads: int = 4,
         fusion_transformer_layers: int = 2,
@@ -33,6 +36,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             num_classes: Number of task classes
             embedding_dim: Dimension of embedding space per modality
             modality_names: Names of modalities (EDA, ECG, EMG)
+            filters_list: List of filters in each convolution layer
+            strides: Strides of convolution layers
             fusion_method: 'concat', 'mean', 'attention'
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
@@ -51,6 +56,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.fusion_method = fusion_method
         self.distance_metric = distance_metric
         self.num_tcn_blocks = num_tcn_blocks
+        self.strides = strides
+        self.pooling_size = pooling_size
+        self.filters_list = filters_list
         self.tcn_attention_pool_size = tcn_attention_pool_size
         self.fusion_transformer_heads = fusion_transformer_heads
         self.fusion_transformer_layers = fusion_transformer_layers
@@ -61,7 +69,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.modality_encoders = {}
         for modality_name in modality_names:
             self.modality_encoders[modality_name] = self._build_encoder(
-                modality_name, embedding_dim, num_tcn_blocks, tcn_attention_pool_size
+                modality_name=modality_name,
+                embedding_dim=embedding_dim,
+                num_tcn_blocks=num_tcn_blocks,
+                tcn_attention_pool_size=tcn_attention_pool_size,
+                filters_list=filters_list,
             )
 
         # Fusion layer based on fusion method
@@ -96,6 +108,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         embedding_dim: int,
         num_tcn_blocks: int,
         tcn_attention_pool_size: int,
+        filters_list: Optional[List[int]] = None,
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
         model = TemporalConvolutionalNetwork(
@@ -103,6 +116,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             embedding_dim=embedding_dim,
             num_blocks=num_tcn_blocks,
             attention_pool_size=tcn_attention_pool_size,
+            filters_list=filters_list,
         )
 
         self.logger.debug(f"Built CNN encoder with {modality_name}")
