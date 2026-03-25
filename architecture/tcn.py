@@ -149,7 +149,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"cnn_block_{block_idx}_conv1",
         )(inputs)
-        x = keras.layers.LayerNormalization(name=f"cnn_block_{block_idx}_bn1")(x)
+        x = keras.layers.BatchNormalization(name=f"cnn_block_{block_idx}_bn1")(x)
         x = keras.layers.Conv1D(
             filters,
             kernel_size=self.kernel_size,
@@ -159,11 +159,11 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"cnn_block_{block_idx}_conv2",
         )(x)
-        x = keras.layers.LayerNormalization(name=f"cnn_block_{block_idx}_bn2")(x)
+        x = keras.layers.BatchNormalization(name=f"cnn_block_{block_idx}_bn2")(x)
         x = keras.layers.Dropout(
             self.dropout_rate, name=f"cnn_block_{block_idx}_dropout"
         )(x)
-        outputs = keras.layers.AveragePooling1D(pool_size=pooling_size)(x)
+        outputs = keras.layers.MaxPooling1D(pool_size=pooling_size)(x)
 
         return keras.Model(
             inputs=inputs, outputs=outputs, name=f"cnn_block_{block_idx}"
