@@ -262,10 +262,11 @@ class FewShotPainLearner:
 
     def train_batch_step(
         self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Single optimizer update using a batch of tasks."""
         with tf.GradientTape() as tape:
             losses = []
+            task_losses = []
             accuracies = []
             contrastive_losses = []
             for task_dict in task_batch:
@@ -284,6 +285,7 @@ class FewShotPainLearner:
                 )
                 logits = task_outputs["logits"]
                 loss = task_outputs["loss"]
+                task_loss = task_outputs["task_loss"]
                 contrastive_loss = task_outputs["contrastive_loss"]
                 predictions = tf.argmax(logits, axis=1)
                 accuracy = tf.reduce_mean(
@@ -292,16 +294,18 @@ class FewShotPainLearner:
                     )
                 )
                 losses.append(loss)
+                task_losses.append(task_loss)
                 accuracies.append(accuracy)
                 contrastive_losses.append(contrastive_loss)
 
             batch_loss = tf.reduce_mean(tf.stack(losses))
+            batch_task_loss = tf.reduce_mean(tf.stack(task_losses))
             batch_acc = tf.reduce_mean(tf.stack(accuracies))
             batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
 
         gradients = tape.gradient(batch_loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return batch_loss, batch_acc, batch_contrastive_loss
+        return batch_loss, batch_task_loss, batch_acc, batch_contrastive_loss
 
     def evaluate_task(self, support_x, support_y, query_x, query_y):
         """Evaluate on one task without updating weights."""
@@ -356,9 +360,12 @@ class FewShotPainLearner:
         intra_class_scores: np.ndarray, inter_class_scores: np.ndarray
     ) -> dict:
         """Aggregate similarity statistics using the existing metric dict shape."""
+        intra_mean = float(np.mean(intra_class_scores))
+        inter_mean = float(np.mean(inter_class_scores))
         return {
-            "intra_class_similarity": float(np.mean(intra_class_scores)),
-            "inter_class_similarity": float(np.mean(inter_class_scores)),
+            "intra_class_similarity": intra_mean,
+            "inter_class_similarity": inter_mean,
+            "similarity_margin": intra_mean - inter_mean,
         }
 
     def _evaluate_task_batch_loss_and_metrics(
@@ -368,6 +375,7 @@ class FewShotPainLearner:
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate classification/similarity metrics."""
         losses = []
+        task_losses = []
         contrastive_losses = []
         all_true = []
         all_pred = []
@@ -393,12 +401,14 @@ class FewShotPainLearner:
             logits = task_outputs["logits"]
             similarity_scores = task_outputs["similarity_scores"]
             loss = task_outputs["loss"]
+            task_loss = task_outputs["task_loss"]
             pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
             intra_class_scores, inter_class_scores = self._split_similarity_scores(
                 similarity_scores.numpy(), query_y_np
             )
 
             losses.append(float(loss))
+            task_losses.append(float(task_loss))
             if include_aux_loss:
                 contrastive_losses.append(float(task_outputs["contrastive_loss"]))
             all_true.append(query_y_np)
@@ -415,6 +425,7 @@ class FewShotPainLearner:
                 np.concatenate(all_inter_class_scores, axis=0),
             )
         )
+        metrics["task_loss"] = float(np.mean(task_losses))
         if include_aux_loss:
             metrics["contrastive_loss"] = float(np.mean(contrastive_losses))
         return float(np.mean(losses)), metrics
@@ -609,7 +620,9 @@ class FewShotPainLearner:
                     task_batch = [
                         train_sampler.get_task() for _ in range(current_batch_size)
                     ]
-                    loss, acc, contrastive_loss = self.train_batch_step(task_batch)
+                    loss, task_loss, acc, contrastive_loss = self.train_batch_step(
+                        task_batch
+                    )
                     processed_tasks += current_batch_size
                     processed_batches += 1
 
@@ -624,6 +637,7 @@ class FewShotPainLearner:
                         step=processed_tasks,
                         step_total=tasks_per_epoch,
                         loss=float(loss),
+                        task_loss=float(task_loss),
                         contrastive_loss=float(contrastive_loss),
                         accuracy=float(acc),
                     )
@@ -639,6 +653,7 @@ class FewShotPainLearner:
                         metric_value=float(acc),
                         metric_name="accuracy",
                         extra_metrics={
+                            "task_loss": float(task_loss),
                             "contrastive_loss": float(contrastive_loss),
                         },
                         log_every=train_log_every,
@@ -652,6 +667,7 @@ class FewShotPainLearner:
                         continue
 
                     validation_losses = []
+                    validation_task_losses = []
                     validation_accs = []
                     validation_contrastive_losses = []
                     validation_intra_class_similarities = []
@@ -668,6 +684,7 @@ class FewShotPainLearner:
                             include_aux_loss=True,
                         )
                         validation_losses.append(val_loss)
+                        validation_task_losses.append(val_metrics["task_loss"])
                         validation_accs.append(val_metrics["accuracy"])
                         validation_contrastive_losses.append(
                             val_metrics["contrastive_loss"]
@@ -681,6 +698,7 @@ class FewShotPainLearner:
 
                     mean_val_loss = float(np.mean(validation_losses))
                     mean_val_acc = float(np.mean(validation_accs))
+                    mean_val_task_loss = float(np.mean(validation_task_losses))
                     mean_val_contrastive_loss = float(
                         np.mean(validation_contrastive_losses)
                     )
@@ -689,6 +707,10 @@ class FewShotPainLearner:
                     )
                     mean_val_inter_class_similarity = float(
                         np.mean(validation_inter_class_similarities)
+                    )
+                    mean_val_similarity_margin = (
+                        mean_val_intra_class_similarity
+                        - mean_val_inter_class_similarity
                     )
                     epoch_val_losses.append(mean_val_loss)
                     epoch_val_accs.append(mean_val_acc)
@@ -701,10 +723,12 @@ class FewShotPainLearner:
                         step=processed_tasks,
                         step_total=tasks_per_epoch,
                         loss=mean_val_loss,
+                        task_loss=mean_val_task_loss,
                         contrastive_loss=mean_val_contrastive_loss,
                         accuracy=mean_val_acc,
                         intra_class_similarity=mean_val_intra_class_similarity,
                         inter_class_similarity=mean_val_inter_class_similarity,
+                        similarity_margin=mean_val_similarity_margin,
                     )
                     progress.log_step(
                         stage="Validation",
@@ -716,9 +740,11 @@ class FewShotPainLearner:
                         metric_value=mean_val_acc,
                         metric_name="accuracy",
                         extra_metrics={
+                            "task_loss": mean_val_task_loss,
                             "contrastive_loss": mean_val_contrastive_loss,
                             "intra_class_similarity": mean_val_intra_class_similarity,
                             "inter_class_similarity": mean_val_inter_class_similarity,
+                            "similarity_margin": mean_val_similarity_margin,
                         },
                         log_every=eval_log_every,
                     )
@@ -728,10 +754,12 @@ class FewShotPainLearner:
                         f"[Validation @ train_batch {processed_batches}] "
                         f"[train_task {processed_tasks}/{tasks_per_epoch}] "
                         f"mean_loss={mean_val_loss:.4f}, "
+                        f"mean_task_loss={mean_val_task_loss:.4f}, "
                         f"mean_accuracy={mean_val_acc:.4f}, "
                         f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
-                        f"inter_class_similarity={mean_val_inter_class_similarity:.4f}"
+                        f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
+                        f"similarity_margin={mean_val_similarity_margin:.4f}"
                     )
 
                 avg_train_loss = np.mean(epoch_train_losses)
