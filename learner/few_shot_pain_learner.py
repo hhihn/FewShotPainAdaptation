@@ -129,6 +129,9 @@ class FewShotPainLearner:
             fusion_method=self.fusion_method,
             distance_metric=self.distance_metric,
             num_tcn_blocks=self.config.num_tcn_blocks,
+            filters_list=self.config.filters_list,
+            strides=self.config.strides,
+            pooling_size=self.config.pooling_size,
             tcn_attention_pool_size=self.config.tcn_attention_pool_size,
             fusion_transformer_heads=self.config.fusion_transformer_heads,
             fusion_transformer_layers=self.config.fusion_transformer_layers,
@@ -481,7 +484,7 @@ class FewShotPainLearner:
                     print_fn=lambda line: encoder_summary.write(line + "\n")
                 )
                 fp.write(encoder_summary.getvalue())
-
+        print(self.model.summary())
         return output_path
 
     def train(
