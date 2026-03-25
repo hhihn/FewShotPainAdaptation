@@ -88,8 +88,8 @@ class SixWayKShotSampler:
 
     def _sample_task(self) -> Dict[str, np.ndarray]:
         """Sample a single task."""
+        normalize_mode = self.config.task_normalize_mode
         if self.mode in {"train", "val"}:
-            normalize_mode = "subject" if self.mode == "train" else "support"
             return self.dataset.sample_task_from_subjects(
                 subjects=self.active_subjects,
                 k_shot=self.k_shot,
@@ -102,7 +102,7 @@ class SixWayKShotSampler:
             subject=self.test_subject,
             k_shot=self.k_shot,
             q_query=self.q_query,
-            normalize_mode="support",
+            normalize_mode=normalize_mode,
             rng=self.rng,
             allow_partial_query=True,
         )
@@ -117,8 +117,8 @@ class SixWayKShotSampler:
         Returns:
             Task dictionary
         """
+        normalize_mode = self.config.task_normalize_mode
         if subject is not None:
-            normalize_mode = "subject" if self.mode == "train" else "support"
             return self.dataset.sample_task(
                 subject,
                 self.k_shot,
@@ -143,7 +143,7 @@ class SixWayKShotSampler:
             subject=self.test_subject,
             k_shot=k_shot or self.k_shot,
             q_query=self.q_query,
-            normalize_mode="support",
+            normalize_mode=self.config.task_normalize_mode,
             rng=self.rng,
             allow_partial_query=True,
         )

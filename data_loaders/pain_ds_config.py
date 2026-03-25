@@ -48,7 +48,9 @@ class PainDatasetConfig:
     )  # Number of classes per task; derived from task_class_ids
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
-    supcon_loss_weight: float = 0.5  # Weight for supervised contrastive embedding loss
+    task_normalize_mode: str = "subject"  # Episodic normalization: subject, support, or none
+    classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
+    supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
     train_batch_size: int = 20  # Number of tasks per optimizer update
     num_epochs: int = 10  # Number of epochs per fold
@@ -75,6 +77,14 @@ class PainDatasetConfig:
         if len(set(self.task_class_ids)) != len(self.task_class_ids):
             raise ValueError("task_class_ids must be unique")
         self.n_way = len(self.task_class_ids)
+        if self.task_normalize_mode not in {"subject", "support", "none"}:
+            raise ValueError(
+                "task_normalize_mode must be one of: 'subject', 'support', 'none'"
+            )
+        if self.classifier_mode not in {"prototype", "soft_knn"}:
+            raise ValueError(
+                "classifier_mode must be one of: 'prototype', 'soft_knn'"
+            )
         if self.supcon_loss_weight < 0:
             raise ValueError("supcon_loss_weight must be non-negative")
         if self.supcon_temperature <= 0:

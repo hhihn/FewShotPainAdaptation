@@ -253,6 +253,7 @@ class PainMetaDataset:
         normalize_mode: str = "subject",
         rng: Optional[np.random.Generator] = None,
         allow_partial_query: bool = False,
+        include_sample_subjects: bool = False,
     ) -> Dict[str, np.ndarray]:
         """
         Sample an N-way-K-shot task from a single subject.
@@ -285,6 +286,7 @@ class PainMetaDataset:
             normalize_mode=normalize_mode,
             rng=rng,
             allow_partial_query=allow_partial_query,
+            include_sample_subjects=include_sample_subjects,
         )
 
     def sample_task_from_subjects(
@@ -296,6 +298,7 @@ class PainMetaDataset:
         normalize_mode: str = "subject",
         rng: Optional[np.random.Generator] = None,
         allow_partial_query: bool = False,
+        include_sample_subjects: bool = False,
     ) -> Dict[str, np.ndarray]:
         """Sample one task by pooling each class across the provided subjects."""
         k_shot = k_shot or self.config.k_shot
@@ -373,13 +376,17 @@ class PainMetaDataset:
         query_perm = local_rng.permutation(len(query_y))
         task_subject = selected_subjects[0] if len(selected_subjects) == 1 else -1
 
-        return {
+        task = {
             "support_X": support_X[support_perm],
             "support_y": support_y[support_perm],
             "query_X": query_X[query_perm],
             "query_y": query_y[query_perm],
             "subject": task_subject,
         }
+        if include_sample_subjects:
+            task["support_subjects"] = support_subjects[support_perm]
+            task["query_subjects"] = query_subjects[query_perm]
+        return task
 
     def sample_meta_task_batch(
         self,

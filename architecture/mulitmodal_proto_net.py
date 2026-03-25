@@ -24,6 +24,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "mean",
         distance_metric: str = "cosine",
+        classifier_mode: str = "prototype",
         fusion_transformer_heads: int = 4,
         fusion_transformer_layers: int = 2,
         fusion_transformer_ffn_dim: int = 128,
@@ -55,6 +56,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.modality_names = modality_names
         self.fusion_method = fusion_method
         self.distance_metric = distance_metric
+        self.classifier_mode = classifier_mode
         self.num_tcn_blocks = num_tcn_blocks
         self.strides = strides
         self.pooling_size = pooling_size
@@ -99,7 +101,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             f"Initialized MultimodalPrototypicalNetwork with {len(modality_names)} modalities"
         )
         self.logger.debug(
-            f"Fusion method: {fusion_method}, Final embedding dim: {self.fused_embedding_dim}"
+            f"Fusion method: {fusion_method}, Classifier mode: {classifier_mode}, "
+            f"Final embedding dim: {self.fused_embedding_dim}"
         )
 
     def _build_encoder(
@@ -203,6 +206,39 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return -self.compute_distances(query_embeddings, prototype_embeddings)
 
+    def compute_support_to_query_similarity(
+        self, query_embeddings: tf.Tensor, support_embeddings: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute query-to-support similarities."""
+        if self.distance_metric == "cosine":
+            query_norm = tf.nn.l2_normalize(query_embeddings, axis=1)
+            support_norm = tf.nn.l2_normalize(support_embeddings, axis=1)
+            return tf.matmul(query_norm, support_norm, transpose_b=True)
+
+        return -self.compute_pairwise_distances(query_embeddings, support_embeddings)
+
+    def compute_pairwise_distances(
+        self, a_embeddings: tf.Tensor, b_embeddings: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute pairwise distances between two embedding sets."""
+        if self.distance_metric == "euclidean":
+            return tf.sqrt(
+                tf.reduce_sum(
+                    (
+                        tf.expand_dims(a_embeddings, 1)
+                        - tf.expand_dims(b_embeddings, 0)
+                    )
+                    ** 2,
+                    axis=2,
+                )
+                + 1e-8
+            )
+        if self.distance_metric == "cosine":
+            a_norm = tf.nn.l2_normalize(a_embeddings, axis=1)
+            b_norm = tf.nn.l2_normalize(b_embeddings, axis=1)
+            return 1 - tf.matmul(a_norm, b_norm, transpose_b=True)
+        raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+
     def _compute_prototypes(self, support_embeddings, support_y):
         """Compute class prototypes as the mean support embedding per class."""
         prototypes = []
@@ -216,6 +252,29 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return tf.stack(prototypes, axis=0)
 
+    def _compute_soft_knn_logits(
+        self,
+        support_embeddings: tf.Tensor,
+        support_y: tf.Tensor,
+        query_embeddings: tf.Tensor,
+    ) -> tf.Tensor:
+        """Aggregate query-to-support similarities into class logits."""
+        support_similarities = self.compute_support_to_query_similarity(
+            query_embeddings=query_embeddings,
+            support_embeddings=support_embeddings,
+        )
+        class_scores = []
+        for class_id in range(self.num_classes):
+            class_mask = tf.cast(tf.equal(support_y, class_id), support_similarities.dtype)
+            class_scores.append(
+                tf.reduce_logsumexp(
+                    support_similarities
+                    + tf.expand_dims(tf.math.log(class_mask + 1e-8), axis=0),
+                    axis=1,
+                )
+            )
+        return tf.stack(class_scores, axis=1)
+
     def forward_episode(self, support_x, support_y, query_x, training=False):
         """Run one episode and return logits plus intermediate embedding tensors."""
         support_embeddings = self.encode(support_x, training=training)
@@ -226,9 +285,24 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         prototypes = self._compute_prototypes(support_embeddings, support_y)
         self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
-
         distances = self.compute_distances(query_embeddings, prototypes)
-        logits = -distances
+
+        if self.classifier_mode == "prototype":
+            logits = -distances
+            similarity_scores = self.compute_similarity_scores(
+                query_embeddings, prototypes
+            )
+        elif self.classifier_mode == "soft_knn":
+            logits = self._compute_soft_knn_logits(
+                support_embeddings=support_embeddings,
+                support_y=support_y,
+                query_embeddings=query_embeddings,
+            )
+            similarity_scores = self.compute_similarity_scores(
+                query_embeddings, prototypes
+            )
+        else:
+            raise ValueError(f"Unknown classifier mode: {self.classifier_mode}")
 
         return {
             "support_embeddings": support_embeddings,
@@ -236,6 +310,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             "prototypes": prototypes,
             "distances": distances,
             "logits": logits,
+            "similarity_scores": similarity_scores,
         }
 
     def call(
@@ -267,9 +342,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         logits = episode_outputs["logits"]
 
         if return_similarity_scores:
-            similarity_scores = self.compute_similarity_scores(
-                episode_outputs["query_embeddings"], episode_outputs["prototypes"]
-            )
-            return logits, similarity_scores
+            return logits, episode_outputs["similarity_scores"]
 
         return logits
