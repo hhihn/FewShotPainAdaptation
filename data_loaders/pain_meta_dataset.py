@@ -388,6 +388,112 @@ class PainMetaDataset:
             task["query_subjects"] = query_subjects[query_perm]
         return task
 
+    def sample_task_cross_subjects(
+        self,
+        support_subject: int,
+        query_subject: int,
+        k_shot: Optional[int] = None,
+        q_query: Optional[int] = None,
+        seed: Optional[int] = None,
+        normalize_mode: str = "subject",
+        rng: Optional[np.random.Generator] = None,
+        include_sample_subjects: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Sample one task with support drawn from one subject and query from another.
+
+        Args:
+            support_subject: Subject used for all support samples
+            query_subject: Subject used for all query samples
+            k_shot: Number of support samples per class
+            q_query: Number of query samples per class
+            seed: Random seed for reproducibility
+            normalize_mode: One of 'subject', 'support', or 'none'
+            rng: Optional numpy Generator to control sampling deterministically
+            include_sample_subjects: Whether to return support/query subject ids
+
+        Returns:
+            Dictionary containing support/query arrays and labels.
+        """
+        k_shot = k_shot or self.config.k_shot
+        q_query = q_query or self.config.q_query
+        support_subject = int(support_subject)
+        query_subject = int(query_subject)
+
+        if rng is not None:
+            local_rng = rng
+        elif seed is not None:
+            local_rng = np.random.default_rng(seed)
+        else:
+            local_rng = np.random.default_rng()
+
+        support_X, support_y, support_subjects = [], [], []
+        query_X, query_y, query_subjects = [], [], []
+
+        for class_id in range(self.config.n_way):
+            support_indices = self.index[support_subject][class_id]
+            query_indices = self.index[query_subject][class_id]
+
+            if len(support_indices) < k_shot:
+                raise ValueError(
+                    f"Support subject {support_subject} has only {len(support_indices)} "
+                    f"samples for class {class_id}, but k_shot={k_shot} was requested."
+                )
+            if len(query_indices) < q_query:
+                raise ValueError(
+                    f"Query subject {query_subject} has only {len(query_indices)} "
+                    f"samples for class {class_id}, but q_query={q_query} was requested."
+                )
+
+            sampled_support_idx = local_rng.choice(
+                support_indices, size=k_shot, replace=False
+            )
+            sampled_query_idx = local_rng.choice(
+                query_indices, size=q_query, replace=False
+            )
+
+            support_X.append(self.X[sampled_support_idx])
+            support_y.append(np.full(k_shot, class_id, dtype=np.int32))
+            support_subjects.append(np.full(k_shot, support_subject, dtype=np.int32))
+            query_X.append(self.X[sampled_query_idx])
+            query_y.append(np.full(q_query, class_id, dtype=np.int32))
+            query_subjects.append(np.full(q_query, query_subject, dtype=np.int32))
+
+        support_X = np.concatenate(support_X, axis=0)
+        support_y = np.concatenate(support_y, axis=0)
+        support_subjects = np.concatenate(support_subjects, axis=0)
+        query_X = np.concatenate(query_X, axis=0)
+        query_y = np.concatenate(query_y, axis=0)
+        query_subjects = np.concatenate(query_subjects, axis=0)
+
+        if normalize_mode == "subject":
+            support_X = self._normalize_data_by_subjects(support_X, support_subjects)
+            query_X = self._normalize_data_by_subjects(query_X, query_subjects)
+        elif normalize_mode == "support":
+            stats = self._compute_batch_stats(support_X)
+            support_X = self._apply_stats(support_X, stats)
+            query_X = self._apply_stats(query_X, stats)
+        elif normalize_mode == "none":
+            pass
+        else:
+            raise ValueError(
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'support', or 'none'."
+            )
+
+        support_perm = local_rng.permutation(len(support_y))
+        query_perm = local_rng.permutation(len(query_y))
+        task = {
+            "support_X": support_X[support_perm],
+            "support_y": support_y[support_perm],
+            "query_X": query_X[query_perm],
+            "query_y": query_y[query_perm],
+            "subject": -1,
+        }
+        if include_sample_subjects:
+            task["support_subjects"] = support_subjects[support_perm]
+            task["query_subjects"] = query_subjects[query_perm]
+        return task
+
     def sample_meta_task_batch(
         self,
         subjects: List[int],

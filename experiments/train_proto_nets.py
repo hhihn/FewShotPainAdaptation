@@ -21,7 +21,7 @@ def main():
     logger.info("=" * 60)
 
     # Try different fusion methods
-    fusion_methods = ["attention"]
+    fusion_methods = ["mean"]
 
     for fusion_method in fusion_methods:
         logger.info(f"\nTraining with fusion method: {fusion_method}")

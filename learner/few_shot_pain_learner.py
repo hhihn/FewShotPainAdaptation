@@ -23,7 +23,7 @@ class FewShotPainLearner:
         config: PainDatasetConfig,
         data_dir: str = "./dataset/np-dataset",
         learning_rate: float = 1e-3,
-        fusion_method: str = "attention",
+        fusion_method: str = "mean",
         distance_metric: str = "cosine",
     ):
         """
@@ -31,7 +31,7 @@ class FewShotPainLearner:
             config: PainDatasetConfig instance
             data_dir: Directory containing numpy files
             learning_rate: Outer loop learning rate
-            fusion_method: 'concat', 'mean', or 'attention'
+            fusion_method: 'mean', 'gated', or 'transformer_ib'
         """
         self.config = config
         self.data_dir = data_dir
@@ -44,6 +44,8 @@ class FewShotPainLearner:
         self.train_batch_size = max(1, int(config.train_batch_size))
         self.supcon_loss_weight = float(config.supcon_loss_weight)
         self.supcon_temperature = float(config.supcon_temperature)
+        self.triplet_loss_weight = float(config.triplet_loss_weight)
+        self.triplet_margin = float(config.triplet_margin)
         self.logger = setup_logger("few_shot_pain_learner")
         set_global_reproducibility(
             seed=self.seed,
@@ -80,6 +82,8 @@ class FewShotPainLearner:
             "classifier_mode": self.config.classifier_mode,
             "supcon_loss_weight": self.supcon_loss_weight,
             "supcon_temperature": self.supcon_temperature,
+            "triplet_loss_weight": self.triplet_loss_weight,
+            "triplet_margin": self.triplet_margin,
             "train_batch_size": self.train_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
@@ -153,7 +157,7 @@ class FewShotPainLearner:
             fusion_transformer_ffn_dim=self.config.fusion_transformer_ffn_dim,
             fusion_ib_beta=self.config.fusion_ib_beta,
         )
-        self.optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
+        self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate)
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
         """Return regularization losses added by submodules, or zero if absent."""
@@ -200,6 +204,51 @@ class FewShotPainLearner:
             tf.reduce_sum(valid_anchor_mask),
         )
 
+    def _compute_batch_all_triplet_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute BatchAllTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        if self.triplet_loss_weight <= 0:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+        pairwise_similarity = tf.matmul(
+            normalized_embeddings, normalized_embeddings, transpose_b=True
+        )
+        pairwise_distance = 1.0 - pairwise_similarity
+
+        labels = tf.reshape(labels, [-1])
+        same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+        different_label = tf.logical_not(same_label)
+        indices_not_equal = tf.logical_not(
+            tf.eye(tf.shape(labels)[0], dtype=tf.bool)
+        )
+        positive_mask = tf.logical_and(same_label, indices_not_equal)
+
+        anchor_positive_dist = tf.expand_dims(pairwise_distance, 2)
+        anchor_negative_dist = tf.expand_dims(pairwise_distance, 1)
+        triplet_loss = (
+            anchor_positive_dist
+            - anchor_negative_dist
+            + tf.cast(self.triplet_margin, pairwise_distance.dtype)
+        )
+
+        mask_ap = tf.expand_dims(positive_mask, 2)
+        mask_an = tf.expand_dims(different_label, 1)
+        triplet_mask = tf.logical_and(mask_ap, mask_an)
+        triplet_loss = tf.where(
+            triplet_mask,
+            triplet_loss,
+            tf.zeros_like(triplet_loss),
+        )
+        triplet_loss = tf.maximum(triplet_loss, 0.0)
+
+        positive_triplets = tf.cast(triplet_loss > 1e-16, pairwise_distance.dtype)
+        return tf.math.divide_no_nan(
+            tf.reduce_sum(triplet_loss),
+            tf.reduce_sum(positive_triplets),
+        )
+
     def _forward_task(
         self,
         support_x: tf.Tensor,
@@ -207,7 +256,6 @@ class FewShotPainLearner:
         query_x: tf.Tensor,
         query_y: tf.Tensor,
         training: bool,
-        include_aux_loss: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
         """Run one task and compute classification plus optional embedding losses."""
@@ -226,19 +274,27 @@ class FewShotPainLearner:
             axis=0,
         )
         labels = tf.concat([support_y, query_y], axis=0)
-        contrastive_loss = (
-            tf.cast(self.supcon_loss_weight, task_loss.dtype)
-            * self._compute_supervised_contrastive_loss(embeddings, labels)
-        )
-
-        total_aux_loss = model_aux_loss + contrastive_loss
-        total_loss = task_loss + total_aux_loss if include_aux_loss else task_loss
+        total_aux_loss = model_aux_loss
+        if self.supcon_loss_weight > 0:
+            contrastive_loss = (
+                tf.cast(self.supcon_loss_weight, task_loss.dtype)
+                * self._compute_supervised_contrastive_loss(embeddings, labels)
+            )
+            total_aux_loss += contrastive_loss
+        if self.triplet_loss_weight > 0:
+            triplet_loss = (
+                tf.cast(self.triplet_loss_weight, task_loss.dtype)
+                * self._compute_batch_all_triplet_loss(embeddings, labels)
+            )
+            total_aux_loss += triplet_loss
+        total_loss = task_loss + total_aux_loss
 
         outputs = {
             "logits": logits,
             "loss": total_loss,
             "task_loss": task_loss,
             "contrastive_loss": contrastive_loss,
+            "triplet_loss": triplet_loss,
             "model_aux_loss": model_aux_loss,
             "support_embeddings": episode_outputs["support_embeddings"],
             "query_embeddings": episode_outputs["query_embeddings"],
@@ -259,7 +315,6 @@ class FewShotPainLearner:
                 query_x=query_x,
                 query_y=query_y,
                 training=True,
-                include_aux_loss=True,
             )
             logits = task_outputs["logits"]
             loss = task_outputs["loss"]
@@ -296,7 +351,6 @@ class FewShotPainLearner:
                     query_x=query_x,
                     query_y=query_y,
                     training=True,
-                    include_aux_loss=True,
                 )
                 logits = task_outputs["logits"]
                 loss = task_outputs["loss"]
@@ -330,7 +384,6 @@ class FewShotPainLearner:
             query_x=query_x,
             query_y=query_y,
             training=False,
-            include_aux_loss=True,
         )
         logits = task_outputs["logits"]
         loss = task_outputs["loss"]
@@ -348,7 +401,6 @@ class FewShotPainLearner:
         """Evaluate a batch of tasks without updating weights."""
         batch_loss, metrics = self._evaluate_task_batch_loss_and_metrics(
             task_batch,
-            include_aux_loss=True,
         )
         return (
             tf.constant(batch_loss, dtype=tf.float32),
@@ -386,7 +438,6 @@ class FewShotPainLearner:
     def _evaluate_task_batch_loss_and_metrics(
         self,
         task_batch: list[dict],
-        include_aux_loss: bool = False,
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate classification/similarity metrics."""
         losses = []
@@ -410,7 +461,6 @@ class FewShotPainLearner:
                 query_x,
                 query_y,
                 training=False,
-                include_aux_loss=include_aux_loss,
                 return_similarity_scores=True,
             )
             logits = task_outputs["logits"]
@@ -424,8 +474,7 @@ class FewShotPainLearner:
 
             losses.append(float(loss))
             task_losses.append(float(task_loss))
-            if include_aux_loss:
-                contrastive_losses.append(float(task_outputs["contrastive_loss"]))
+            contrastive_losses.append(float(task_outputs["contrastive_loss"]))
             all_true.append(query_y_np)
             all_pred.append(pred)
             all_intra_class_scores.append(intra_class_scores)
@@ -441,8 +490,7 @@ class FewShotPainLearner:
             )
         )
         metrics["task_loss"] = float(np.mean(task_losses))
-        if include_aux_loss:
-            metrics["contrastive_loss"] = float(np.mean(contrastive_losses))
+        metrics["contrastive_loss"] = float(np.mean(contrastive_losses))
         return float(np.mean(losses)), metrics
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -484,7 +532,6 @@ class FewShotPainLearner:
         """Evaluate average loss plus classification/similarity metrics on tasks."""
         return self._evaluate_task_batch_loss_and_metrics(
             [sampler.get_task() for _ in range(num_tasks)],
-            include_aux_loss=False,
         )
 
     def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
@@ -696,7 +743,6 @@ class FewShotPainLearner:
                         ]
                         val_loss, val_metrics = self._evaluate_task_batch_loss_and_metrics(
                             val_task_batch,
-                            include_aux_loss=True,
                         )
                         validation_losses.append(val_loss)
                         validation_task_losses.append(val_metrics["task_loss"])

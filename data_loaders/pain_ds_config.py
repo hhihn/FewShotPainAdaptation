@@ -12,16 +12,16 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 3  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        8, 16, 32, # Number of Filters in the Convolutional Layers
+        2, # Number of Filters in the Convolutional Layers
     )
     tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2 # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2 # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
-    embedding_dim: int = 128  # Encoder embedding dimension
+    embedding_dim: int = 8  # Encoder embedding dimension
     tcn_attention_heads: int = 4  # Number of self-attention heads inside the TCN
     tcn_attention_key_dim: int = 32  # Key dimension per TCN attention head
     tcn_attention_dropout: float = 0.2  # Dropout inside the TCN attention layer
@@ -58,6 +58,8 @@ class PainDatasetConfig:
     classifier_mode: str = "soft_knn"  # Episodic classifier: prototype or soft_knn
     supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
+    triplet_loss_weight: float = 1.0  # Weight for BatchAllTriplet embedding loss
+    triplet_margin: float = 0.2  # Margin used by BatchAllTriplet loss
     train_batch_size: int = 20  # Number of tasks per optimizer update
     num_epochs: int = 10  # Number of epochs per fold
     tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
@@ -95,6 +97,10 @@ class PainDatasetConfig:
             raise ValueError("supcon_loss_weight must be non-negative")
         if self.supcon_temperature <= 0:
             raise ValueError("supcon_temperature must be > 0")
+        if self.triplet_loss_weight < 0:
+            raise ValueError("triplet_loss_weight must be non-negative")
+        if self.triplet_margin < 0:
+            raise ValueError("triplet_margin must be non-negative")
         if self.tcn_kernel_size <= 0:
             raise ValueError("tcn_kernel_size must be > 0")
         if self.strides <= 0:

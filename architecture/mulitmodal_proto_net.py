@@ -45,7 +45,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             modality_names: Names of modalities (EDA, ECG, EMG)
             filters_list: List of filters in each convolution layer
             strides: Strides of convolution layers
-            fusion_method: 'concat', 'mean', 'attention'
+            fusion_method: 'mean', 'gated', or 'transformer_ib'
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
             tcn_dilation_rates: Dilation rate per TCN block
@@ -111,6 +111,25 @@ class MultimodalPrototypicalNetwork(keras.Model):
         if fusion_method == "mean":
             self.fused_embedding_dim = embedding_dim
             self.fusion_layer = None
+            self.gating_layer = None
+            self.gating_norm_layers = None
+            self.gating_softmax_layer = None
+        elif fusion_method == "gated":
+            self.fused_embedding_dim = embedding_dim
+            self.fusion_layer = None
+            self.gating_norm_layers = {
+                modality_name: keras.layers.Dense(
+                    embedding_dim,
+                    activation="tanh",
+                    name=f"gated_norm_{modality_name}",
+                )
+                for modality_name in modality_names
+            }
+            self.gating_softmax_layer = keras.layers.Dense(
+                len(modality_names) * embedding_dim,
+                name="gated_fusion_logits",
+            )
+            self.gating_layer = None
         elif fusion_method == "transformer_ib":
             self.fused_embedding_dim = embedding_dim
             self.fusion_layer = TransformerInformationBottleneckFusion(
@@ -121,6 +140,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 ffn_dim=fusion_transformer_ffn_dim,
                 ib_beta=fusion_ib_beta,
             )
+            self.gating_norm_layers = None
+            self.gating_softmax_layer = None
+            self.gating_layer = None
             self.logger.debug("Build Fusion Model:")
             self.logger.debug(self.fusion_layer)
         else:
@@ -200,11 +222,30 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )  # [batch, num_modalities, embedding_dim]
         # Fuse embeddings
         if self.fusion_method == "mean":
-            # Simple mean of embeddings
             fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
+        elif self.fusion_method == "gated":
+            normalized_embeddings = []
+            for modality_name, embedding in zip(self.modality_names, modality_embeddings):
+                normalized_embeddings.append(
+                    self.gating_norm_layers[modality_name](embedding, training=training)
+                )
+
+            normalized_concat = tf.concat(
+                normalized_embeddings, axis=1
+            )  # [batch, num_modalities * embedding_dim]
+            gate_logits = self.gating_softmax_layer(
+                normalized_concat, training=training
+            )
+            gate_weights = tf.nn.softmax(gate_logits, axis=1)
+            gate_weights = tf.reshape(
+                gate_weights,
+                [-1, len(self.modality_names), self.embedding_dim],
+            )
+            fused = tf.reduce_sum(fused * gate_weights, axis=1)
         else:  # self.fusion_method == "transformer_ib":
             fused = self.fusion_layer(fused, training=training)
 
+        # Keep all episode embeddings on a comparable scale before metric classification.
         return fused
 
     def compute_distances(self, query_embeddings, prototype_embeddings):

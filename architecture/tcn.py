@@ -97,13 +97,13 @@ class TemporalConvolutionalNetwork(keras.Model):
             self.tcn_blocks.append(block)
 
         # Self-attention layer
-        self.attention = keras.layers.MultiHeadAttention(
-            num_heads=num_attention_heads,
-            key_dim=attention_key_dim,
-            dropout=attention_dropout,
-            name="self_attention",
-            kernel_initializer="he_normal",
-        )
+        # self.attention = keras.layers.MultiHeadAttention(
+        #     num_heads=num_attention_heads,
+        #     key_dim=attention_key_dim,
+        #     dropout=attention_dropout,
+        #     name="self_attention",
+        #     kernel_initializer="he_normal",
+        # )
 
         # Optional temporal downsampling before attention to avoid OOM on long sequences.
         self.attention_pool = None
@@ -116,17 +116,25 @@ class TemporalConvolutionalNetwork(keras.Model):
             )
 
         # Normalization after attention
-        self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
+        # self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
 
         # Global pooling
-        self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
-
+        # self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
+        self.flatten_layer = keras.layers.Flatten(name="flatten")
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
             embedding_dim * 2, activation="relu", name="embedding_dense_hidden", kernel_initializer="he_normal"
         )
+        self.embedding_dense_hidden_dropout = keras.layers.Dropout(
+            rate=self.dropout_rate,
+            name="embedding_dense_hidden_dropout",
+        )
         self.embedding_dense = keras.layers.Dense(
             embedding_dim, activation="relu", name="embedding_dense", kernel_initializer="he_normal"
+        )
+        self.embedding_dense_dropout = keras.layers.Dropout(
+            rate=self.dropout_rate,
+            name="embedding_dense_dropout",
         )
         self.embedding_norm = keras.layers.LayerNormalization(name="embedding_norm")
 
@@ -139,7 +147,7 @@ class TemporalConvolutionalNetwork(keras.Model):
     ) -> tuple[Model, Any]:
         """Build a single TCN block with residual connection."""
 
-        # Double convolution with batch norm
+        # Double convolution with normalization that is stable for small episodic batches.
         x = keras.layers.Conv1D(
             filters,
             kernel_size=self.kernel_size,
@@ -149,7 +157,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_conv1",
         )(inputs)
-        x = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_bn1")(x)
+        x = keras.layers.LayerNormalization(name=f"tcn_block_{block_idx}_ln1")(x)
 
         x = keras.layers.Conv1D(
             filters,
@@ -160,7 +168,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_conv2",
         )(x)
-        x = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_bn2")(x)
+        x = keras.layers.LayerNormalization(name=f"tcn_block_{block_idx}_ln2")(x)
         x = keras.layers.Dropout(
             self.dropout_rate, name=f"tcn_block_{block_idx}_dropout"
         )(x)
@@ -174,7 +182,9 @@ class TemporalConvolutionalNetwork(keras.Model):
             name=f"tcn_block_{block_idx}_residual_proj",
         )(inputs)
         residual_add = keras.layers.Add(name=f"tcn_block_{block_idx}_add")([x, residual])
-        residual_norm = keras.layers.BatchNormalization(name=f"tcn_block_{block_idx}_resnorm")(residual_add)
+        residual_norm = keras.layers.LayerNormalization(
+            name=f"tcn_block_{block_idx}_resnorm"
+        )(residual_add)
         outputs = keras.layers.MaxPool1D(
             pool_size=self.pooling_size,
             strides=self.strides,
@@ -205,20 +215,21 @@ class TemporalConvolutionalNetwork(keras.Model):
         if self.attention_pool is not None:
             x = self.attention_pool(x)
 
-        attention_output = self.attention(x, x, training=training)
-        x = self.attention_norm(x + attention_output)
-        self.logger.debug(f"After attention: {tf.shape(x)}")
-
-        # Global pooling
-        x = self.global_pooling(x)
+        x = self.flatten_layer(x)
+        # attention_output = self.attention(x, x, training=training)
+        # x = self.attention_norm(x + attention_output)
+        # self.logger.debug(f"After attention: {tf.shape(x)}")
+        #
+        # # Global pooling
+        # x = self.global_pooling(x)
 
         self.logger.debug(f"After global pool: {tf.shape(x)}")
 
         # Final embedding
         x = self.embedding_dense_hidden(x)
-        x = keras.layers.Dropout(rate=self.dropout_rate, name="embedding_dense_hidden_dropout")(x)
+        x = self.embedding_dense_hidden_dropout(x, training=training)
         x = self.embedding_dense(x)
-        x = keras.layers.Dropout(rate=self.dropout_rate, name="embedding_dense_hidden")(x)
+        x = self.embedding_dense_dropout(x, training=training)
         x = self.embedding_norm(x)
 
         return x
