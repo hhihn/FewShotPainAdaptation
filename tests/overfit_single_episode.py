@@ -761,6 +761,10 @@ def run_fixed_episode_bank_overfit(
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
+        report_due = step == 1 or step % log_every == 0 or step == steps
+        if not report_due:
+            continue
+
         (
             eval_loss,
             eval_acc,
@@ -840,31 +844,30 @@ def run_fixed_episode_bank_overfit(
         )
         history.append(metrics)
 
-        if step == 1 or step % log_every == 0 or step == steps:
-            message = (
-                f"Step {step}/{steps} | train_bank_loss={metrics.loss:.4f}, "
-                f"train_bank_accuracy={metrics.accuracy:.4f}, "
-                f"train_within_class_cosine={train_within_class_cosine:.4f}, "
-                f"train_between_class_cosine={train_between_class_cosine:.4f}, "
-                f"train_query_support_same_class_cosine={train_query_support_same_class_cosine:.4f}, "
-                f"train_query_support_diff_class_cosine={train_query_support_diff_class_cosine:.4f}, "
-                f"train_query_prototype_same_class_cosine={train_query_prototype_same_class_cosine:.4f}, "
-                f"train_query_prototype_diff_class_cosine={train_query_prototype_diff_class_cosine:.4f}"
+        message = (
+            f"Step {step}/{steps} | train_bank_loss={metrics.loss:.4f}, "
+            f"train_bank_accuracy={metrics.accuracy:.4f}, "
+            f"train_within_class_cosine={train_within_class_cosine:.4f}, "
+            f"train_between_class_cosine={train_between_class_cosine:.4f}, "
+            f"train_query_support_same_class_cosine={train_query_support_same_class_cosine:.4f}, "
+            f"train_query_support_diff_class_cosine={train_query_support_diff_class_cosine:.4f}, "
+            f"train_query_prototype_same_class_cosine={train_query_prototype_same_class_cosine:.4f}, "
+            f"train_query_prototype_diff_class_cosine={train_query_prototype_diff_class_cosine:.4f}"
+        )
+        if val_loss is not None and val_acc is not None:
+            message += (
+                f", heldout_val_loss={val_loss:.4f}, "
+                f"heldout_val_accuracy={val_acc:.4f}, "
+                f"heldout_within_class_cosine={val_within_class_cosine:.4f}, "
+                f"heldout_between_class_cosine={val_between_class_cosine:.4f}, "
+                f"heldout_query_support_same_class_cosine={val_query_support_same_class_cosine:.4f}, "
+                f"heldout_query_support_diff_class_cosine={val_query_support_diff_class_cosine:.4f}, "
+                f"heldout_query_prototype_same_class_cosine={val_query_prototype_same_class_cosine:.4f}, "
+                f"heldout_query_prototype_diff_class_cosine={val_query_prototype_diff_class_cosine:.4f}, "
+                f"cross_bank_same_class_cosine={cross_bank_same_class_cosine:.4f}, "
+                f"cross_bank_diff_class_cosine={cross_bank_diff_class_cosine:.4f}"
             )
-            if val_loss is not None and val_acc is not None:
-                message += (
-                    f", heldout_val_loss={val_loss:.4f}, "
-                    f"heldout_val_accuracy={val_acc:.4f}, "
-                    f"heldout_within_class_cosine={val_within_class_cosine:.4f}, "
-                    f"heldout_between_class_cosine={val_between_class_cosine:.4f}, "
-                    f"heldout_query_support_same_class_cosine={val_query_support_same_class_cosine:.4f}, "
-                    f"heldout_query_support_diff_class_cosine={val_query_support_diff_class_cosine:.4f}, "
-                    f"heldout_query_prototype_same_class_cosine={val_query_prototype_same_class_cosine:.4f}, "
-                    f"heldout_query_prototype_diff_class_cosine={val_query_prototype_diff_class_cosine:.4f}, "
-                    f"cross_bank_same_class_cosine={cross_bank_same_class_cosine:.4f}, "
-                    f"cross_bank_diff_class_cosine={cross_bank_diff_class_cosine:.4f}"
-                )
-            logger.info(message)
+        logger.info(message)
 
     first = history[0]
     last = history[-1]

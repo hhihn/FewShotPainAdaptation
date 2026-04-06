@@ -12,16 +12,17 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 1  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 2  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        2, # Number of Filters in the Convolutional Layers
+        16, # Number of Filters in the Convolutional Layers
+        32
     )
     tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2 # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2 # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
-    embedding_dim: int = 8  # Encoder embedding dimension
+    embedding_dim: int = 32  # Encoder embedding dimension
     tcn_attention_heads: int = 4  # Number of self-attention heads inside the TCN
     tcn_attention_key_dim: int = 32  # Key dimension per TCN attention head
     tcn_attention_dropout: float = 0.2  # Dropout inside the TCN attention layer

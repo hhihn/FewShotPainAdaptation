@@ -97,13 +97,13 @@ class TemporalConvolutionalNetwork(keras.Model):
             self.tcn_blocks.append(block)
 
         # Self-attention layer
-        # self.attention = keras.layers.MultiHeadAttention(
-        #     num_heads=num_attention_heads,
-        #     key_dim=attention_key_dim,
-        #     dropout=attention_dropout,
-        #     name="self_attention",
-        #     kernel_initializer="he_normal",
-        # )
+        self.attention = keras.layers.MultiHeadAttention(
+            num_heads=num_attention_heads,
+            key_dim=attention_key_dim,
+            dropout=attention_dropout,
+            name="self_attention",
+            kernel_initializer="he_normal",
+        )
 
         # Optional temporal downsampling before attention to avoid OOM on long sequences.
         self.attention_pool = None
@@ -116,11 +116,11 @@ class TemporalConvolutionalNetwork(keras.Model):
             )
 
         # Normalization after attention
-        # self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
+        self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
 
         # Global pooling
-        # self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
-        self.flatten_layer = keras.layers.Flatten(name="flatten")
+        self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
+
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
             embedding_dim * 2, activation="relu", name="embedding_dense_hidden", kernel_initializer="he_normal"
@@ -215,13 +215,12 @@ class TemporalConvolutionalNetwork(keras.Model):
         if self.attention_pool is not None:
             x = self.attention_pool(x)
 
-        x = self.flatten_layer(x)
-        # attention_output = self.attention(x, x, training=training)
-        # x = self.attention_norm(x + attention_output)
-        # self.logger.debug(f"After attention: {tf.shape(x)}")
-        #
-        # # Global pooling
-        # x = self.global_pooling(x)
+        attention_output = self.attention(x, x, training=training)
+        x = self.attention_norm(x + attention_output)
+        self.logger.debug(f"After attention: {tf.shape(x)}")
+
+        # Global pooling
+        x = self.global_pooling(x)
 
         self.logger.debug(f"After global pool: {tf.shape(x)}")
 
