@@ -902,19 +902,19 @@ def main() -> None:
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="subject",
+        default="support",
         choices=("subject", "support", "none"),
     )
     parser.add_argument(
         "--classifier-mode",
         type=str,
-        default="soft_knn",
+        default="prototype",
         choices=("prototype", "soft_knn"),
     )
     parser.add_argument(
         "--subject-mode",
         type=str,
-        default="cross_subject_pairs",
+        default="single_subject_bank",
         choices=("mixed", "single_subject_bank", "cross_subject_task", "cross_subject_pairs"),
         help="Sample fixed-bank tasks from all train subjects, one train subject only, a single fixed support/query pair, or many support/query pairs.",
     )
@@ -939,7 +939,7 @@ def main() -> None:
     parser.add_argument(
         "--val-mode",
         type=str,
-        default="same_subject_pair",
+        default="held_out_subject",
         choices=("held_out_subject", "same_subject_pair"),
         help="Validation bank source: LOSO held-out subject or freshly resampled tasks from the same training support/query subject pair.",
     )

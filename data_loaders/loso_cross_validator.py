@@ -67,6 +67,10 @@ class LOSOCrossValidator:
         self.logger.debug(f"val_subjects: {val_subjects}")
         train_subjects_final = train_subjects[:-n_val]
         self.logger.debug(f"train_subjects_final: {train_subjects_final}")
+        if self.dataset.window_shift_enabled:
+            self.dataset.log_window_shift_split_summary("train", train_subjects_final)
+            self.dataset.log_window_shift_split_summary("val", val_subjects)
+            self.dataset.log_window_shift_split_summary("test", [test_subject])
 
         train_sampler = SixWayKShotSampler(
             dataset=self.dataset,

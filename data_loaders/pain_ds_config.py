@@ -73,6 +73,22 @@ class PainDatasetConfig:
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
+    enable_window_shift_augmentation: bool = (
+        True  # If True, sample fixed-length shifted windows instead of full signals
+    )
+    window_shift_window_seconds: float = (
+        4.0  # Output window duration in seconds (e.g., 4s => 1000 samples @ 250 Hz)
+    )
+    window_shift_start_min_seconds: float = (
+        1.0  # Earliest window start (seconds after signal start)
+    )
+    window_shift_start_max_seconds: float = (
+        6.0  # Latest window start (seconds after signal start)
+    )
+    window_shift_step_seconds: float = (
+        0.2  # Sliding step in seconds (e.g., 0.2s => 50 samples @ 250 Hz)
+    )
+    sampling_rate_hz: int = 250  # Signal sampling rate used for time->index conversion
 
     # Data paths
     data_path: str = "X_pre.npy"
@@ -128,3 +144,15 @@ class PainDatasetConfig:
                 )
             if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
                 raise ValueError("tcn_dilation_rates values must be > 0")
+        if self.sampling_rate_hz <= 0:
+            raise ValueError("sampling_rate_hz must be > 0")
+        if self.window_shift_window_seconds <= 0:
+            raise ValueError("window_shift_window_seconds must be > 0")
+        if self.window_shift_step_seconds <= 0:
+            raise ValueError("window_shift_step_seconds must be > 0")
+        if self.window_shift_start_min_seconds < 0:
+            raise ValueError("window_shift_start_min_seconds must be >= 0")
+        if self.window_shift_start_max_seconds < self.window_shift_start_min_seconds:
+            raise ValueError(
+                "window_shift_start_max_seconds must be >= window_shift_start_min_seconds"
+            )

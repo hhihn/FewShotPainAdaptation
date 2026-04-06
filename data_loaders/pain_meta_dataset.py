@@ -57,6 +57,12 @@ class PainMetaDataset:
         self.logger.debug(f"Data directory: {self.data_dir}")
         self.normalize = normalize
         self.normalize_per_subject = normalize_per_subject
+        self.window_shift_enabled = bool(self.config.enable_window_shift_augmentation)
+        self.window_start_indices = np.array([], dtype=np.int64)
+        self.window_length_samples = int(self.config.sequence_length)
+        self.window_step_samples = 0
+        self.window_start_min_idx = 0
+        self.window_start_max_idx = 0
 
         # Load data
         self._load_data()
@@ -103,20 +109,200 @@ class PainMetaDataset:
 
     def _build_index(self):
         """Build index mapping (subject, class) -> sample indices."""
-        self.index = {}
+        base_index = {}
 
         for subject in self.unique_subjects:
-            self.index[subject] = {}
+            base_index[subject] = {}
             subject_mask = self.subjects == subject
 
             for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
                 class_mask = self.y == raw_class_id
                 combined_mask = subject_mask & class_mask
                 indices = np.where(combined_mask)[0]
-                self.index[subject][episodic_class_id] = indices
+                base_index[subject][episodic_class_id] = indices
+
+        self.base_index = base_index
+        if self.window_shift_enabled:
+            self.index = self._build_window_shift_index(base_index)
+            self._log_window_shift_summary()
+        else:
+            self.index = base_index
 
         # Verify index
         self._verify_index()
+
+    def _build_window_shift_index(
+        self, base_index: Dict[int, Dict[int, np.ndarray]]
+    ) -> Dict[int, Dict[int, np.ndarray]]:
+        """Expand index entries into [sample_idx, window_start_idx] references."""
+        if self.X.ndim != 3:
+            raise ValueError(
+                f"Expected rank-3 input [n_samples, seq_len, n_sensors], got {self.X.shape}"
+            )
+
+        sampling_rate_hz = int(self.config.sampling_rate_hz)
+        raw_sequence_length = int(self.X.shape[1])
+        window_length_samples = int(
+            round(float(self.config.window_shift_window_seconds) * sampling_rate_hz)
+        )
+        step_samples = int(
+            round(float(self.config.window_shift_step_seconds) * sampling_rate_hz)
+        )
+        start_min_idx = int(
+            round(float(self.config.window_shift_start_min_seconds) * sampling_rate_hz)
+        )
+        start_max_idx = int(
+            round(float(self.config.window_shift_start_max_seconds) * sampling_rate_hz)
+        )
+
+        if window_length_samples <= 0:
+            raise ValueError("Resolved window length in samples must be > 0.")
+        if step_samples <= 0:
+            raise ValueError("Resolved window shift step in samples must be > 0.")
+        if raw_sequence_length < window_length_samples:
+            raise ValueError(
+                f"Raw sequence length ({raw_sequence_length}) is shorter than configured "
+                f"window length ({window_length_samples})."
+            )
+
+        max_valid_start = raw_sequence_length - window_length_samples
+        clipped_min_idx = max(0, start_min_idx)
+        clipped_max_idx = min(start_max_idx, max_valid_start)
+        if clipped_max_idx < clipped_min_idx:
+            raise ValueError(
+                "No valid window start positions after clipping to signal boundaries. "
+                f"Requested start range [{start_min_idx}, {start_max_idx}] with raw length "
+                f"{raw_sequence_length} and window length {window_length_samples}."
+            )
+
+        window_start_indices = np.arange(
+            clipped_min_idx, clipped_max_idx + 1, step_samples, dtype=np.int64
+        )
+        if window_start_indices.size == 0:
+            raise ValueError("Resolved window_start_indices is empty.")
+
+        self.window_start_indices = window_start_indices
+        self.window_length_samples = window_length_samples
+        self.window_step_samples = step_samples
+        self.window_start_min_idx = int(window_start_indices[0])
+        self.window_start_max_idx = int(window_start_indices[-1])
+        self.config.sequence_length = window_length_samples
+
+        expanded_index: Dict[int, Dict[int, np.ndarray]] = {}
+        for subject in self.unique_subjects:
+            expanded_index[subject] = {}
+            for class_id in range(self.config.n_way):
+                sample_indices = base_index[subject][class_id]
+                if sample_indices.size == 0:
+                    expanded_index[subject][class_id] = np.empty((0, 2), dtype=np.int64)
+                    continue
+                repeated_sample_indices = np.repeat(sample_indices, window_start_indices.size)
+                repeated_starts = np.tile(window_start_indices, sample_indices.size)
+                refs = np.column_stack((repeated_sample_indices, repeated_starts)).astype(
+                    np.int64, copy=False
+                )
+                expanded_index[subject][class_id] = refs
+
+        return expanded_index
+
+    def _extract_windows(self, refs: np.ndarray) -> np.ndarray:
+        """Extract fixed windows from [sample_idx, start_idx] references."""
+        if refs.size == 0:
+            return np.empty((0, self.window_length_samples, self.X.shape[2]), dtype=self.X.dtype)
+
+        if refs.ndim != 2 or refs.shape[1] != 2:
+            raise ValueError(
+                "Windowed references must be shaped [n_refs, 2] as [sample_idx, start_idx]."
+            )
+
+        sample_indices = refs[:, 0].astype(np.int64, copy=False)
+        start_indices = refs[:, 1].astype(np.int64, copy=False)
+        windows = np.empty(
+            (len(sample_indices), self.window_length_samples, self.X.shape[2]),
+            dtype=self.X.dtype,
+        )
+        for i, (sample_idx, start_idx) in enumerate(zip(sample_indices, start_indices)):
+            windows[i] = self.X[sample_idx, start_idx : start_idx + self.window_length_samples, :]
+        return windows
+
+    def _log_window_shift_summary(self) -> None:
+        """Log global augmentation metadata and class-wise counts."""
+        if not self.window_shift_enabled:
+            return
+
+        sampling_rate = float(self.config.sampling_rate_hz)
+        start_min_sec = self.window_start_min_idx / sampling_rate
+        start_max_sec = self.window_start_max_idx / sampling_rate
+        step_sec = self.window_step_samples / sampling_rate
+        window_sec = self.window_length_samples / sampling_rate
+        num_windows = int(self.window_start_indices.size)
+
+        self.logger.info("Window shift augmentation enabled")
+        self.logger.info(
+            "  Window config: "
+            f"window={window_sec:.2f}s ({self.window_length_samples} samples), "
+            f"start_range={start_min_sec:.2f}s..{start_max_sec:.2f}s "
+            f"([{self.window_start_min_idx}, {self.window_start_max_idx}] samples), "
+            f"step={step_sec:.2f}s ({self.window_step_samples} samples), "
+            f"windows_per_signal={num_windows}"
+        )
+
+        total_original = 0
+        total_augmented = 0
+        for class_id in range(self.config.n_way):
+            original_count = int(
+                sum(len(self.base_index[subject][class_id]) for subject in self.unique_subjects)
+            )
+            augmented_count = int(
+                sum(len(self.index[subject][class_id]) for subject in self.unique_subjects)
+            )
+            created_count = augmented_count - original_count
+            total_original += original_count
+            total_augmented += augmented_count
+            self.logger.info(
+                f"  Class {class_id}: original={original_count}, "
+                f"new={created_count}, total={augmented_count}"
+            )
+
+        self.logger.info(
+            f"  Overall: original={total_original}, new={total_augmented - total_original}, "
+            f"total={total_augmented}"
+        )
+
+    def log_window_shift_split_summary(self, split_name: str, subjects: List[int]) -> None:
+        """Log augmentation counts for a split's subject set."""
+        if not self.window_shift_enabled:
+            return
+
+        selected_subjects = [int(subject) for subject in subjects]
+        if not selected_subjects:
+            self.logger.info(f"Window shift [{split_name}] has no subjects.")
+            return
+
+        total_original = 0
+        total_augmented = 0
+        self.logger.info(
+            f"Window shift [{split_name}] subjects={selected_subjects} (n={len(selected_subjects)})"
+        )
+        for class_id in range(self.config.n_way):
+            original_count = int(
+                sum(len(self.base_index[subject][class_id]) for subject in selected_subjects)
+            )
+            augmented_count = int(
+                sum(len(self.index[subject][class_id]) for subject in selected_subjects)
+            )
+            created_count = augmented_count - original_count
+            total_original += original_count
+            total_augmented += augmented_count
+            self.logger.info(
+                f"  [{split_name}] class {class_id}: "
+                f"original={original_count}, new={created_count}, total={augmented_count}"
+            )
+
+        self.logger.info(
+            f"  [{split_name}] overall: original={total_original}, "
+            f"new={total_augmented - total_original}, total={total_augmented}"
+        )
 
     def _verify_index(self):
         """Verify that the index is valid for sampling."""
@@ -322,8 +508,10 @@ class PainMetaDataset:
             pooled_subject_ids = []
             for subject in selected_subjects:
                 indices = self.index[subject][class_id]
-                pooled_indices.extend(indices.tolist())
+                pooled_indices.append(indices)
                 pooled_subject_ids.extend([subject] * len(indices))
+
+            pooled_indices = np.concatenate(pooled_indices, axis=0)
 
             total_to_sample = self._resolve_total_samples_to_draw(
                 available_count=len(pooled_indices),
@@ -334,7 +522,6 @@ class PainMetaDataset:
             sampled_positions = local_rng.choice(
                 len(pooled_indices), size=total_to_sample, replace=False
             )
-            pooled_indices = np.asarray(pooled_indices, dtype=np.int64)
             pooled_subject_ids = np.asarray(pooled_subject_ids, dtype=np.int32)
 
             sampled_indices = pooled_indices[sampled_positions]
@@ -344,10 +531,16 @@ class PainMetaDataset:
             support_subject_ids = sampled_subject_ids[:k_shot]
             query_subject_ids = sampled_subject_ids[k_shot:]
 
-            support_X.append(self.X[support_idx])
+            if self.window_shift_enabled:
+                support_X.append(self._extract_windows(support_idx))
+            else:
+                support_X.append(self.X[support_idx])
             support_y.append(np.full(k_shot, class_id, dtype=np.int32))
             support_subjects.append(support_subject_ids)
-            query_X.append(self.X[query_idx])
+            if self.window_shift_enabled:
+                query_X.append(self._extract_windows(query_idx))
+            else:
+                query_X.append(self.X[query_idx])
             query_y.append(np.full(len(query_idx), class_id, dtype=np.int32))
             query_subjects.append(query_subject_ids)
 
@@ -445,17 +638,25 @@ class PainMetaDataset:
                     f"samples for class {class_id}, but q_query={q_query} was requested."
                 )
 
-            sampled_support_idx = local_rng.choice(
-                support_indices, size=k_shot, replace=False
+            support_positions = local_rng.choice(
+                len(support_indices), size=k_shot, replace=False
             )
-            sampled_query_idx = local_rng.choice(
-                query_indices, size=q_query, replace=False
+            query_positions = local_rng.choice(
+                len(query_indices), size=q_query, replace=False
             )
+            sampled_support_idx = support_indices[support_positions]
+            sampled_query_idx = query_indices[query_positions]
 
-            support_X.append(self.X[sampled_support_idx])
+            if self.window_shift_enabled:
+                support_X.append(self._extract_windows(sampled_support_idx))
+            else:
+                support_X.append(self.X[sampled_support_idx])
             support_y.append(np.full(k_shot, class_id, dtype=np.int32))
             support_subjects.append(np.full(k_shot, support_subject, dtype=np.int32))
-            query_X.append(self.X[sampled_query_idx])
+            if self.window_shift_enabled:
+                query_X.append(self._extract_windows(sampled_query_idx))
+            else:
+                query_X.append(self.X[sampled_query_idx])
             query_y.append(np.full(q_query, class_id, dtype=np.int32))
             query_subjects.append(np.full(q_query, query_subject, dtype=np.int32))
 
@@ -557,9 +758,15 @@ class PainMetaDataset:
             support_idx = shuffled_indices[:k_shot]
             eval_idx = shuffled_indices[k_shot:]
 
-            support_X.append(self.X[support_idx])
+            if self.window_shift_enabled:
+                support_X.append(self._extract_windows(support_idx))
+            else:
+                support_X.append(self.X[support_idx])
             support_y.append(np.full(len(support_idx), class_id, dtype=np.int32))
-            eval_X.append(self.X[eval_idx])
+            if self.window_shift_enabled:
+                eval_X.append(self._extract_windows(eval_idx))
+            else:
+                eval_X.append(self.X[eval_idx])
             eval_y.append(np.full(len(eval_idx), class_id, dtype=np.int32))
 
         support_X = np.concatenate(support_X, axis=0)
