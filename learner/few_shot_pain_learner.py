@@ -281,6 +281,8 @@ class FewShotPainLearner:
         )
         labels = tf.concat([support_y, query_y], axis=0)
         total_aux_loss = model_aux_loss
+        contrastive_loss = tf.constant(0.0, dtype=task_loss.dtype)
+        triplet_loss = tf.constant(0.0, dtype=task_loss.dtype)
         if self.supcon_loss_weight > 0:
             contrastive_loss = (
                 tf.cast(self.supcon_loss_weight, task_loss.dtype)
