@@ -397,7 +397,7 @@ def main() -> None:
     parser.add_argument(
         "--fusion-method",
         type=str,
-        default="gated",
+        default="mean",
         choices=("mean", "gated", "transformer_ib"),
     )
     parser.add_argument(
