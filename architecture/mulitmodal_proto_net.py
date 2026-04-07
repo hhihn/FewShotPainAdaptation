@@ -86,6 +86,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.fusion_transformer_layers = fusion_transformer_layers
         self.fusion_transformer_ffn_dim = fusion_transformer_ffn_dim
         self.fusion_ib_beta = fusion_ib_beta
+        self.logit_scale = 10.0 if distance_metric == "cosine" else 1.0
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
         # Create separate encoder for each modality
         self.modality_encoders = {}
@@ -376,7 +377,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         distances = self.compute_distances(query_embeddings, prototypes)
 
         if self.classifier_mode == "prototype":
-            logits = -distances
+            logits = -distances * self.logit_scale
             similarity_scores = self.compute_similarity_scores(
                 query_embeddings, prototypes
             )
@@ -385,7 +386,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 support_embeddings=support_embeddings,
                 support_y=support_y,
                 query_embeddings=query_embeddings,
-            )
+            ) * self.logit_scale
             similarity_scores = self.compute_similarity_scores(
                 query_embeddings, prototypes
             )
