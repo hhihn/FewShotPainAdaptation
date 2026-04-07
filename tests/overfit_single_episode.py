@@ -1054,7 +1054,7 @@ def main() -> None:
     parser.add_argument(
         "--fusion-method",
         type=str,
-        default="mean",
+        default="gated",
         choices=("mean", "gated", "transformer_ib"),
         help="Embedding fusion mode to use for the fixed-bank overfit experiment.",
     )
