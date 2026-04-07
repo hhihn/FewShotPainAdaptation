@@ -29,6 +29,16 @@ def _sample_tasks(sampler, num_tasks: int) -> list[dict[str, np.ndarray]]:
     return [sampler.get_task() for _ in range(max(1, int(num_tasks)))]
 
 
+def _sample_subject_tasks(sampler, num_tasks: int) -> list[dict[str, np.ndarray]]:
+    subjects = [int(subject) for subject in getattr(sampler, "active_subjects", [])]
+    if not subjects:
+        return _sample_tasks(sampler, num_tasks)
+    return [
+        sampler.get_task(subject=subjects[task_idx % len(subjects)])
+        for task_idx in range(max(1, int(num_tasks)))
+    ]
+
+
 def _evaluate_bank(
     learner: FewShotPainLearner, tasks: list[dict[str, np.ndarray]]
 ) -> dict[str, float]:
@@ -106,12 +116,12 @@ def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     )
     fold = learner.cv.get_fold(held_out_subject)
 
-    train_tasks = _sample_tasks(
+    train_tasks = _sample_subject_tasks(
         fold["train_sampler"],
         max(1, args.updates * args.task_batch_size),
     )
-    train_eval_tasks = _sample_tasks(fold["train_sampler"], args.train_eval_tasks)
-    val_tasks = _sample_tasks(fold["val_sampler"], args.val_tasks)
+    train_eval_tasks = _sample_subject_tasks(fold["train_sampler"], args.train_eval_tasks)
+    val_tasks = _sample_subject_tasks(fold["val_sampler"], args.val_tasks)
     heldout_tasks = _sample_tasks(fold["test_sampler"], args.heldout_tasks)
 
     before_train = _evaluate_bank(learner, train_eval_tasks)
