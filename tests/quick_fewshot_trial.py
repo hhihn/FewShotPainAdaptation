@@ -387,8 +387,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)
     parser.add_argument("--updates", type=int, default=100)
-    parser.add_argument("--task-batch-size", type=int, default=2)
-    parser.add_argument("--train-eval-tasks", type=int, default=50)
+    parser.add_argument("--task-batch-size", type=int, default=10)
+    parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)
     parser.add_argument("--heldout-tasks", type=int, default=10)
     parser.add_argument("--k-shot", type=int, default=5)
@@ -403,7 +403,7 @@ def main() -> None:
     parser.add_argument(
         "--classifier-mode",
         type=str,
-        default="prototype",
+        default="soft_knn",
         choices=("prototype", "soft_knn"),
     )
     parser.add_argument(
