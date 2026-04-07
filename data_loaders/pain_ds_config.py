@@ -15,16 +15,16 @@ class PainDatasetConfig:
     num_tcn_blocks: int = 2  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
         16, # Number of Filters in the Convolutional Layers
-        32
+        32,
     )
     tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2 # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2 # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
-    embedding_dim: int = 32  # Encoder embedding dimension
+    embedding_dim: int = 96  # Encoder embedding dimension
     tcn_attention_heads: int = 4  # Number of self-attention heads inside the TCN
-    tcn_attention_key_dim: int = 32  # Key dimension per TCN attention head
+    tcn_attention_key_dim: int = 128  # Key dimension per TCN attention head
     tcn_attention_dropout: float = 0.2  # Dropout inside the TCN attention layer
     tcn_attention_pool_size: int = 0  # Downsample factor before self-attention
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
@@ -57,9 +57,9 @@ class PainDatasetConfig:
     q_query: int = 3  # Query samples per class
     task_normalize_mode: str = "subject"  # Episodic normalization: subject, support, or none
     classifier_mode: str = "soft_knn"  # Episodic classifier: prototype or soft_knn
-    supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
+    supcon_loss_weight: float = 0.77  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
-    triplet_loss_weight: float = 1.0  # Weight for BatchAllTriplet embedding loss
+    triplet_loss_weight: float = 1.9  # Weight for BatchAllTriplet embedding loss
     triplet_margin: float = 0.2  # Margin used by BatchAllTriplet loss
     train_batch_size: int = 20  # Number of tasks per optimizer update
     num_epochs: int = 10  # Number of epochs per fold

@@ -2,6 +2,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+from typing import Callable, Optional
 
 import numpy as np
 import tensorflow as tf
@@ -25,6 +26,8 @@ class StepMetrics:
     step: int
     loss: float
     accuracy: float
+    heldout_val_loss: float | None = None
+    heldout_val_accuracy: float | None = None
     within_class_cosine: float | None = None
     between_class_cosine: float | None = None
     cross_bank_same_class_cosine: float | None = None
@@ -172,6 +175,88 @@ def _augment_with_gaussian_noise(
         return x
     noise = tf.random.normal(shape=tf.shape(x), stddev=noise_std, dtype=x.dtype)
     return x + noise
+
+
+def _compute_supervised_contrastive_loss(
+    embeddings: tf.Tensor,
+    labels: tf.Tensor,
+    temperature: float,
+) -> tf.Tensor:
+    """Label-aware supervised contrastive loss over one episode."""
+    normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+    logits = tf.matmul(
+        normalized_embeddings, normalized_embeddings, transpose_b=True
+    )
+    logits = logits / tf.cast(temperature, logits.dtype)
+
+    batch_size = tf.shape(labels)[0]
+    labels = tf.reshape(labels, (-1, 1))
+    positive_mask = tf.cast(tf.equal(labels, tf.transpose(labels)), logits.dtype)
+    logits_mask = tf.ones_like(positive_mask) - tf.eye(
+        batch_size, dtype=logits.dtype
+    )
+    positive_mask = positive_mask * logits_mask
+
+    logits = logits - tf.reduce_max(logits, axis=1, keepdims=True)
+    exp_logits = tf.exp(logits) * logits_mask
+    log_prob = logits - tf.math.log(
+        tf.reduce_sum(exp_logits, axis=1, keepdims=True) + 1e-8
+    )
+
+    positive_counts = tf.reduce_sum(positive_mask, axis=1)
+    mean_log_prob_pos = tf.math.divide_no_nan(
+        tf.reduce_sum(positive_mask * log_prob, axis=1),
+        positive_counts,
+    )
+    valid_anchor_mask = tf.cast(positive_counts > 0, logits.dtype)
+
+    return -tf.math.divide_no_nan(
+        tf.reduce_sum(mean_log_prob_pos * valid_anchor_mask),
+        tf.reduce_sum(valid_anchor_mask),
+    )
+
+
+def _compute_batch_all_triplet_loss(
+    embeddings: tf.Tensor,
+    labels: tf.Tensor,
+    margin: float,
+) -> tf.Tensor:
+    """BatchAllTripletLoss using cosine distance d(a,b)=1-cos(a,b)."""
+    normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+    pairwise_similarity = tf.matmul(
+        normalized_embeddings, normalized_embeddings, transpose_b=True
+    )
+    pairwise_distance = 1.0 - pairwise_similarity
+
+    labels = tf.reshape(labels, [-1])
+    same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+    different_label = tf.logical_not(same_label)
+    indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
+    positive_mask = tf.logical_and(same_label, indices_not_equal)
+
+    anchor_positive_dist = tf.expand_dims(pairwise_distance, 2)
+    anchor_negative_dist = tf.expand_dims(pairwise_distance, 1)
+    triplet_loss = (
+        anchor_positive_dist
+        - anchor_negative_dist
+        + tf.cast(margin, pairwise_distance.dtype)
+    )
+
+    mask_ap = tf.expand_dims(positive_mask, 2)
+    mask_an = tf.expand_dims(different_label, 1)
+    triplet_mask = tf.logical_and(mask_ap, mask_an)
+    triplet_loss = tf.where(
+        triplet_mask,
+        triplet_loss,
+        tf.zeros_like(triplet_loss),
+    )
+    triplet_loss = tf.maximum(triplet_loss, 0.0)
+
+    positive_triplets = tf.cast(triplet_loss > 1e-16, pairwise_distance.dtype)
+    return tf.math.divide_no_nan(
+        tf.reduce_sum(triplet_loss),
+        tf.reduce_sum(positive_triplets),
+    )
 
 
 def _build_model(
@@ -596,7 +681,8 @@ def run_fixed_episode_bank_overfit(
     data_dir: str,
     seed: int,
     fusion_method: str,
-    steps: int,
+    num_batches: int,
+    task_batch_size: int,
     learning_rate: float,
     k_shot: int,
     q_query: int,
@@ -610,9 +696,16 @@ def run_fixed_episode_bank_overfit(
     num_val_tasks: int,
     gaussian_noise_std: float,
     val_mode: str,
+    embedding_dim: int | None = None,
+    triplet_loss_weight: float | None = None,
+    supcon_loss_weight: float | None = None,
+    enable_window_shift_augmentation: bool | None = None,
+    progress_callback: Optional[Callable[[StepMetrics], bool]] = None,
 ) -> tuple[list[StepMetrics], bool]:
     logger = setup_logger("fixed_episode_bank_overfit")
-    config = PainDatasetConfig(
+    num_batches = max(1, int(num_batches))
+    task_batch_size = max(1, int(task_batch_size))
+    config_kwargs = dict(
         seed=seed,
         deterministic_ops=True,
         k_shot=k_shot,
@@ -620,6 +713,17 @@ def run_fixed_episode_bank_overfit(
         single_loso_fold=True,
         classifier_mode=classifier_mode,
     )
+    if embedding_dim is not None:
+        config_kwargs["embedding_dim"] = int(embedding_dim)
+    if triplet_loss_weight is not None:
+        config_kwargs["triplet_loss_weight"] = float(triplet_loss_weight)
+    if supcon_loss_weight is not None:
+        config_kwargs["supcon_loss_weight"] = float(supcon_loss_weight)
+    if enable_window_shift_augmentation is not None:
+        config_kwargs["enable_window_shift_augmentation"] = bool(
+            enable_window_shift_augmentation
+        )
+    config = PainDatasetConfig(**config_kwargs)
     set_global_reproducibility(
         seed=config.seed,
         deterministic_ops=config.deterministic_ops,
@@ -652,10 +756,16 @@ def run_fixed_episode_bank_overfit(
     first_task = fixed_tasks[0]
     logger.info(
         f"Fixed task bank sampled from train split: num_tasks={len(fixed_tasks)}, "
+        f"num_batches={num_batches}, "
+        f"task_batch_size={task_batch_size}, "
         f"normalize_mode={normalize_mode}, "
         f"classifier_mode={classifier_mode}, "
         f"subject_mode={subject_mode}, "
         f"gaussian_noise_std={gaussian_noise_std}, "
+        f"embedding_dim={config.embedding_dim}, "
+        f"triplet_loss_weight={config.triplet_loss_weight}, "
+        f"supcon_loss_weight={config.supcon_loss_weight}, "
+        f"enable_window_shift_augmentation={config.enable_window_shift_augmentation}, "
         f"task_subjects={task_subjects}, "
         f"query_subject={selected_query_subject}, "
         f"support_shape={first_task['support_X'].shape}, "
@@ -738,30 +848,77 @@ def run_fixed_episode_bank_overfit(
     loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
     history: list[StepMetrics] = []
-    for step in range(1, steps + 1):
-        task = fixed_tasks[(step - 1) % len(fixed_tasks)]
-        support_x, support_y, query_x, query_y = _to_tensors(task)
-        support_x_aug = _augment_with_gaussian_noise(
-            support_x, noise_std=gaussian_noise_std, training=True
-        )
-        query_x_aug = _augment_with_gaussian_noise(
-            query_x, noise_std=gaussian_noise_std, training=True
-        )
+    for batch_step in range(1, num_batches + 1):
+        batch_start = (batch_step - 1) * task_batch_size
+        batch_tasks = [
+            fixed_tasks[(batch_start + i) % len(fixed_tasks)]
+            for i in range(task_batch_size)
+        ]
 
         with tf.GradientTape() as tape:
-            logits = model(support_x_aug, support_y, query_x_aug, training=True)
-            task_loss = loss_fn(query_y, logits)
-            aux_loss = (
-                tf.add_n(model.losses)
-                if model.losses
-                else tf.constant(0.0, dtype=task_loss.dtype)
-            )
-            loss = task_loss + aux_loss
+            per_task_losses = []
+            for task in batch_tasks:
+                support_x, support_y, query_x, query_y = _to_tensors(task)
+                support_x_aug = _augment_with_gaussian_noise(
+                    support_x, noise_std=gaussian_noise_std, training=True
+                )
+                query_x_aug = _augment_with_gaussian_noise(
+                    query_x, noise_std=gaussian_noise_std, training=True
+                )
+                episode_outputs = model.forward_episode(
+                    support_x=support_x_aug,
+                    support_y=support_y,
+                    query_x=query_x_aug,
+                    training=True,
+                )
+                logits = episode_outputs["logits"]
+                task_loss = loss_fn(query_y, logits)
+                aux_loss = (
+                    tf.add_n(model.losses)
+                    if model.losses
+                    else tf.constant(0.0, dtype=task_loss.dtype)
+                )
+                support_embeddings = episode_outputs["support_embeddings"]
+                query_embeddings = episode_outputs["query_embeddings"]
+                all_embeddings = tf.concat([support_embeddings, query_embeddings], axis=0)
+                all_labels = tf.concat([support_y, query_y], axis=0)
 
-        grads = tape.gradient(loss, model.trainable_variables)
+                if config.supcon_loss_weight > 0:
+                    supcon_loss = _compute_supervised_contrastive_loss(
+                        embeddings=all_embeddings,
+                        labels=all_labels,
+                        temperature=float(config.supcon_temperature),
+                    )
+                else:
+                    supcon_loss = tf.constant(0.0, dtype=task_loss.dtype)
+
+                if config.triplet_loss_weight > 0:
+                    triplet_loss = _compute_batch_all_triplet_loss(
+                        embeddings=all_embeddings,
+                        labels=all_labels,
+                        margin=float(config.triplet_margin),
+                    )
+                else:
+                    triplet_loss = tf.constant(0.0, dtype=task_loss.dtype)
+
+                total_loss = (
+                    task_loss
+                    + aux_loss
+                    + tf.cast(config.supcon_loss_weight, task_loss.dtype) * supcon_loss
+                    + tf.cast(config.triplet_loss_weight, task_loss.dtype) * triplet_loss
+                )
+                per_task_losses.append(total_loss)
+
+            batch_loss = tf.reduce_mean(tf.stack(per_task_losses))
+
+        grads = tape.gradient(batch_loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-        report_due = step == 1 or step % log_every == 0 or step == steps
+        report_due = (
+            batch_step == 1
+            or batch_step % log_every == 0
+            or batch_step == num_batches
+        )
         if not report_due:
             continue
 
@@ -830,9 +987,11 @@ def run_fixed_episode_bank_overfit(
             )
 
         metrics = StepMetrics(
-            step=step,
+            step=batch_step,
             loss=eval_loss,
             accuracy=eval_acc,
+            heldout_val_loss=val_loss,
+            heldout_val_accuracy=val_acc,
             within_class_cosine=train_within_class_cosine,
             between_class_cosine=train_between_class_cosine,
             cross_bank_same_class_cosine=cross_bank_same_class_cosine,
@@ -843,9 +1002,14 @@ def run_fixed_episode_bank_overfit(
             task_query_prototype_diff_class_cosine=train_query_prototype_diff_class_cosine,
         )
         history.append(metrics)
+        if progress_callback is not None and bool(progress_callback(metrics)):
+            logger.info(
+                f"Early stop requested by progress_callback at batch {metrics.step}."
+            )
+            break
 
         message = (
-            f"Step {step}/{steps} | train_bank_loss={metrics.loss:.4f}, "
+            f"Batch {batch_step}/{num_batches} | train_bank_loss={metrics.loss:.4f}, "
             f"train_bank_accuracy={metrics.accuracy:.4f}, "
             f"train_within_class_cosine={train_within_class_cosine:.4f}, "
             f"train_between_class_cosine={train_between_class_cosine:.4f}, "
@@ -894,15 +1058,26 @@ def main() -> None:
         choices=("mean", "gated", "transformer_ib"),
         help="Embedding fusion mode to use for the fixed-bank overfit experiment.",
     )
-    parser.add_argument("--steps", type=int, default=1000)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--k-shot", type=int, default=2)
-    parser.add_argument("--q-query", type=int, default=2)
-    parser.add_argument("--num-fixed-tasks", type=int, default=10)
+    parser.add_argument(
+        "--num-batches",
+        type=int,
+        default=600,
+        help="Number of optimization batches (gradient updates).",
+    )
+    parser.add_argument(
+        "--task-batch-size",
+        type=int,
+        default=12,
+        help="Number of episodic tasks per optimization batch.",
+    )
+    parser.add_argument("--learning-rate", type=float, default=0.0006)
+    parser.add_argument("--k-shot", type=int, default=5)
+    parser.add_argument("--q-query", type=int, default=5)
+    parser.add_argument("--num-fixed-tasks", type=int, default=96)
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="support",
+        default="subject",
         choices=("subject", "support", "none"),
     )
     parser.add_argument(
@@ -914,7 +1089,7 @@ def main() -> None:
     parser.add_argument(
         "--subject-mode",
         type=str,
-        default="single_subject_bank",
+        default="mixed",
         choices=("mixed", "single_subject_bank", "cross_subject_task", "cross_subject_pairs"),
         help="Sample fixed-bank tasks from all train subjects, one train subject only, a single fixed support/query pair, or many support/query pairs.",
     )
@@ -933,7 +1108,7 @@ def main() -> None:
     parser.add_argument(
         "--num-val-tasks",
         type=int,
-        default=10,
+        default=30,
         help="Number of fixed held-out-subject validation tasks to evaluate alongside the train bank. Use 0 to disable.",
     )
     parser.add_argument(
@@ -946,7 +1121,7 @@ def main() -> None:
     parser.add_argument(
         "--gaussian-noise-std",
         type=float,
-        default=0.1,
+        default=0.0,
         help="Stddev of additive Gaussian noise used only during training updates.",
     )
     parser.add_argument("--log-every", type=int, default=25)
@@ -961,7 +1136,8 @@ def main() -> None:
         data_dir=args.data_dir,
         seed=args.seed,
         fusion_method=args.fusion_method,
-        steps=args.steps,
+        num_batches=args.num_batches,
+        task_batch_size=args.task_batch_size,
         learning_rate=args.learning_rate,
         k_shot=args.k_shot,
         q_query=args.q_query,

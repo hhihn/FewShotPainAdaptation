@@ -22,7 +22,7 @@ class SweepResult:
     normalize_mode: str
     num_fixed_tasks: int
     seed: int
-    steps: int
+    num_batches: int
     learning_rate: float
     first_loss: float
     best_loss: float
@@ -72,7 +72,8 @@ def main() -> None:
     )
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--num-batches", type=int, default=1000)
+    parser.add_argument("--task-batch-size", type=int, default=12)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--k-shot", type=int, default=3)
     parser.add_argument("--q-query", type=int, default=3)
@@ -139,7 +140,8 @@ def main() -> None:
             data_dir=args.data_dir,
             seed=args.seed,
             fusion_method=fusion_method,
-            steps=args.steps,
+            num_batches=args.num_batches,
+            task_batch_size=args.task_batch_size,
             learning_rate=args.learning_rate,
             k_shot=args.k_shot,
             q_query=args.q_query,
@@ -160,7 +162,7 @@ def main() -> None:
                 normalize_mode=normalize_mode,
                 num_fixed_tasks=num_fixed_tasks,
                 seed=args.seed,
-                steps=args.steps,
+                num_batches=args.num_batches,
                 learning_rate=args.learning_rate,
                 first_loss=first.loss,
                 best_loss=best_loss_metrics.loss,
