@@ -1061,7 +1061,7 @@ def main() -> None:
     parser.add_argument(
         "--num-batches",
         type=int,
-        default=600,
+        default=10,
         help="Number of optimization batches (gradient updates).",
     )
     parser.add_argument(
@@ -1121,10 +1121,10 @@ def main() -> None:
     parser.add_argument(
         "--gaussian-noise-std",
         type=float,
-        default=0.0,
+        default=0.02,
         help="Stddev of additive Gaussian noise used only during training updates.",
     )
-    parser.add_argument("--log-every", type=int, default=25)
+    parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument(
         "--strict",
         action="store_true",
