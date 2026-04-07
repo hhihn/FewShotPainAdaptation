@@ -407,6 +407,50 @@ class PainMetaDataset:
         """Normalize a batch with externally provided stats."""
         return (data - stats["mean"]) / stats["std"]
 
+    def compute_split_normalization_stats(
+        self, subjects: List[int]
+    ) -> Dict[str, np.ndarray]:
+        """Compute modality-wise stats over all samples/windows in a LOSO split."""
+        selected_subjects = [int(subject) for subject in subjects]
+        if not selected_subjects:
+            raise ValueError("subjects must contain at least one subject id")
+
+        sum_values = np.zeros((self.X.shape[2],), dtype=np.float64)
+        sum_square_values = np.zeros((self.X.shape[2],), dtype=np.float64)
+        count = 0
+
+        for subject in selected_subjects:
+            subject_indices = np.where(self.subjects == subject)[0]
+            if subject_indices.size == 0:
+                continue
+
+            if self.window_shift_enabled:
+                for start_idx in self.window_start_indices:
+                    windows = self.X[
+                        subject_indices,
+                        start_idx : start_idx + self.window_length_samples,
+                        :,
+                    ]
+                    sum_values += np.sum(windows, axis=(0, 1))
+                    sum_square_values += np.sum(np.square(windows), axis=(0, 1))
+                    count += windows.shape[0] * windows.shape[1]
+            else:
+                subject_data = self.X[subject_indices]
+                sum_values += np.sum(subject_data, axis=(0, 1))
+                sum_square_values += np.sum(np.square(subject_data), axis=(0, 1))
+                count += subject_data.shape[0] * subject_data.shape[1]
+
+        if count == 0:
+            raise ValueError("No samples available to compute split normalization stats")
+
+        mean = sum_values / count
+        variance = np.maximum((sum_square_values / count) - np.square(mean), 0.0)
+        std = np.sqrt(variance) + 1e-8
+        return {
+            "mean": mean.reshape(1, 1, -1).astype(self.X.dtype, copy=False),
+            "std": std.reshape(1, 1, -1).astype(self.X.dtype, copy=False),
+        }
+
     def get_subject_data(
         self, subject: int, normalize: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -440,6 +484,7 @@ class PainMetaDataset:
         rng: Optional[np.random.Generator] = None,
         allow_partial_query: bool = False,
         include_sample_subjects: bool = False,
+        split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Sample an N-way-K-shot task from a single subject.
@@ -451,6 +496,7 @@ class PainMetaDataset:
             seed: Random seed for reproducibility
             normalize_mode: One of:
                 - 'subject': normalize with precomputed per-subject/global stats
+                - 'split': normalize with precomputed split-level stats
                 - 'support': normalize both support/query using support-set stats only
                 - 'none': no normalization
             rng: Optional numpy Generator to control sampling deterministically
@@ -473,6 +519,7 @@ class PainMetaDataset:
             rng=rng,
             allow_partial_query=allow_partial_query,
             include_sample_subjects=include_sample_subjects,
+            split_normalization_stats=split_normalization_stats,
         )
 
     def sample_task_from_subjects(
@@ -485,6 +532,7 @@ class PainMetaDataset:
         rng: Optional[np.random.Generator] = None,
         allow_partial_query: bool = False,
         include_sample_subjects: bool = False,
+        split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """Sample one task by pooling each class across the provided subjects."""
         k_shot = k_shot or self.config.k_shot
@@ -554,6 +602,12 @@ class PainMetaDataset:
         if normalize_mode == "subject":
             support_X = self._normalize_data_by_subjects(support_X, support_subjects)
             query_X = self._normalize_data_by_subjects(query_X, query_subjects)
+        elif normalize_mode == "split":
+            stats = split_normalization_stats
+            if stats is None:
+                stats = self.compute_split_normalization_stats(selected_subjects)
+            support_X = self._apply_stats(support_X, stats)
+            query_X = self._apply_stats(query_X, stats)
         elif normalize_mode == "support":
             stats = self._compute_batch_stats(support_X)
             support_X = self._apply_stats(support_X, stats)
@@ -562,7 +616,7 @@ class PainMetaDataset:
             pass
         else:
             raise ValueError(
-                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'support', or 'none'."
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'split', 'support', or 'none'."
             )
 
         support_perm = local_rng.permutation(len(support_y))
@@ -591,6 +645,7 @@ class PainMetaDataset:
         normalize_mode: str = "subject",
         rng: Optional[np.random.Generator] = None,
         include_sample_subjects: bool = False,
+        split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Sample one task with support drawn from one subject and query from another.
@@ -670,6 +725,14 @@ class PainMetaDataset:
         if normalize_mode == "subject":
             support_X = self._normalize_data_by_subjects(support_X, support_subjects)
             query_X = self._normalize_data_by_subjects(query_X, query_subjects)
+        elif normalize_mode == "split":
+            if split_normalization_stats is None:
+                stats_subjects = sorted({support_subject, query_subject})
+                split_normalization_stats = self.compute_split_normalization_stats(
+                    stats_subjects
+                )
+            support_X = self._apply_stats(support_X, split_normalization_stats)
+            query_X = self._apply_stats(query_X, split_normalization_stats)
         elif normalize_mode == "support":
             stats = self._compute_batch_stats(support_X)
             support_X = self._apply_stats(support_X, stats)
@@ -678,7 +741,7 @@ class PainMetaDataset:
             pass
         else:
             raise ValueError(
-                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'support', or 'none'."
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'split', 'support', or 'none'."
             )
 
         support_perm = local_rng.permutation(len(support_y))

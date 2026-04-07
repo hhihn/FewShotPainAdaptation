@@ -55,7 +55,7 @@ class PainDatasetConfig:
     )  # Number of classes per task; derived from task_class_ids
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
-    task_normalize_mode: str = "subject"  # Episodic normalization: subject, support, or none
+    task_normalize_mode: str = "subject"  # Episodic normalization: subject, split, support, or none
     classifier_mode: str = "soft_knn"  # Episodic classifier: prototype or soft_knn
     supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
@@ -102,9 +102,9 @@ class PainDatasetConfig:
         if len(set(self.task_class_ids)) != len(self.task_class_ids):
             raise ValueError("task_class_ids must be unique")
         self.n_way = len(self.task_class_ids)
-        if self.task_normalize_mode not in {"subject", "support", "none"}:
+        if self.task_normalize_mode not in {"subject", "split", "support", "none"}:
             raise ValueError(
-                "task_normalize_mode must be one of: 'subject', 'support', 'none'"
+                "task_normalize_mode must be one of: 'subject', 'split', 'support', 'none'"
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError(

@@ -69,6 +69,12 @@ class SixWayKShotSampler:
             self.active_subjects = [test_subject]
             self.tasks_per_epoch = self.config.subject_eval_tasks
 
+        self.split_normalization_stats = None
+        if self.config.task_normalize_mode == "split":
+            self.split_normalization_stats = (
+                self.dataset.compute_split_normalization_stats(self.active_subjects)
+            )
+
         self.n_way = self.config.n_way
 
         # Precompute shapes
@@ -96,6 +102,7 @@ class SixWayKShotSampler:
                 q_query=self.q_query,
                 normalize_mode=normalize_mode,
                 rng=self.rng,
+                split_normalization_stats=self.split_normalization_stats,
             )
 
         return self.dataset.sample_task(
@@ -105,6 +112,7 @@ class SixWayKShotSampler:
             normalize_mode=normalize_mode,
             rng=self.rng,
             allow_partial_query=True,
+            split_normalization_stats=self.split_normalization_stats,
         )
 
     def get_task(self, subject: Optional[int] = None) -> Dict[str, np.ndarray]:
@@ -126,6 +134,7 @@ class SixWayKShotSampler:
                 normalize_mode=normalize_mode,
                 rng=self.rng,
                 allow_partial_query=self.mode == "test",
+                split_normalization_stats=self.split_normalization_stats,
             )
         return self._sample_task()
 
@@ -146,6 +155,7 @@ class SixWayKShotSampler:
             normalize_mode=self.config.task_normalize_mode,
             rng=self.rng,
             allow_partial_query=True,
+            split_normalization_stats=self.split_normalization_stats,
         )
 
     def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:

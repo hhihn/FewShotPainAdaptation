@@ -244,8 +244,8 @@ def main() -> None:
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="subject",
-        choices=("subject", "support", "none"),
+        default="split",
+        choices=("subject", "split", "support", "none"),
     )
     parser.add_argument("--learning-rate", type=float, default=0.0006)
     parser.add_argument("--embedding-dim", type=int, default=32)
