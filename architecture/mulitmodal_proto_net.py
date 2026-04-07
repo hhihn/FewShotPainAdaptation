@@ -368,6 +368,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         """Run one episode and return logits plus intermediate embedding tensors."""
         support_embeddings = self.encode(support_x, training=training)
         query_embeddings = self.encode(query_x, training=training)
+        support_mean = tf.reduce_mean(support_embeddings, axis=0, keepdims=True)
+        support_std = tf.math.reduce_std(support_embeddings, axis=0, keepdims=True) + 1e-6
+        support_embeddings = (support_embeddings - support_mean) / support_std
+        query_embeddings = (query_embeddings - support_mean) / support_std
 
         self.logger.debug(f"Support embeddings shape: {tf.shape(support_embeddings)}")
         self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
