@@ -121,7 +121,7 @@ def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         fold["train_sampler"],
         max(1, args.updates * args.task_batch_size),
     )
-    train_eval_tasks = _sample_subject_tasks(fold["train_sampler"], args.train_eval_tasks)
+    train_eval_tasks = train_tasks[: max(1, min(args.train_eval_tasks, len(train_tasks)))]
     val_tasks = _sample_subject_tasks(fold["val_sampler"], args.val_tasks)
     heldout_tasks = _sample_tasks(fold["test_sampler"], args.heldout_tasks)
 
