@@ -76,7 +76,7 @@ def _write_csv(path: Path, payload: dict[str, Any]) -> None:
         writer.writerow(flat_payload)
 
 
-def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
+def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     logger = setup_logger("quick_fewshot_trial")
     start_time = time.perf_counter()
     filters_list = _parse_int_tuple(args.filters)
@@ -213,6 +213,169 @@ def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+def _average_metric_group(
+    repeat_payloads: list[dict[str, Any]], phase: str, split: str
+) -> dict[str, float]:
+    metric_names = repeat_payloads[0][phase][split].keys()
+    return {
+        metric_name: float(
+            np.mean(
+                [
+                    repeat_payload[phase][split][metric_name]
+                    for repeat_payload in repeat_payloads
+                ]
+            )
+        )
+        for metric_name in metric_names
+    }
+
+
+def _metric_std(repeat_payloads: list[dict[str, Any]], metric_name: str) -> float:
+    return float(
+        np.std(
+            [repeat_payload[metric_name] for repeat_payload in repeat_payloads],
+            ddof=0,
+        )
+    )
+
+
+def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
+    repeats = max(1, int(args.repeats))
+    if repeats == 1:
+        payload = _run_single_quick_trial(args)
+        payload["repeats"] = 1
+        payload["repeat_seed_stride"] = int(args.repeat_seed_stride)
+        payload["repeat_metrics"] = [
+            {
+                "repeat": 1,
+                "seed": int(payload["seed"]),
+                "final_composite_accuracy": float(payload["final_composite_accuracy"]),
+                "train_accuracy": float(payload["after"]["train"]["accuracy"]),
+                "val_accuracy": float(payload["after"]["val"]["accuracy"]),
+                "heldout_accuracy": float(payload["after"]["heldout"]["accuracy"]),
+            }
+        ]
+        payload["metric_std"] = {
+            "final_composite_accuracy": 0.0,
+            "train_accuracy": 0.0,
+            "val_accuracy": 0.0,
+            "heldout_accuracy": 0.0,
+        }
+        return payload
+
+    repeat_payloads = []
+    start_time = time.perf_counter()
+    base_seed = int(args.seed)
+    seed_stride = int(args.repeat_seed_stride)
+    for repeat_idx in range(repeats):
+        repeat_args = argparse.Namespace(**vars(args))
+        repeat_args.seed = base_seed + repeat_idx * seed_stride
+        repeat_args.repeats = 1
+        repeat_payload = _run_single_quick_trial(repeat_args)
+        repeat_payload["repeat"] = repeat_idx + 1
+        repeat_payloads.append(repeat_payload)
+
+    first_payload = repeat_payloads[0]
+    averaged_payload = dict(first_payload)
+    averaged_payload["elapsed_seconds"] = time.perf_counter() - start_time
+    averaged_payload["seed"] = base_seed
+    averaged_payload["repeats"] = repeats
+    averaged_payload["repeat_seed_stride"] = seed_stride
+    averaged_payload.pop("repeat", None)
+    averaged_payload["update_history"] = []
+    averaged_payload["repeat_seeds"] = [
+        int(repeat_payload["seed"]) for repeat_payload in repeat_payloads
+    ]
+    averaged_payload["before"] = {
+        split: _average_metric_group(repeat_payloads, "before", split)
+        for split in ("train", "val", "heldout")
+    }
+    averaged_payload["after"] = {
+        split: _average_metric_group(repeat_payloads, "after", split)
+        for split in ("train", "val", "heldout")
+    }
+    averaged_payload["final_composite_accuracy"] = float(
+        np.mean(
+            [
+                repeat_payload["final_composite_accuracy"]
+                for repeat_payload in repeat_payloads
+            ]
+        )
+    )
+    averaged_payload["heldout_generalization_gap"] = float(
+        averaged_payload["after"]["train"]["accuracy"]
+        - averaged_payload["after"]["heldout"]["accuracy"]
+    )
+    averaged_payload["train_accuracy_delta"] = float(
+        averaged_payload["after"]["train"]["accuracy"]
+        - averaged_payload["before"]["train"]["accuracy"]
+    )
+    averaged_payload["val_accuracy_delta"] = float(
+        averaged_payload["after"]["val"]["accuracy"]
+        - averaged_payload["before"]["val"]["accuracy"]
+    )
+    averaged_payload["heldout_accuracy_delta"] = float(
+        averaged_payload["after"]["heldout"]["accuracy"]
+        - averaged_payload["before"]["heldout"]["accuracy"]
+    )
+    averaged_payload["repeat_metrics"] = [
+        {
+            "repeat": int(repeat_payload["repeat"]),
+            "seed": int(repeat_payload["seed"]),
+            "final_composite_accuracy": float(
+                repeat_payload["final_composite_accuracy"]
+            ),
+            "train_accuracy": float(repeat_payload["after"]["train"]["accuracy"]),
+            "val_accuracy": float(repeat_payload["after"]["val"]["accuracy"]),
+            "heldout_accuracy": float(repeat_payload["after"]["heldout"]["accuracy"]),
+        }
+        for repeat_payload in repeat_payloads
+    ]
+    averaged_payload["metric_std"] = {
+        "final_composite_accuracy": _metric_std(
+            repeat_payloads, "final_composite_accuracy"
+        ),
+        "train_accuracy": float(
+            np.std(
+                [
+                    repeat_payload["after"]["train"]["accuracy"]
+                    for repeat_payload in repeat_payloads
+                ],
+                ddof=0,
+            )
+        ),
+        "val_accuracy": float(
+            np.std(
+                [
+                    repeat_payload["after"]["val"]["accuracy"]
+                    for repeat_payload in repeat_payloads
+                ],
+                ddof=0,
+            )
+        ),
+        "heldout_accuracy": float(
+            np.std(
+                [
+                    repeat_payload["after"]["heldout"]["accuracy"]
+                    for repeat_payload in repeat_payloads
+                ],
+                ddof=0,
+            )
+        ),
+    }
+    averaged_payload["repeat_payloads"] = repeat_payloads
+    setup_logger("quick_fewshot_trial").info(
+        "Averaged quick few-shot trial complete: "
+        f"composite={averaged_payload['final_composite_accuracy']:.4f}, "
+        f"train_acc={averaged_payload['after']['train']['accuracy']:.4f}, "
+        f"val_acc={averaged_payload['after']['val']['accuracy']:.4f}, "
+        f"heldout_acc={averaged_payload['after']['heldout']['accuracy']:.4f}, "
+        f"repeats={repeats}, "
+        f"elapsed_seconds={averaged_payload['elapsed_seconds']:.2f}"
+    )
+    return averaged_payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -256,6 +419,8 @@ def main() -> None:
     parser.add_argument("--tcn-attention-pool-size", type=int, default=4)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
     parser.add_argument("--disable-window-shift", action="store_true")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeat-seed-stride", type=int, default=1)
     parser.add_argument("--output-json", type=str, default="")
     parser.add_argument("--output-csv", type=str, default="")
     args = parser.parse_args()
