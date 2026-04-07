@@ -249,7 +249,7 @@ def main() -> None:
         default="split",
         choices=("subject", "split", "support", "none"),
     )
-    parser.add_argument("--learning-rate", type=float, default=0.0006)
+    parser.add_argument("--learning-rate", type=float, default=0.0003)
     parser.add_argument("--embedding-dim", type=int, default=32)
     parser.add_argument("--filters", type=str, default="8,16")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
