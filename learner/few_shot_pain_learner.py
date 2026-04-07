@@ -46,6 +46,7 @@ class FewShotPainLearner:
         self.supcon_temperature = float(config.supcon_temperature)
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
+        self.gaussian_noise_std = float(config.gaussian_noise_std)
         self.logger = setup_logger("few_shot_pain_learner")
         set_global_reproducibility(
             seed=self.seed,
@@ -75,6 +76,7 @@ class FewShotPainLearner:
             "fusion_method": self.fusion_method,
             "sequence_length": self.config.sequence_length,
             "enable_window_shift_augmentation": self.config.enable_window_shift_augmentation,
+            "gaussian_noise_std": self.gaussian_noise_std,
             "window_shift_window_seconds": self.config.window_shift_window_seconds,
             "window_shift_start_min_seconds": self.config.window_shift_start_min_seconds,
             "window_shift_start_max_seconds": self.config.window_shift_start_max_seconds,
@@ -130,6 +132,17 @@ class FewShotPainLearner:
         )
         self.logger.info(f"Modalities: {config.modality_names}")
         self.logger.info(f"Fusion method: {fusion_method}")
+
+    def _augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
+        """Apply training-only signal augmentation configured for episodic updates."""
+        if self.gaussian_noise_std <= 0:
+            return x
+        noise = tf.random.normal(
+            shape=tf.shape(x),
+            stddev=tf.cast(self.gaussian_noise_std, x.dtype),
+            dtype=x.dtype,
+        )
+        return x + noise
 
     def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
@@ -352,6 +365,8 @@ class FewShotPainLearner:
                 support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
                 query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
                 query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
+                support_x = self._augment_training_inputs(support_x)
+                query_x = self._augment_training_inputs(query_x)
 
                 task_outputs = self._forward_task(
                     support_x=support_x,

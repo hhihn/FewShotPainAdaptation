@@ -76,6 +76,9 @@ class PainDatasetConfig:
     enable_window_shift_augmentation: bool = (
         True  # If True, sample fixed-length shifted windows instead of full signals
     )
+    gaussian_noise_std: float = (
+        0.01  # Additive Gaussian noise stddev used only during training updates
+    )
     window_shift_window_seconds: float = (
         4.0  # Output window duration in seconds (e.g., 4s => 1000 samples @ 250 Hz)
     )
@@ -156,3 +159,5 @@ class PainDatasetConfig:
             raise ValueError(
                 "window_shift_start_max_seconds must be >= window_shift_start_min_seconds"
             )
+        if self.gaussian_noise_std < 0:
+            raise ValueError("gaussian_noise_std must be non-negative")

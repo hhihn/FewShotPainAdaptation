@@ -101,6 +101,7 @@ def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         tcn_attention_key_dim=args.tcn_attention_key_dim,
         tcn_attention_pool_size=args.tcn_attention_pool_size,
         enable_window_shift_augmentation=not args.disable_window_shift,
+        gaussian_noise_std=args.gaussian_noise_std,
     )
     learner = FewShotPainLearner(
         config=config,
@@ -180,6 +181,7 @@ def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "embedding_dim": args.embedding_dim,
         "filters": list(filters_list),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
+        "gaussian_noise_std": float(config.gaussian_noise_std),
         "before": {
             "train": before_train,
             "val": before_val,
@@ -252,6 +254,7 @@ def main() -> None:
     parser.add_argument("--filters", type=str, default="8,16")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=4)
+    parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument("--disable-window-shift", action="store_true")
     parser.add_argument("--output-json", type=str, default="")
     parser.add_argument("--output-csv", type=str, default="")
