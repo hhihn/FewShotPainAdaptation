@@ -196,36 +196,24 @@ class MultimodalPrototypicalNetwork(keras.Model):
         # self.logger.debug(model.summary())
         return model
 
-    def encode(self, x, training=False):
-        """
-        Map input to combined embedding space.
-
-        Args:
-            x: [batch_size, sequence_length, num_sensors]
-            training: Whether in training mode
-
-        Returns:
-            embeddings: [batch_size, fused_embedding_dim] or [batch_size, embedding_dim]
-        """
-        # Split input by modality
+    def _encode_modality_stack(self, x, training=False):
+        """Encode each modality and return [batch, num_modalities, embedding_dim]."""
         modality_embeddings = []
-
         for i, modality_name in enumerate(self.modality_names):
-            # Extract single modality: [batch_size, sequence_length, 1]
             modality_data = x[:, :, i : i + 1]
-
-            # Encode modality
             encoder = self.modality_encoders[modality_name]
             embedding = encoder(modality_data, training=training)
             modality_embeddings.append(embedding)
-        fused = tf.stack(
-            modality_embeddings, axis=1
-        )  # [batch, num_modalities, embedding_dim]
-        # Fuse embeddings
+
+        return tf.stack(modality_embeddings, axis=1)
+
+    def _fuse_modality_stack(self, fused, training=False):
+        """Fuse [batch, num_modalities, embedding_dim] modality embeddings."""
         if self.fusion_method == "mean":
             fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
         elif self.fusion_method == "gated":
             normalized_embeddings = []
+            modality_embeddings = tf.unstack(fused, axis=1)
             for modality_name, embedding in zip(self.modality_names, modality_embeddings):
                 normalized_embeddings.append(
                     self.gating_norm_layers[modality_name](embedding, training=training)
@@ -246,8 +234,23 @@ class MultimodalPrototypicalNetwork(keras.Model):
         else:  # self.fusion_method == "transformer_ib":
             fused = self.fusion_layer(fused, training=training)
 
-        # Keep all episode embeddings on a comparable scale before metric classification.
         return fused
+
+    def encode(self, x, training=False):
+        """
+        Map input to combined embedding space.
+
+        Args:
+            x: [batch_size, sequence_length, num_sensors]
+            training: Whether in training mode
+
+        Returns:
+            embeddings: [batch_size, fused_embedding_dim] or [batch_size, embedding_dim]
+        """
+        return self._fuse_modality_stack(
+            self._encode_modality_stack(x, training=training),
+            training=training,
+        )
 
     def compute_distances(self, query_embeddings, prototype_embeddings):
         """
@@ -366,8 +369,27 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
     def forward_episode(self, support_x, support_y, query_x, training=False):
         """Run one episode and return logits plus intermediate embedding tensors."""
-        support_embeddings = self.encode(support_x, training=training)
-        query_embeddings = self.encode(query_x, training=training)
+        support_modality_embeddings = self._encode_modality_stack(
+            support_x, training=training
+        )
+        query_modality_embeddings = self._encode_modality_stack(query_x, training=training)
+        modality_mean = tf.reduce_mean(
+            support_modality_embeddings, axis=0, keepdims=True
+        )
+        modality_std = (
+            tf.math.reduce_std(support_modality_embeddings, axis=0, keepdims=True)
+            + 1e-6
+        )
+        support_modality_embeddings = (
+            support_modality_embeddings - modality_mean
+        ) / modality_std
+        query_modality_embeddings = (query_modality_embeddings - modality_mean) / modality_std
+        support_embeddings = self._fuse_modality_stack(
+            support_modality_embeddings, training=training
+        )
+        query_embeddings = self._fuse_modality_stack(
+            query_modality_embeddings, training=training
+        )
         support_mean = tf.reduce_mean(support_embeddings, axis=0, keepdims=True)
         support_std = tf.math.reduce_std(support_embeddings, axis=0, keepdims=True) + 1e-6
         support_embeddings = (support_embeddings - support_mean) / support_std
