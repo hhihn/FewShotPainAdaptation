@@ -416,7 +416,7 @@ def main() -> None:
     parser.add_argument("--embedding-dim", type=int, default=32)
     parser.add_argument("--filters", type=str, default="8,16")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
-    parser.add_argument("--tcn-attention-pool-size", type=int, default=4)
+    parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
     parser.add_argument("--disable-window-shift", action="store_true")
     parser.add_argument("--repeats", type=int, default=3)
