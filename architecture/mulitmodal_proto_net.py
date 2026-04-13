@@ -336,7 +336,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         prototypes = []
 
         for class_id in range(self.num_classes):
-            mask = tf.cast(tf.equal(support_y, class_id), tf.float32)
+            mask = tf.cast(tf.equal(support_y, class_id), support_y.dtype)
             count = tf.reduce_sum(mask)
             class_embeddings = support_embeddings * tf.expand_dims(mask, 1)
             prototype = tf.reduce_sum(class_embeddings, axis=0) / (count + 1e-8)
