@@ -461,7 +461,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)
-    parser.add_argument("--updates", type=int, default=10)
+    parser.add_argument("--updates", type=int, default=100)
     parser.add_argument("--task-batch-size", type=int, default=10)
     parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)

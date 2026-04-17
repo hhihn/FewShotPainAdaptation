@@ -157,6 +157,18 @@ class MultimodalPrototypicalNetwork(keras.Model):
             f"Final embedding dim: {self.fused_embedding_dim}"
         )
 
+    def _log_episode_tensor_stats(self, episode_outputs: dict[str, tf.Tensor]) -> None:
+        """Emit lightweight debug stats for one episode."""
+        if not self.logger.isEnabledFor(10):
+            return
+        self.logger.debug(
+            "Episode stats: "
+            f"support_embeddings_shape={episode_outputs['support_embeddings'].shape}, "
+            f"query_embeddings_shape={episode_outputs['query_embeddings'].shape}, "
+            f"prototypes_shape={episode_outputs['prototypes'].shape}, "
+            f"logits_shape={episode_outputs['logits'].shape}"
+        )
+
     def _build_encoder(
         self,
         modality_name: str,
@@ -418,6 +430,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
             )
         else:
             raise ValueError(f"Unknown classifier mode: {self.classifier_mode}")
+
+        self._log_episode_tensor_stats(
+            {
+                "support_embeddings": support_embeddings,
+                "query_embeddings": query_embeddings,
+                "prototypes": prototypes,
+                "logits": logits,
+            }
+        )
 
         return {
             "support_embeddings": support_embeddings,

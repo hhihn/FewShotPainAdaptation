@@ -71,6 +71,7 @@ class PainDatasetConfig:
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
+    summary_every_n_train_steps: int = 20  # Log composite train/val/heldout summary every N train batches
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
@@ -165,6 +166,8 @@ class PainDatasetConfig:
             raise ValueError("gaussian_noise_std must be non-negative")
         if self.logging_verbosity not in {0, 1, 2}:
             raise ValueError("logging_verbosity must be one of: 0, 1, 2")
+        if self.summary_every_n_train_steps <= 0:
+            raise ValueError("summary_every_n_train_steps must be > 0")
         if self.data_variant not in {"real", "mock"}:
             raise ValueError("data_variant must be one of: 'real', 'mock'")
         if self.data_variant == "mock":

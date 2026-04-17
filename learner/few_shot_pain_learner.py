@@ -110,6 +110,7 @@ class FewShotPainLearner:
             "eval_log_every": self.config.eval_log_every,
             "val_batch_size": self.config.val_batch_size,
             "val_every_n_train_steps": self.config.val_every_n_train_steps,
+            "summary_every_n_train_steps": self.config.summary_every_n_train_steps,
             "logging_verbosity": self.logging_verbosity,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
@@ -606,6 +607,36 @@ class FewShotPainLearner:
             return f"{minutes}m {secs}s"
         return f"{secs}s"
 
+    def _log_composite_summary(
+        self,
+        *,
+        prefix: str,
+        train_metrics: dict,
+        val_metrics: dict,
+        heldout_metrics: dict,
+        elapsed_seconds: float,
+    ) -> None:
+        composite_accuracy = float(
+            np.mean(
+                [
+                    train_metrics["accuracy"],
+                    val_metrics["accuracy"],
+                    heldout_metrics["accuracy"],
+                ]
+            )
+        )
+        self.logger.info(
+            f"{prefix}: "
+            f"composite={composite_accuracy:.4f}, "
+            f"train_acc={train_metrics['accuracy']:.4f}, "
+            f"val_acc={val_metrics['accuracy']:.4f}, "
+            f"heldout_acc={heldout_metrics['accuracy']:.4f}, "
+            f"train_loss={train_metrics['loss']:.4f}, "
+            f"val_loss={val_metrics['loss']:.4f}, "
+            f"heldout_loss={heldout_metrics['loss']:.4f}, "
+            f"elapsed_seconds={elapsed_seconds:.2f}"
+        )
+
     def train(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
@@ -672,6 +703,9 @@ class FewShotPainLearner:
         )
         completed_train_steps = 0
         train_start_time = time.perf_counter()
+        summary_every_n_train_steps = max(
+            1, int(self.config.summary_every_n_train_steps)
+        )
         progress = TrainingProgressReporter(
             logger=self.logger,
             train_log_every=train_log_every,
@@ -716,6 +750,11 @@ class FewShotPainLearner:
                 "train_accuracies": [],
                 "val_losses": [],
                 "val_accuracies": [],
+            }
+            fold_summary_reference = {
+                "train": None,
+                "val": None,
+                "heldout": None,
             }
 
             for epoch in range(num_epochs):
@@ -790,6 +829,47 @@ class FewShotPainLearner:
                             f"accuracy={float(acc):.4f}, contrastive_loss={float(contrastive_loss):.4f}, "
                             f"elapsed={self._format_seconds(elapsed)}, "
                             f"eta={self._format_seconds(eta_seconds)}"
+                        )
+
+                    if processed_batches % summary_every_n_train_steps == 0:
+                        summary_train_loss, summary_train_metrics = (
+                            self._evaluate_sampler_loss_and_metrics(
+                                train_sampler, num_tasks=val_tasks
+                            )
+                        )
+                        summary_val_loss, summary_val_metrics = (
+                            self._evaluate_sampler_loss_and_metrics(
+                                val_sampler, num_tasks=val_tasks
+                            )
+                        )
+                        summary_heldout_loss, summary_heldout_metrics = (
+                            self._evaluate_sampler_loss_and_metrics(
+                                test_sampler, num_tasks=subject_eval_tasks
+                            )
+                        )
+                        fold_summary_reference["train"] = summary_train_metrics
+                        fold_summary_reference["val"] = summary_val_metrics
+                        fold_summary_reference["heldout"] = summary_heldout_metrics
+                        self._log_composite_summary(
+                            prefix=(
+                                f"[Fold {fold + 1}/{num_subjects}] "
+                                f"[Epoch {epoch + 1}/{num_epochs}] "
+                                f"[Step {processed_batches}/{max(1, int(np.ceil(tasks_per_epoch / self.train_batch_size)))}] "
+                                f"Composite summary"
+                            ),
+                            train_metrics={
+                                "accuracy": summary_train_metrics["accuracy"],
+                                "loss": summary_train_loss,
+                            },
+                            val_metrics={
+                                "accuracy": summary_val_metrics["accuracy"],
+                                "loss": summary_val_loss,
+                            },
+                            heldout_metrics={
+                                "accuracy": summary_heldout_metrics["accuracy"],
+                                "loss": summary_heldout_loss,
+                            },
+                            elapsed_seconds=time.perf_counter() - train_start_time,
                         )
 
                     should_run_validation = (
@@ -927,6 +1007,19 @@ class FewShotPainLearner:
                         f"epoch_elapsed={self._format_seconds(epoch_elapsed)}, "
                         f"fold_elapsed={self._format_seconds(fold_elapsed)}, "
                         f"overall_eta={self._format_seconds(overall_eta_seconds)}"
+                    )
+
+                if self.logging_verbosity >= 1 and fold_summary_reference["train"] is not None:
+                    self._log_composite_summary(
+                        prefix=(
+                            f"[Fold {fold + 1}/{num_subjects}] "
+                            f"[Epoch {epoch + 1}/{num_epochs}] "
+                            f"Epoch checkpoint"
+                        ),
+                        train_metrics=fold_summary_reference["train"],
+                        val_metrics=fold_summary_reference["val"],
+                        heldout_metrics=fold_summary_reference["heldout"],
+                        elapsed_seconds=time.perf_counter() - train_start_time,
                     )
 
             # Zero-shot performance (after training on M-1 subjects).
