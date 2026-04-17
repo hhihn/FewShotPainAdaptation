@@ -5,6 +5,7 @@ import json
 import gc
 import io
 import os
+import time
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -47,7 +48,14 @@ class FewShotPainLearner:
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
+        self.logging_verbosity = int(getattr(config, "logging_verbosity", 1))
         self.logger = setup_logger("few_shot_pain_learner")
+        if self.logging_verbosity <= 0:
+            self.logger.setLevel(30)
+        elif self.logging_verbosity == 1:
+            self.logger.setLevel(20)
+        else:
+            self.logger.setLevel(10)
         set_global_reproducibility(
             seed=self.seed,
             deterministic_ops=self.deterministic_ops,
@@ -102,6 +110,7 @@ class FewShotPainLearner:
             "eval_log_every": self.config.eval_log_every,
             "val_batch_size": self.config.val_batch_size,
             "val_every_n_train_steps": self.config.val_every_n_train_steps,
+            "logging_verbosity": self.logging_verbosity,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
             "tcn_dilation_rates": self.config.tcn_dilation_rates,
@@ -132,6 +141,9 @@ class FewShotPainLearner:
         )
         self.logger.info(f"Modalities: {config.modality_names}")
         self.logger.info(f"Fusion method: {fusion_method}")
+        self.logger.info(
+            f"Logging verbosity={self.logging_verbosity} (0=minimal, 1=standard, 2=detailed)"
+        )
 
     def _augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
         """Apply training-only signal augmentation configured for episodic updates."""
@@ -583,6 +595,17 @@ class FewShotPainLearner:
         print(self.model.summary())
         return output_path
 
+    @staticmethod
+    def _format_seconds(seconds: float) -> str:
+        seconds = max(0, int(round(seconds)))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours}h {minutes}m {secs}s"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
     def train(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
@@ -644,6 +667,11 @@ class FewShotPainLearner:
             fold_subjects = self.cv.subjects
 
         num_subjects = len(fold_subjects)
+        total_train_steps = num_subjects * num_epochs * max(
+            1, int(np.ceil(tasks_per_epoch / self.train_batch_size))
+        )
+        completed_train_steps = 0
+        train_start_time = time.perf_counter()
         progress = TrainingProgressReporter(
             logger=self.logger,
             train_log_every=train_log_every,
@@ -653,6 +681,7 @@ class FewShotPainLearner:
         architecture_saved = False
 
         for fold, test_subject in enumerate(fold_subjects):
+            fold_start_time = time.perf_counter()
             progress.log_fold_start(
                 fold_idx=fold + 1, total_folds=num_subjects, test_subject=test_subject
             )
@@ -690,6 +719,7 @@ class FewShotPainLearner:
             }
 
             for epoch in range(num_epochs):
+                epoch_start_time = time.perf_counter()
                 # Training
                 epoch_train_losses = []
                 epoch_train_accs = []
@@ -713,6 +743,11 @@ class FewShotPainLearner:
 
                     epoch_train_losses.append(float(loss))
                     epoch_train_accs.append(float(acc))
+                    completed_train_steps += 1
+                    elapsed = time.perf_counter() - train_start_time
+                    avg_step_time = elapsed / max(1, completed_train_steps)
+                    remaining_steps = max(0, total_train_steps - completed_train_steps)
+                    eta_seconds = remaining_steps * avg_step_time
                     csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
@@ -743,6 +778,19 @@ class FewShotPainLearner:
                         },
                         log_every=train_log_every,
                     )
+                    if self.logging_verbosity >= 1 and (
+                        processed_batches % train_log_every == 0
+                        or processed_tasks == tasks_per_epoch
+                    ):
+                        self.logger.info(
+                            f"[Fold {fold + 1}/{num_subjects}] "
+                            f"[Epoch {epoch + 1}/{num_epochs}] "
+                            f"[Train {processed_tasks}/{tasks_per_epoch} tasks] "
+                            f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
+                            f"accuracy={float(acc):.4f}, contrastive_loss={float(contrastive_loss):.4f}, "
+                            f"elapsed={self._format_seconds(elapsed)}, "
+                            f"eta={self._format_seconds(eta_seconds)}"
+                        )
 
                     should_run_validation = (
                         (processed_batches % val_every_n_train_steps == 0)
@@ -751,6 +799,7 @@ class FewShotPainLearner:
                     if not should_run_validation:
                         continue
 
+                    validation_start = time.perf_counter()
                     validation_losses = []
                     validation_task_losses = []
                     validation_accs = []
@@ -843,7 +892,8 @@ class FewShotPainLearner:
                         f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
                         f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
-                        f"similarity_margin={mean_val_similarity_margin:.4f}"
+                        f"similarity_margin={mean_val_similarity_margin:.4f}, "
+                        f"validation_elapsed={self._format_seconds(time.perf_counter() - validation_start)}"
                     )
 
                 avg_train_loss = np.mean(epoch_train_losses)
@@ -854,17 +904,29 @@ class FewShotPainLearner:
                 avg_val_acc = (
                     float(np.mean(epoch_val_accs)) if epoch_val_accs else float("nan")
                 )
+                epoch_elapsed = time.perf_counter() - epoch_start_time
+                fold_elapsed = time.perf_counter() - fold_start_time
+                overall_eta_seconds = (
+                    (total_train_steps - completed_train_steps)
+                    * (elapsed / max(1, completed_train_steps))
+                    if completed_train_steps > 0
+                    else float("nan")
+                )
 
                 fold_results["train_losses"].append(avg_train_loss)
                 fold_results["train_accuracies"].append(avg_train_acc)
                 fold_results["val_losses"].append(avg_val_loss)
                 fold_results["val_accuracies"].append(avg_val_acc)
 
-                if (epoch + 1) % 2 == 0:
+                if self.logging_verbosity >= 1 or (epoch + 1) % 2 == 0:
                     self.logger.info(
-                        f"Epoch {epoch + 1}/{num_epochs} | "
-                        f"Train Loss: {avg_train_loss:.4f}, Acc: {avg_train_acc:.4f} | "
-                        f"Val Loss: {avg_val_loss:.4f}, Acc: {avg_val_acc:.4f}"
+                        f"[Fold {fold + 1}/{num_subjects}] "
+                        f"[Epoch {epoch + 1}/{num_epochs}] "
+                        f"train_loss={avg_train_loss:.4f}, train_acc={avg_train_acc:.4f}, "
+                        f"val_loss={avg_val_loss:.4f}, val_acc={avg_val_acc:.4f}, "
+                        f"epoch_elapsed={self._format_seconds(epoch_elapsed)}, "
+                        f"fold_elapsed={self._format_seconds(fold_elapsed)}, "
+                        f"overall_eta={self._format_seconds(overall_eta_seconds)}"
                     )
 
             # Zero-shot performance (after training on M-1 subjects).

@@ -50,6 +50,25 @@ def _evaluate_bank(
     }
 
 
+def _log_trial_summary(
+    logger,
+    prefix: str,
+    composite_accuracy: float,
+    train_accuracy: float,
+    val_accuracy: float,
+    heldout_accuracy: float,
+    elapsed_seconds: float,
+) -> None:
+    logger.info(
+        f"{prefix}: "
+        f"composite={composite_accuracy:.4f}, "
+        f"train_acc={train_accuracy:.4f}, "
+        f"val_acc={val_accuracy:.4f}, "
+        f"heldout_acc={heldout_accuracy:.4f}, "
+        f"elapsed_seconds={elapsed_seconds:.2f}"
+    )
+
+
 def _cyclic_task_batch(
     tasks: list[dict[str, np.ndarray]],
     update_idx: int,
@@ -78,6 +97,12 @@ def _write_csv(path: Path, payload: dict[str, Any]) -> None:
 
 def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     logger = setup_logger("quick_fewshot_trial")
+    if args.logging_verbosity <= 0:
+        logger.setLevel(30)
+    elif args.logging_verbosity == 1:
+        logger.setLevel(20)
+    else:
+        logger.setLevel(10)
     start_time = time.perf_counter()
     filters_list = _parse_int_tuple(args.filters)
 
@@ -102,6 +127,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         tcn_attention_pool_size=args.tcn_attention_pool_size,
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
+        logging_verbosity=args.logging_verbosity,
     )
     learner = FewShotPainLearner(
         config=config,
@@ -128,11 +154,35 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     before_train = _evaluate_bank(learner, train_eval_tasks)
     before_val = _evaluate_bank(learner, val_tasks)
     before_heldout = _evaluate_bank(learner, heldout_tasks)
+    if args.logging_verbosity >= 1:
+        _log_trial_summary(
+            logger,
+            "Quick few-shot trial baseline",
+            float(
+                np.mean(
+                    [
+                        before_train["accuracy"],
+                        before_val["accuracy"],
+                        before_heldout["accuracy"],
+                    ]
+                )
+            ),
+            before_train["accuracy"],
+            before_val["accuracy"],
+            before_heldout["accuracy"],
+            time.perf_counter() - start_time,
+        )
 
     update_history = []
+    total_updates = max(1, args.updates)
+    summary_every = max(1, int(args.summary_every_n_updates))
     for update_idx in range(max(1, args.updates)):
+        update_start = time.perf_counter()
         task_batch = _cyclic_task_batch(train_tasks, update_idx, args.task_batch_size)
         loss, task_loss, accuracy, contrastive_loss = learner.train_batch_step(task_batch)
+        elapsed = time.perf_counter() - start_time
+        avg_update_time = elapsed / max(1, update_idx + 1)
+        eta_seconds = (total_updates - (update_idx + 1)) * avg_update_time
         update_history.append(
             {
                 "update": update_idx + 1,
@@ -140,8 +190,32 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
                 "task_loss": float(task_loss.numpy()),
                 "accuracy": float(accuracy.numpy()),
                 "contrastive_loss": float(contrastive_loss.numpy()),
+                "elapsed_seconds": float(time.perf_counter() - update_start),
             }
         )
+
+        if (update_idx + 1) % summary_every == 0 or (update_idx + 1) == total_updates:
+            after_train = _evaluate_bank(learner, train_eval_tasks)
+            after_val = _evaluate_bank(learner, val_tasks)
+            after_heldout = _evaluate_bank(learner, heldout_tasks)
+            composite_accuracy = float(
+                np.mean(
+                    [
+                        after_train["accuracy"],
+                        after_val["accuracy"],
+                        after_heldout["accuracy"],
+                    ]
+                )
+            )
+            _log_trial_summary(
+                logger,
+                f"Quick few-shot trial after {update_idx + 1} updates",
+                composite_accuracy,
+                after_train["accuracy"],
+                after_val["accuracy"],
+                after_heldout["accuracy"],
+                time.perf_counter() - start_time,
+            )
 
     after_train = _evaluate_bank(learner, train_eval_tasks)
     after_val = _evaluate_bank(learner, val_tasks)
@@ -202,13 +276,14 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         ),
     }
 
-    logger.info(
-        "Quick few-shot trial complete: "
-        f"composite={final_composite_accuracy:.4f}, "
-        f"train_acc={after_train['accuracy']:.4f}, "
-        f"val_acc={after_val['accuracy']:.4f}, "
-        f"heldout_acc={after_heldout['accuracy']:.4f}, "
-        f"elapsed_seconds={elapsed_seconds:.2f}"
+    _log_trial_summary(
+        logger,
+        "Quick few-shot trial complete",
+        final_composite_accuracy,
+        after_train["accuracy"],
+        after_val["accuracy"],
+        after_heldout["accuracy"],
+        elapsed_seconds,
     )
     return payload
 
@@ -386,7 +461,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)
-    parser.add_argument("--updates", type=int, default=100)
+    parser.add_argument("--updates", type=int, default=10)
     parser.add_argument("--task-batch-size", type=int, default=10)
     parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)
@@ -418,6 +493,19 @@ def main() -> None:
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
+    parser.add_argument(
+        "--logging-verbosity",
+        type=int,
+        default=1,
+        choices=(0, 1, 2),
+        help="0=minimal, 1=standard, 2=detailed logging",
+    )
+    parser.add_argument(
+        "--summary-every-n-updates",
+        type=int,
+        default=2,
+        help="Emit train/val/heldout summary every N updates and at the end.",
+    )
     parser.add_argument("--disable-window-shift", action="store_true")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--repeat-seed-stride", type=int, default=1)

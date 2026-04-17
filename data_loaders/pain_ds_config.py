@@ -71,6 +71,7 @@ class PainDatasetConfig:
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
+    logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
     enable_window_shift_augmentation: bool = (
@@ -94,6 +95,7 @@ class PainDatasetConfig:
     sampling_rate_hz: int = 250  # Signal sampling rate used for time->index conversion
 
     # Data paths
+    data_variant: str = "mock"  # real or mock
     data_path: str = "X_pre.npy"
     labels_path: str = "y_heater.npy"
     subjects_path: str = "subjects.npy"
@@ -161,3 +163,11 @@ class PainDatasetConfig:
             )
         if self.gaussian_noise_std < 0:
             raise ValueError("gaussian_noise_std must be non-negative")
+        if self.logging_verbosity not in {0, 1, 2}:
+            raise ValueError("logging_verbosity must be one of: 0, 1, 2")
+        if self.data_variant not in {"real", "mock"}:
+            raise ValueError("data_variant must be one of: 'real', 'mock'")
+        if self.data_variant == "mock":
+            self.data_path = "X_pre_mock.npy"
+            self.labels_path = "y_heater_mock.npy"
+            self.subjects_path = "subjects_mock.npy"
