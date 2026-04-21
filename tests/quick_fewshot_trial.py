@@ -483,8 +483,8 @@ def main() -> None:
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)
-    parser.add_argument("--updates", type=int, default=100)
-    parser.add_argument("--task-batch-size", type=int, default=10)
+    parser.add_argument("--updates", type=int, default=50)
+    parser.add_argument("--task-batch-size", type=int, default=50)
     parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)
     parser.add_argument("--heldout-tasks", type=int, default=10)
@@ -500,7 +500,7 @@ def main() -> None:
     parser.add_argument(
         "--classifier-mode",
         type=str,
-        default="prototype",
+        default="soft_knn",
         choices=("prototype", "soft_knn"),
     )
     parser.add_argument(
@@ -525,18 +525,18 @@ def main() -> None:
     parser.add_argument(
         "--summary-every-n-updates",
         type=int,
-        default=5,
+        default=10,
         help="Emit train/val/heldout summary every N updates and at the end.",
     )
     parser.add_argument("--disable-window-shift", action="store_true")
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--repeat-seed-stride", type=int, default=1)
     parser.add_argument("--output-json", type=str, default="")
     parser.add_argument("--output-csv", type=str, default="")
     parser.add_argument(
         "--model-architecture-output",
         type=str,
-        default="./outputs/model_architecture/",
+        default="./outputs/model_architecture/architecture.txt",
         help=(
             "Optional path to save a full model architecture summary after running "
             "one sample task through the model."

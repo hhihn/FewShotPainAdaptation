@@ -67,7 +67,7 @@ class PainDatasetConfig:
     classifier_mode: str = "soft_knn"  # Episodic classifier: prototype or soft_knn
     supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
-    triplet_loss_weight: float = 0.0  # Weight for BatchAllTriplet embedding loss
+    triplet_loss_weight: float = 1.0  # Weight for BatchAllTriplet embedding loss
     triplet_margin: float = 0.2  # Margin used by BatchAllTriplet loss
     train_batch_size: int = 20  # Number of tasks per optimizer update
     num_epochs: int = 10  # Number of epochs per fold
