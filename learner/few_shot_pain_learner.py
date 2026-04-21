@@ -106,7 +106,7 @@ class FewShotPainLearner:
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
             "val_tasks": self.config.val_tasks,
-            "subject_eval_tasks": self.config.subject_eval_tasks,
+            "heldout_eval_tasks": self.config.heldout_eval_tasks,
             "k_shot_adaptation_steps": self.config.k_shot_adaptation_steps,
             "train_log_every": self.config.train_log_every,
             "eval_log_every": self.config.eval_log_every,
@@ -651,7 +651,7 @@ class FewShotPainLearner:
         num_epochs = max(1, int(self.config.num_epochs))
         tasks_per_epoch = max(1, int(self.config.tasks_per_epoch))
         val_tasks = max(1, int(self.config.val_tasks))
-        subject_eval_tasks = max(1, int(self.config.subject_eval_tasks))
+        heldout_eval_tasks = max(1, int(self.config.heldout_eval_tasks))
         k_shot_adaptation_steps = max(1, int(self.config.k_shot_adaptation_steps))
         train_log_every = max(1, int(self.config.train_log_every))
         eval_log_every = max(1, int(self.config.eval_log_every))
@@ -846,12 +846,21 @@ class FewShotPainLearner:
                         )
                         summary_heldout_loss, summary_heldout_metrics = (
                             self._evaluate_sampler_loss_and_metrics(
-                                test_sampler, num_tasks=subject_eval_tasks
+                                test_sampler, num_tasks=heldout_eval_tasks
                             )
                         )
-                        fold_summary_reference["train"] = summary_train_metrics
-                        fold_summary_reference["val"] = summary_val_metrics
-                        fold_summary_reference["heldout"] = summary_heldout_metrics
+                        fold_summary_reference["train"] = {
+                            "accuracy": summary_train_metrics["accuracy"],
+                            "loss": summary_train_loss,
+                        }
+                        fold_summary_reference["val"] = {
+                            "accuracy": summary_val_metrics["accuracy"],
+                            "loss": summary_val_loss,
+                        }
+                        fold_summary_reference["heldout"] = {
+                            "accuracy": summary_heldout_metrics["accuracy"],
+                            "loss": summary_heldout_loss,
+                        }
                         self._log_composite_summary(
                             prefix=(
                                 f"[Fold {fold + 1}/{num_subjects}] "
@@ -1026,7 +1035,7 @@ class FewShotPainLearner:
 
             # Zero-shot performance (after training on M-1 subjects).
             zero_shot_loss, zero_shot_metrics = self._evaluate_sampler_loss_and_metrics(
-                test_sampler, num_tasks=subject_eval_tasks
+                test_sampler, num_tasks=heldout_eval_tasks
             )
             csv_writer.write_event(
                 fold_idx=fold + 1,
@@ -1074,7 +1083,7 @@ class FewShotPainLearner:
 
             # K-shot performance (after adaptation).
             k_shot_loss, k_shot_metrics = self._evaluate_sampler_loss_and_metrics(
-                test_sampler, num_tasks=subject_eval_tasks
+                test_sampler, num_tasks=heldout_eval_tasks
             )
             csv_writer.write_event(
                 fold_idx=fold + 1,

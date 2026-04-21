@@ -80,7 +80,7 @@ class SixWayKShotSampler:
             self.active_subjects = self.test_subjects
             if not self.active_subjects:
                 raise ValueError("Must provide test_subject or test_subjects for test mode")
-            self.tasks_per_epoch = self.config.subject_eval_tasks
+            self.tasks_per_epoch = self.config.heldout_eval_tasks
 
         self.logger.info(
             "Initialized sampler: "

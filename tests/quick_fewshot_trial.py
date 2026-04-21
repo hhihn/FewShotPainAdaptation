@@ -126,7 +126,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         train_batch_size=args.task_batch_size,
         tasks_per_epoch=max(1, args.updates * args.task_batch_size),
         val_tasks=max(1, args.val_tasks),
-        subject_eval_tasks=max(1, args.heldout_tasks),
+        heldout_eval_tasks=max(1, args.heldout_tasks),
         num_epochs=1,
         single_loso_fold=True,
         embedding_dim=args.embedding_dim,
@@ -482,9 +482,9 @@ def main() -> None:
     )
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--held-out-subject", type=int, default=20)
+    parser.add_argument("--held-out-subject", type=int, default=None)
     parser.add_argument("--updates", type=int, default=500)
-    parser.add_argument("--task-batch-size", type=int, default=1)
+    parser.add_argument("--task-batch-size", type=int, default=10)
     parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)
     parser.add_argument("--heldout-tasks", type=int, default=100)

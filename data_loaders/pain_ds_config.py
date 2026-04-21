@@ -73,7 +73,8 @@ class PainDatasetConfig:
     num_epochs: int = 10  # Number of epochs per fold
     tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
     val_tasks: int = 20  # Number of validation tasks per validation run
-    subject_eval_tasks: int = 20  # Number of held-out subject eval tasks
+    heldout_eval_tasks: int = 20  # Number of held-out evaluation tasks per fold
+    subject_eval_tasks: Optional[int] = None  # Deprecated alias for heldout_eval_tasks
     k_shot_adaptation_steps: int = 10  # Inner-loop adaptation steps on held-out subject
     train_log_every: int = 10  # Log train metrics every N sampled train tasks
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
@@ -116,6 +117,8 @@ class PainDatasetConfig:
     biovid_modalities: Tuple[str, ...] = ("GSR", "ECG", "EMG")
 
     def __post_init__(self) -> None:
+        if self.subject_eval_tasks is not None:
+            self.heldout_eval_tasks = int(self.subject_eval_tasks)
         if self.dataset_source not in {"painmonit", "biovid_part_a"}:
             raise ValueError(
                 "dataset_source must be one of: 'painmonit', 'biovid_part_a'"
