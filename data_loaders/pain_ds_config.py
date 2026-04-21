@@ -96,7 +96,7 @@ class PainDatasetConfig:
     sampling_rate_hz: int = 250  # Signal sampling rate used for time->index conversion
 
     # Data paths
-    data_variant: str = "mock"  # real or mock
+    data_variant: str = "real"  # real or mock
     data_path: str = "X_pre.npy"
     labels_path: str = "y_heater.npy"
     subjects_path: str = "subjects.npy"
