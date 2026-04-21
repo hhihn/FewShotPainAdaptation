@@ -205,7 +205,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
         self.logger.debug(f"Built CNN encoder with {modality_name}")
-        # self.logger.debug(model.summary())
+        self.logger.debug(model.summary())
         return model
 
     def _encode_modality_stack(self, x, training=False):

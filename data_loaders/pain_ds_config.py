@@ -12,10 +12,15 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 2  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 7  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
         16, # Number of Filters in the Convolutional Layers
+        16,
         32,
+        32,
+        64,
+        64,
+        128,
     )
     tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block

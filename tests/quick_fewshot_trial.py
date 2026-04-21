@@ -95,6 +95,15 @@ def _write_csv(path: Path, payload: dict[str, Any]) -> None:
         writer.writerow(flat_payload)
 
 
+def _with_repeat_suffix(path: str, repeat_idx: int, repeats: int) -> str:
+    """Append a repeat suffix to an output path when running multiple repeats."""
+    if repeats <= 1:
+        return path
+    raw_path = Path(path)
+    suffix = f"_repeat_{repeat_idx + 1:02d}"
+    return str(raw_path.with_name(f"{raw_path.stem}{suffix}{raw_path.suffix}"))
+
+
 def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     logger = setup_logger("quick_fewshot_trial")
     if args.logging_verbosity <= 0:
@@ -147,6 +156,12 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         fold["train_sampler"],
         max(1, args.updates * args.task_batch_size),
     )
+    model_architecture_file = None
+    if args.model_architecture_output and train_tasks:
+        model_architecture_file = learner._save_model_architecture(
+            sample_task=train_tasks[0],
+            output_path=args.model_architecture_output,
+        )
     train_eval_tasks = train_tasks[: max(1, min(args.train_eval_tasks, len(train_tasks)))]
     val_tasks = _sample_subject_tasks(fold["val_sampler"], args.val_tasks)
     heldout_tasks = _sample_tasks(fold["test_sampler"], args.heldout_tasks)
@@ -256,6 +271,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "filters": list(filters_list),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
+        "model_architecture_file": model_architecture_file,
         "before": {
             "train": before_train,
             "val": before_val,
@@ -346,6 +362,12 @@ def run_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         repeat_args = argparse.Namespace(**vars(args))
         repeat_args.seed = base_seed + repeat_idx * seed_stride
         repeat_args.repeats = 1
+        if args.model_architecture_output:
+            repeat_args.model_architecture_output = _with_repeat_suffix(
+                args.model_architecture_output,
+                repeat_idx=repeat_idx,
+                repeats=repeats,
+            )
         repeat_payload = _run_single_quick_trial(repeat_args)
         repeat_payload["repeat"] = repeat_idx + 1
         repeat_payloads.append(repeat_payload)
@@ -487,9 +509,9 @@ def main() -> None:
         default="split",
         choices=("subject", "split", "support", "none"),
     )
-    parser.add_argument("--learning-rate", type=float, default=0.0004)
-    parser.add_argument("--embedding-dim", type=int, default=32)
-    parser.add_argument("--filters", type=str, default="8,16")
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--embedding-dim", type=int, default=64)
+    parser.add_argument("--filters", type=str, default="16,16,32,32,64,64,128")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
@@ -503,7 +525,7 @@ def main() -> None:
     parser.add_argument(
         "--summary-every-n-updates",
         type=int,
-        default=2,
+        default=5,
         help="Emit train/val/heldout summary every N updates and at the end.",
     )
     parser.add_argument("--disable-window-shift", action="store_true")
@@ -511,6 +533,15 @@ def main() -> None:
     parser.add_argument("--repeat-seed-stride", type=int, default=1)
     parser.add_argument("--output-json", type=str, default="")
     parser.add_argument("--output-csv", type=str, default="")
+    parser.add_argument(
+        "--model-architecture-output",
+        type=str,
+        default="./outputs/model_architecture/",
+        help=(
+            "Optional path to save a full model architecture summary after running "
+            "one sample task through the model."
+        ),
+    )
     args = parser.parse_args()
 
     payload = run_quick_trial(args)
