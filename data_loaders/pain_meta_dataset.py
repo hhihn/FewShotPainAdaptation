@@ -1068,6 +1068,154 @@ class PainMetaDataset:
             task["query_subjects"] = query_subjects[query_perm]
         return task
 
+    def sample_task_mixed_subject_pools(
+        self,
+        support_subjects: List[int],
+        query_subjects: List[int],
+        k_shot: Optional[int] = None,
+        q_query: Optional[int] = None,
+        seed: Optional[int] = None,
+        normalize_mode: str = "subject",
+        rng: Optional[np.random.Generator] = None,
+        include_sample_subjects: bool = False,
+        split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
+        split: str = "all",
+        use_base_index: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Sample one task where support/query are drawn from disjoint subject pools.
+
+        Args:
+            support_subjects: Subject IDs eligible for support sampling
+            query_subjects: Subject IDs eligible for query sampling (must be disjoint)
+            k_shot: Number of support samples per class
+            q_query: Number of query samples per class
+            seed: Random seed
+            normalize_mode: 'subject', 'split', 'support', or 'none'
+            rng: Optional numpy Generator
+            include_sample_subjects: Whether to include source subject ids in output
+            split_normalization_stats: Optional precomputed stats for normalize_mode='split'
+            split: Data split selector ('all', 'train', 'test')
+            use_base_index: If True, sample from non-augmented base references
+        """
+        support_subjects = [int(subject) for subject in support_subjects]
+        query_subjects = [int(subject) for subject in query_subjects]
+        if not support_subjects:
+            raise ValueError("support_subjects must contain at least one subject id")
+        if not query_subjects:
+            raise ValueError("query_subjects must contain at least one subject id")
+        overlap = sorted(set(support_subjects).intersection(query_subjects))
+        if overlap:
+            raise ValueError(
+                f"support_subjects and query_subjects must be disjoint, overlap={overlap}"
+            )
+
+        k_shot = k_shot or self.config.k_shot
+        q_query = q_query or self.config.q_query
+        if rng is not None:
+            local_rng = rng
+        elif seed is not None:
+            local_rng = np.random.default_rng(seed)
+        else:
+            local_rng = np.random.default_rng()
+
+        split_index = self._get_sampling_index_for_split(
+            split,
+            use_base_index=use_base_index,
+        )
+        support_X, support_y, support_subject_ids_out = [], [], []
+        query_X, query_y, query_subject_ids_out = [], [], []
+
+        for class_id in range(self.config.n_way):
+            support_pool = []
+            support_pool_subjects = []
+            for subject in support_subjects:
+                refs = split_index[subject][class_id]
+                support_pool.append(refs)
+                support_pool_subjects.extend([subject] * len(refs))
+            support_pool = np.concatenate(support_pool, axis=0)
+            if len(support_pool) < k_shot:
+                raise ValueError(
+                    f"Support pool has only {len(support_pool)} samples for class {class_id}, "
+                    f"but k_shot={k_shot}."
+                )
+            support_positions = local_rng.choice(
+                len(support_pool), size=k_shot, replace=False
+            )
+            support_pool_subjects = np.asarray(support_pool_subjects, dtype=np.int32)
+            sampled_support_refs = support_pool[support_positions]
+            sampled_support_subjects = support_pool_subjects[support_positions]
+
+            query_pool = []
+            query_pool_subjects = []
+            for subject in query_subjects:
+                refs = split_index[subject][class_id]
+                query_pool.append(refs)
+                query_pool_subjects.extend([subject] * len(refs))
+            query_pool = np.concatenate(query_pool, axis=0)
+            if len(query_pool) < q_query:
+                raise ValueError(
+                    f"Query pool has only {len(query_pool)} samples for class {class_id}, "
+                    f"but q_query={q_query}."
+                )
+            query_positions = local_rng.choice(
+                len(query_pool), size=q_query, replace=False
+            )
+            query_pool_subjects = np.asarray(query_pool_subjects, dtype=np.int32)
+            sampled_query_refs = query_pool[query_positions]
+            sampled_query_subjects = query_pool_subjects[query_positions]
+
+            support_X.append(self._gather_samples(sampled_support_refs))
+            support_y.append(np.full(k_shot, class_id, dtype=np.int32))
+            support_subject_ids_out.append(sampled_support_subjects)
+            query_X.append(self._gather_samples(sampled_query_refs))
+            query_y.append(np.full(q_query, class_id, dtype=np.int32))
+            query_subject_ids_out.append(sampled_query_subjects)
+
+        support_X = np.concatenate(support_X, axis=0)
+        support_y = np.concatenate(support_y, axis=0)
+        support_subject_ids_out = np.concatenate(support_subject_ids_out, axis=0)
+        query_X = np.concatenate(query_X, axis=0)
+        query_y = np.concatenate(query_y, axis=0)
+        query_subject_ids_out = np.concatenate(query_subject_ids_out, axis=0)
+
+        if normalize_mode == "subject":
+            support_X = self._normalize_data_by_subjects(support_X, support_subject_ids_out)
+            query_X = self._normalize_data_by_subjects(query_X, query_subject_ids_out)
+        elif normalize_mode == "split":
+            if split_normalization_stats is None:
+                stats_subjects = sorted(set(support_subjects).union(query_subjects))
+                split_normalization_stats = self.compute_split_normalization_stats(
+                    stats_subjects,
+                    split=split,
+                )
+            support_X = self._apply_stats(support_X, split_normalization_stats)
+            query_X = self._apply_stats(query_X, split_normalization_stats)
+        elif normalize_mode == "support":
+            stats = self._compute_batch_stats(support_X)
+            support_X = self._apply_stats(support_X, stats)
+            query_X = self._apply_stats(query_X, stats)
+        elif normalize_mode == "none":
+            pass
+        else:
+            raise ValueError(
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'split', 'support', or 'none'."
+            )
+
+        support_perm = local_rng.permutation(len(support_y))
+        query_perm = local_rng.permutation(len(query_y))
+        task = {
+            "support_X": support_X[support_perm],
+            "support_y": support_y[support_perm],
+            "query_X": query_X[query_perm],
+            "query_y": query_y[query_perm],
+            "subject": -1,
+        }
+        if include_sample_subjects:
+            task["support_subjects"] = support_subject_ids_out[support_perm]
+            task["query_subjects"] = query_subject_ids_out[query_perm]
+        return task
+
     def sample_meta_task_batch(
         self,
         subjects: List[int],

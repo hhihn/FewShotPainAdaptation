@@ -53,6 +53,7 @@ class SixWayKShotSampler:
         self.seed = seed
         self.rng = np.random.default_rng(self.seed)
         self.data_split = data_split.lower()
+        self.task_construction_mode = str(self.config.task_construction_mode)
 
         # Set subjects based on mode
         if train_subjects is None:
@@ -109,40 +110,109 @@ class SixWayKShotSampler:
     def _sample_task(self) -> Dict[str, np.ndarray]:
         """Sample a single task."""
         normalize_mode = self.config.task_normalize_mode
-        if self.mode in {"train", "val"}:
-            return self.dataset.sample_task_from_subjects(
-                subjects=self.active_subjects,
-                k_shot=self.k_shot,
-                q_query=self.q_query,
-                normalize_mode=normalize_mode,
-                rng=self.rng,
-                split_normalization_stats=self.split_normalization_stats,
-                split=self.data_split,
-            )
+        use_base_index = self.mode == "test"
+        active_subjects = [int(subject) for subject in self.active_subjects]
+        if not active_subjects:
+            raise ValueError(f"No active subjects configured for mode={self.mode}")
 
-        if len(self.active_subjects) == 1:
+        mode = self.task_construction_mode
+        if mode == "single_subject":
+            sampled_subject = int(self.rng.choice(active_subjects))
             return self.dataset.sample_task(
-                subject=self.active_subjects[0],
+                subject=sampled_subject,
                 k_shot=self.k_shot,
                 q_query=self.q_query,
                 normalize_mode=normalize_mode,
                 rng=self.rng,
-                allow_partial_query=True,
+                allow_partial_query=use_base_index,
                 split_normalization_stats=self.split_normalization_stats,
                 split=self.data_split,
-                use_base_index=True,
+                use_base_index=use_base_index,
             )
 
-        return self.dataset.sample_task_from_subjects(
-            subjects=self.active_subjects,
-            k_shot=self.k_shot,
-            q_query=self.q_query,
-            normalize_mode=normalize_mode,
-            rng=self.rng,
-            allow_partial_query=True,
-            split_normalization_stats=self.split_normalization_stats,
-            split=self.data_split,
-            use_base_index=True,
+        if mode == "cross_subject":
+            if len(active_subjects) < 2:
+                sampled_subject = active_subjects[0]
+                return self.dataset.sample_task(
+                    subject=sampled_subject,
+                    k_shot=self.k_shot,
+                    q_query=self.q_query,
+                    normalize_mode=normalize_mode,
+                    rng=self.rng,
+                    allow_partial_query=use_base_index,
+                    split_normalization_stats=self.split_normalization_stats,
+                    split=self.data_split,
+                    use_base_index=use_base_index,
+                )
+            support_subject, query_subject = self.rng.choice(
+                active_subjects,
+                size=2,
+                replace=False,
+            ).tolist()
+            return self.dataset.sample_task_cross_subjects(
+                support_subject=int(support_subject),
+                query_subject=int(query_subject),
+                k_shot=self.k_shot,
+                q_query=self.q_query,
+                normalize_mode=normalize_mode,
+                rng=self.rng,
+                split_normalization_stats=self.split_normalization_stats,
+                split=self.data_split,
+                use_base_index=use_base_index,
+            )
+
+        if mode == "mixed":
+            if len(active_subjects) < 2:
+                sampled_subject = active_subjects[0]
+                return self.dataset.sample_task(
+                    subject=sampled_subject,
+                    k_shot=self.k_shot,
+                    q_query=self.q_query,
+                    normalize_mode=normalize_mode,
+                    rng=self.rng,
+                    allow_partial_query=use_base_index,
+                    split_normalization_stats=self.split_normalization_stats,
+                    split=self.data_split,
+                    use_base_index=use_base_index,
+                )
+            permuted_subjects = self.rng.permutation(active_subjects).tolist()
+            n_support = max(1, len(permuted_subjects) // 2)
+            support_subjects = permuted_subjects[:n_support]
+            query_subjects = permuted_subjects[n_support:]
+            if not query_subjects:
+                query_subjects = support_subjects[-1:]
+                support_subjects = support_subjects[:-1]
+            if not support_subjects:
+                support_subjects = query_subjects[:1]
+                query_subjects = query_subjects[1:]
+            if not query_subjects:
+                # Degenerate case fallback.
+                return self.dataset.sample_task(
+                    subject=int(support_subjects[0]),
+                    k_shot=self.k_shot,
+                    q_query=self.q_query,
+                    normalize_mode=normalize_mode,
+                    rng=self.rng,
+                    allow_partial_query=use_base_index,
+                    split_normalization_stats=self.split_normalization_stats,
+                    split=self.data_split,
+                    use_base_index=use_base_index,
+                )
+            return self.dataset.sample_task_mixed_subject_pools(
+                support_subjects=[int(subject) for subject in support_subjects],
+                query_subjects=[int(subject) for subject in query_subjects],
+                k_shot=self.k_shot,
+                q_query=self.q_query,
+                normalize_mode=normalize_mode,
+                rng=self.rng,
+                split_normalization_stats=self.split_normalization_stats,
+                split=self.data_split,
+                use_base_index=use_base_index,
+            )
+
+        raise ValueError(
+            f"Unknown task_construction_mode='{mode}'. "
+            "Use one of: single_subject, cross_subject, mixed."
         )
 
     def get_task(self, subject: Optional[int] = None) -> Dict[str, np.ndarray]:

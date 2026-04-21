@@ -61,6 +61,9 @@ class PainDatasetConfig:
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
     task_normalize_mode: str = "subject"  # Episodic normalization: subject, split, support, or none
+    task_construction_mode: str = (
+        "single_subject"  # single_subject, cross_subject, or mixed
+    )
     classifier_mode: str = "soft_knn"  # Episodic classifier: prototype or soft_knn
     supcon_loss_weight: float = 0.0  # Weight for supervised contrastive embedding loss
     supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
@@ -143,6 +146,14 @@ class PainDatasetConfig:
         if self.task_normalize_mode not in {"subject", "split", "support", "none"}:
             raise ValueError(
                 "task_normalize_mode must be one of: 'subject', 'split', 'support', 'none'"
+            )
+        if self.task_construction_mode not in {
+            "single_subject",
+            "cross_subject",
+            "mixed",
+        }:
+            raise ValueError(
+                "task_construction_mode must be one of: 'single_subject', 'cross_subject', 'mixed'"
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError(
