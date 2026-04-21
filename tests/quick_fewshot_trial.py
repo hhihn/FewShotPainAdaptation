@@ -488,8 +488,8 @@ def main() -> None:
     parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)
     parser.add_argument("--heldout-tasks", type=int, default=10)
-    parser.add_argument("--k-shot", type=int, default=5)
-    parser.add_argument("--q-query", type=int, default=5)
+    parser.add_argument("--k-shot", type=int, default=15)
+    parser.add_argument("--q-query", type=int, default=15)
     parser.add_argument("--task-class-ids", type=str, default="0,5")
     parser.add_argument(
         "--fusion-method",
@@ -500,13 +500,13 @@ def main() -> None:
     parser.add_argument(
         "--classifier-mode",
         type=str,
-        default="soft_knn",
+        default="prototype",
         choices=("prototype", "soft_knn"),
     )
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="split",
+        default="subject",
         choices=("subject", "split", "support", "none"),
     )
     parser.add_argument("--learning-rate", type=float, default=1e-5)
