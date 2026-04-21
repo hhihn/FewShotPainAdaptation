@@ -54,6 +54,7 @@ class SixWayKShotSampler:
         self.rng = np.random.default_rng(self.seed)
         self.data_split = data_split.lower()
         self.task_construction_mode = str(self.config.task_construction_mode)
+        self._reported_task_size_signatures = set()
 
         # Set subjects based on mode
         if train_subjects is None:
@@ -72,14 +73,21 @@ class SixWayKShotSampler:
             self.active_subjects = self.train_subjects
             self.tasks_per_epoch = self.config.tasks_per_epoch
         elif mode == "val":
-            # Use a subset of training subjects for validation
-            self.active_subjects = self.train_subjects[-5:]  # Last 5 subjects
+            # Validation subjects are selected by the cross-validator.
+            self.active_subjects = self.train_subjects
             self.tasks_per_epoch = self.config.val_tasks
         else:  # test
             self.active_subjects = self.test_subjects
             if not self.active_subjects:
                 raise ValueError("Must provide test_subject or test_subjects for test mode")
             self.tasks_per_epoch = self.config.subject_eval_tasks
+
+        self.logger.info(
+            "Initialized sampler: "
+            f"mode={self.mode}, split={self.data_split}, "
+            f"loso_subject={self.test_subject}, "
+            f"num_active_subjects={len(self.active_subjects)}"
+        )
 
         self.split_normalization_stats = None
         if self.config.task_normalize_mode == "split":
@@ -227,7 +235,7 @@ class SixWayKShotSampler:
         """
         normalize_mode = self.config.task_normalize_mode
         if subject is not None:
-            return self.dataset.sample_task(
+            task = self.dataset.sample_task(
                 subject,
                 self.k_shot,
                 self.q_query,
@@ -238,7 +246,50 @@ class SixWayKShotSampler:
                 split=self.data_split,
                 use_base_index=self.mode == "test",
             )
-        return self._sample_task()
+            self._maybe_report_task_size_mismatch(task=task, requested_subject=subject)
+            return task
+        task = self._sample_task()
+        self._maybe_report_task_size_mismatch(task=task, requested_subject=None)
+        return task
+
+    def _maybe_report_task_size_mismatch(
+        self, task: Dict[str, np.ndarray], requested_subject: Optional[int]
+    ) -> None:
+        """Warn once per mismatch pattern when effective support/query sizes differ."""
+        support_y = np.asarray(task["support_y"], dtype=np.int32)
+        query_y = np.asarray(task["query_y"], dtype=np.int32)
+
+        support_counts = tuple(
+            int(np.sum(support_y == class_id)) for class_id in range(self.n_way)
+        )
+        query_counts = tuple(
+            int(np.sum(query_y == class_id)) for class_id in range(self.n_way)
+        )
+        expected_support = tuple(int(self.k_shot) for _ in range(self.n_way))
+        expected_query = tuple(int(self.q_query) for _ in range(self.n_way))
+
+        mismatch = support_counts != expected_support or query_counts != expected_query
+        if not mismatch:
+            return
+
+        signature = (
+            tuple(int(c) for c in support_counts),
+            tuple(int(c) for c in query_counts),
+            int(requested_subject) if requested_subject is not None else None,
+        )
+        if signature in self._reported_task_size_signatures:
+            return
+        self._reported_task_size_signatures.add(signature)
+
+        self.logger.warning(
+            "Episodic task size mismatch "
+            f"(mode={self.mode}, split={self.data_split}, subject={requested_subject}): "
+            f"requested_support_per_class={expected_support}, "
+            f"requested_query_per_class={expected_query}, "
+            f"actual_support_per_class={support_counts}, "
+            f"actual_query_per_class={query_counts}, "
+            f"support_total={len(support_y)}, query_total={len(query_y)}"
+        )
 
     def get_test_task(self, k_shot: Optional[int] = None) -> Dict[str, np.ndarray]:
         """

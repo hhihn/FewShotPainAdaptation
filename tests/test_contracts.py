@@ -340,19 +340,35 @@ class ContractTests(unittest.TestCase):
                     )
 
             cv = LOSOCrossValidator(dataset=dataset, seed=config.seed)
-            self.assertEqual(len(cv.subjects), 1)
-            fold = cv.get_fold(test_subject=cv.subjects[0])
+            test_subjects = sorted(dataset.get_split_subjects("test"))
+            self.assertEqual(sorted(cv.subjects), test_subjects)
+
+            held_out_subject = int(test_subjects[1])
+            fold = cv.get_fold(test_subject=held_out_subject)
+
+            self.assertEqual(fold["test_subject"], held_out_subject)
+            self.assertEqual(fold["test_subjects"], [held_out_subject])
+            self.assertNotIn(held_out_subject, fold["train_subjects"])
+            self.assertNotIn(held_out_subject, fold["val_subjects"])
+            self.assertEqual(
+                sorted(fold["val_subjects"]),
+                [subject for subject in test_subjects if subject != held_out_subject],
+            )
 
             train_task = fold["train_sampler"].get_task()
+            val_task = fold["val_sampler"].get_task()
             test_task = fold["test_sampler"].get_task()
             expected_support = config.n_way * config.k_shot
             expected_query = config.n_way * config.q_query
             self.assertEqual(train_task["support_X"].shape, (expected_support, 1152, 3))
             self.assertEqual(train_task["query_X"].shape, (expected_query, 1152, 3))
+            self.assertEqual(val_task["support_X"].shape, (expected_support, 1152, 3))
+            self.assertEqual(val_task["query_X"].shape, (expected_query, 1152, 3))
             self.assertEqual(test_task["support_X"].shape, (expected_support, 1152, 3))
             self.assertEqual(test_task["query_X"].shape, (expected_query, 1152, 3))
-            self.assertEqual(train_task["subject"], -1)
-            self.assertEqual(test_task["subject"], -1)
+            self.assertNotEqual(train_task["subject"], held_out_subject)
+            self.assertNotEqual(val_task["subject"], held_out_subject)
+            self.assertEqual(test_task["subject"], held_out_subject)
         finally:
             tmp.cleanup()
 

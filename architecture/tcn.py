@@ -99,33 +99,35 @@ class TemporalConvolutionalNetwork(keras.Model):
             inputs = new_inputs
             self.tcn_blocks.append(block)
 
-        # Self-attention layer
-        self.attention = keras.layers.MultiHeadAttention(
-            num_heads=num_attention_heads,
-            key_dim=attention_key_dim,
-            dropout=attention_dropout,
-            name="self_attention",
-            kernel_initializer="he_normal",
-        )
-
-        # Optional temporal downsampling before attention to avoid OOM on long sequences.
-        self.attention_pool = None
-        if self.attention_pool_size > 1:
-            self.attention_pool = keras.layers.AveragePooling1D(
-                pool_size=self.attention_pool_size,
-                strides=self.attention_pool_size,
-                padding="valid",
-                name="attention_pool"
+        if self.use_attention:
+            # Self-attention layer
+            self.attention = keras.layers.MultiHeadAttention(
+                num_heads=num_attention_heads,
+                key_dim=attention_key_dim,
+                dropout=attention_dropout,
+                name="self_attention",
+                kernel_initializer="he_normal",
             )
 
-        # Normalization after attention
-        self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
+            # Optional temporal downsampling before attention to avoid OOM on long sequences.
+            self.attention_pool = None
+            if self.attention_pool_size > 1:
+                self.attention_pool = keras.layers.AveragePooling1D(
+                    pool_size=self.attention_pool_size,
+                    strides=self.attention_pool_size,
+                    padding="valid",
+                    name="attention_pool"
+                )
 
-        # Global pooling
-        self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
+            # Normalization after attention
+            self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
 
-        # Flatten
-        self.flatten_layer = keras.layers.Flatten(name="flatten")
+            # Global pooling
+            self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
+
+        else:
+            # Flatten
+            self.flatten_layer = keras.layers.Flatten(name="flatten")
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
