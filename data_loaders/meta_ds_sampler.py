@@ -30,6 +30,8 @@ class SixWayKShotSampler:
         mode: str = "train",
         train_subjects: Optional[List[int]] = None,
         test_subject: Optional[int] = None,
+        test_subjects: Optional[List[int]] = None,
+        data_split: str = "all",
         seed: Optional[int] = None,
     ):
         """
@@ -50,29 +52,41 @@ class SixWayKShotSampler:
         self.q_query = self.config.q_query
         self.seed = seed
         self.rng = np.random.default_rng(self.seed)
+        self.data_split = data_split.lower()
 
         # Set subjects based on mode
-        if train_subjects is None or test_subject is None:
-            raise ValueError("Must provide train_subjects and test_subject")
+        if train_subjects is None:
+            raise ValueError("Must provide train_subjects")
 
-        self.train_subjects = train_subjects
-        self.test_subject = test_subject
+        self.train_subjects = [int(subject) for subject in train_subjects]
+        self.test_subject = None if test_subject is None else int(test_subject)
+        if test_subjects is not None:
+            self.test_subjects = [int(subject) for subject in test_subjects]
+        elif self.test_subject is not None:
+            self.test_subjects = [self.test_subject]
+        else:
+            self.test_subjects = []
 
         if mode == "train":
-            self.active_subjects = train_subjects
+            self.active_subjects = self.train_subjects
             self.tasks_per_epoch = self.config.tasks_per_epoch
         elif mode == "val":
             # Use a subset of training subjects for validation
-            self.active_subjects = train_subjects[-5:]  # Last 5 subjects
+            self.active_subjects = self.train_subjects[-5:]  # Last 5 subjects
             self.tasks_per_epoch = self.config.val_tasks
         else:  # test
-            self.active_subjects = [test_subject]
+            self.active_subjects = self.test_subjects
+            if not self.active_subjects:
+                raise ValueError("Must provide test_subject or test_subjects for test mode")
             self.tasks_per_epoch = self.config.subject_eval_tasks
 
         self.split_normalization_stats = None
         if self.config.task_normalize_mode == "split":
             self.split_normalization_stats = (
-                self.dataset.compute_split_normalization_stats(self.active_subjects)
+                self.dataset.compute_split_normalization_stats(
+                    self.active_subjects,
+                    split=self.data_split,
+                )
             )
 
         self.n_way = self.config.n_way
@@ -103,16 +117,32 @@ class SixWayKShotSampler:
                 normalize_mode=normalize_mode,
                 rng=self.rng,
                 split_normalization_stats=self.split_normalization_stats,
+                split=self.data_split,
             )
 
-        return self.dataset.sample_task(
-            subject=self.test_subject,
+        if len(self.active_subjects) == 1:
+            return self.dataset.sample_task(
+                subject=self.active_subjects[0],
+                k_shot=self.k_shot,
+                q_query=self.q_query,
+                normalize_mode=normalize_mode,
+                rng=self.rng,
+                allow_partial_query=True,
+                split_normalization_stats=self.split_normalization_stats,
+                split=self.data_split,
+                use_base_index=True,
+            )
+
+        return self.dataset.sample_task_from_subjects(
+            subjects=self.active_subjects,
             k_shot=self.k_shot,
             q_query=self.q_query,
             normalize_mode=normalize_mode,
             rng=self.rng,
             allow_partial_query=True,
             split_normalization_stats=self.split_normalization_stats,
+            split=self.data_split,
+            use_base_index=True,
         )
 
     def get_task(self, subject: Optional[int] = None) -> Dict[str, np.ndarray]:
@@ -135,6 +165,8 @@ class SixWayKShotSampler:
                 rng=self.rng,
                 allow_partial_query=self.mode == "test",
                 split_normalization_stats=self.split_normalization_stats,
+                split=self.data_split,
+                use_base_index=self.mode == "test",
             )
         return self._sample_task()
 
@@ -148,14 +180,28 @@ class SixWayKShotSampler:
         Returns:
             Task dictionary
         """
-        return self.dataset.sample_task(
-            subject=self.test_subject,
+        if len(self.active_subjects) == 1:
+            return self.dataset.sample_task(
+                subject=self.active_subjects[0],
+                k_shot=k_shot or self.k_shot,
+                q_query=self.q_query,
+                normalize_mode=self.config.task_normalize_mode,
+                rng=self.rng,
+                allow_partial_query=True,
+                split_normalization_stats=self.split_normalization_stats,
+                split=self.data_split,
+                use_base_index=True,
+            )
+        return self.dataset.sample_task_from_subjects(
+            subjects=self.active_subjects,
             k_shot=k_shot or self.k_shot,
             q_query=self.q_query,
             normalize_mode=self.config.task_normalize_mode,
             rng=self.rng,
             allow_partial_query=True,
             split_normalization_stats=self.split_normalization_stats,
+            split=self.data_split,
+            use_base_index=True,
         )
 
     def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:

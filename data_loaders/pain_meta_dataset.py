@@ -63,6 +63,13 @@ class PainMetaDataset:
         self.window_step_samples = 0
         self.window_start_min_idx = 0
         self.window_start_max_idx = 0
+        self.has_predefined_split = bool(self.config.split_strategy == "predefined")
+        self.sample_split_codes = np.array([], dtype=np.int8)
+        self.split_code_to_name = {0: "train", 1: "test"}
+        self.split_name_to_code = {v: k for k, v in self.split_code_to_name.items()}
+        self.split_masks: Dict[str, np.ndarray] = {}
+        self.index_by_split: Dict[str, Dict[int, Dict[int, np.ndarray]]] = {}
+        self.base_index_by_split: Dict[str, Dict[int, Dict[int, np.ndarray]]] = {}
 
         # Load data
         self._load_data()
@@ -77,28 +84,25 @@ class PainMetaDataset:
     def _load_data(self):
         """Load data arrays from disk."""
         self.logger.info(f"Loading data from {self.data_dir}...")
-
-        # Load arrays
-        self.X = np.load(self.data_dir / self.config.data_path)[
-            :, :, self.config.sensor_idx, :
-        ]
-        self.logger.info(f"X.shape: {self.X.shape}")
-        self.y_onehot = np.load(self.data_dir / self.config.labels_path)
-        self.logger.info(f"y_onehot.shape: {self.y_onehot.shape}")
-        self.subjects = np.load(self.data_dir / self.config.subjects_path)
-        self.logger.info(f"subjects.shape: {self.subjects}")
-
-        # Convert one-hot to class indices
-        self.y = np.argmax(self.y_onehot, axis=1)
+        if self.config.dataset_source == "biovid_part_a":
+            self._load_biovid_part_a_data()
+        else:
+            self._load_painmonit_data()
 
         # Remove the trailing dimension if present (for CNN compatibility)
         if self.X.ndim == 4 and self.X.shape[-1] == 1:
             self.X = np.squeeze(self.X, axis=-1)
 
-        # Get unique subjects
+        self.X = self.X.astype(np.float32, copy=False)
+        self.y = self.y.astype(np.int32, copy=False)
+        self.subjects = self.subjects.astype(np.int32, copy=False)
+
+        if self.sample_split_codes.size == 0:
+            self.sample_split_codes = np.full(len(self.y), -1, dtype=np.int8)
+
         self.unique_subjects = np.unique(self.subjects)
-        self.logger.debug(f"Unique subjects: {self.unique_subjects}")
         self.num_subjects = len(self.unique_subjects)
+        self.logger.debug(f"Unique subjects: {self.unique_subjects}")
         self.logger.info(f"Number of subjects: {self.num_subjects}")
         self.logger.info(f"  Data shape: {self.X.shape}")
         self.logger.info(f"  Labels shape: {self.y.shape}")
@@ -107,29 +111,300 @@ class PainMetaDataset:
         self.logger.info(f"  Classes: {np.unique(self.y)}")
         self.logger.info(f"  Task classes: {self.task_class_ids}")
 
+        if not self.split_masks:
+            all_mask = np.ones(len(self.y), dtype=bool)
+            self.split_masks = {"all": all_mask}
+        else:
+            self.split_masks["all"] = np.ones(len(self.y), dtype=bool)
+
+        self.split_subjects = {
+            split_name: sorted(
+                np.unique(self.subjects[split_mask]).astype(int).tolist()
+            )
+            for split_name, split_mask in self.split_masks.items()
+        }
+        if self.has_predefined_split:
+            train_count = int(np.sum(self.split_masks.get("train", np.zeros(0, dtype=bool))))
+            test_count = int(np.sum(self.split_masks.get("test", np.zeros(0, dtype=bool))))
+            self.logger.info(
+                f"  Predefined split counts: train={train_count}, test={test_count}"
+            )
+
+    def _load_painmonit_data(self) -> None:
+        """Load PainMonit-formatted arrays from a flat numpy directory."""
+        if self.has_predefined_split:
+            raise ValueError(
+                "split_strategy='predefined' requires dataset_source='biovid_part_a'."
+            )
+
+        self.X = np.load(self.data_dir / self.config.data_path)[
+            :, :, self.config.sensor_idx, :
+        ]
+        self.logger.info(f"X.shape: {self.X.shape}")
+        self.y_onehot = np.load(self.data_dir / self.config.labels_path)
+        self.logger.info(f"y_onehot.shape: {self.y_onehot.shape}")
+        self.subjects = np.load(self.data_dir / self.config.subjects_path)
+        self.logger.info(f"subjects.shape: {self.subjects}")
+        self.y = np.argmax(self.y_onehot, axis=1)
+        self.sample_split_codes = np.full(len(self.y), -1, dtype=np.int8)
+        self.split_masks = {"all": np.ones(len(self.y), dtype=bool)}
+
+    def _resolve_biovid_part_dir(self) -> Path:
+        """Resolve the BioVid PartA directory from common repository layouts."""
+        candidates = (
+            self.data_dir / "BioVid" / self.config.biovid_part_dir,
+            self.data_dir / self.config.biovid_part_dir,
+            self.data_dir,
+        )
+        for candidate in candidates:
+            if (
+                (candidate / self.config.biovid_train_split_dir).is_dir()
+                and (candidate / self.config.biovid_test_split_dir).is_dir()
+            ):
+                return candidate
+        raise FileNotFoundError(
+            "Could not resolve BioVid PartA directory with Train/Test subfolders from "
+            f"data_dir={self.data_dir!s}"
+        )
+
+    @staticmethod
+    def _subject_key_from_data_filename(path: Path) -> str:
+        """Convert '<subject>_data.npy' to '<subject>'."""
+        suffix = "_data.npy"
+        if not path.name.endswith(suffix):
+            raise ValueError(f"Unexpected data filename format: {path.name}")
+        return path.name[: -len(suffix)]
+
+    @staticmethod
+    def _subject_key_from_label_filename(path: Path) -> str:
+        """Convert '<subject>_label.npy' to '<subject>'."""
+        suffix = "_label.npy"
+        if not path.name.endswith(suffix):
+            raise ValueError(f"Unexpected label filename format: {path.name}")
+        return path.name[: -len(suffix)]
+
+    def _load_biovid_part_a_data(self) -> None:
+        """Load BioVid Part A pre-segmented train/test files."""
+        part_dir = self._resolve_biovid_part_dir()
+        self.logger.info(f"Resolved BioVid Part A directory: {part_dir}")
+        modalities = tuple(self.config.biovid_modalities)
+        split_dir_names = {
+            "train": self.config.biovid_train_split_dir,
+            "test": self.config.biovid_test_split_dir,
+        }
+
+        split_maps: Dict[str, Dict[str, Dict[str, Path]]] = {}
+        all_subject_keys = set()
+
+        for split_name, split_dir_name in split_dir_names.items():
+            split_dir = part_dir / split_dir_name
+            modality_data_maps: Dict[str, Dict[str, Path]] = {}
+            modality_label_maps: Dict[str, Dict[str, Path]] = {}
+
+            for modality in modalities:
+                modality_dir = split_dir / modality
+                if not modality_dir.is_dir():
+                    raise FileNotFoundError(
+                        f"Expected modality directory missing: {modality_dir}"
+                    )
+
+                data_files = sorted(modality_dir.glob("*_data.npy"))
+                label_files = sorted(modality_dir.glob("*_label.npy"))
+                data_map = {
+                    self._subject_key_from_data_filename(path): path for path in data_files
+                }
+                label_map = {
+                    self._subject_key_from_label_filename(path): path
+                    for path in label_files
+                }
+
+                missing_label = sorted(set(data_map) - set(label_map))
+                missing_data = sorted(set(label_map) - set(data_map))
+                if missing_label or missing_data:
+                    raise ValueError(
+                        f"Mismatched data/label files for split={split_name}, modality={modality}, "
+                        f"missing_label={missing_label[:3]}, missing_data={missing_data[:3]}"
+                    )
+
+                modality_data_maps[modality] = data_map
+                modality_label_maps[modality] = label_map
+
+            common_subjects = sorted(
+                set.intersection(
+                    *(set(modality_data_maps[modality].keys()) for modality in modalities)
+                )
+            )
+            if not common_subjects:
+                raise ValueError(f"No subjects found for split={split_name}")
+
+            split_maps[split_name] = {
+                "data": {
+                    modality: {subject: modality_data_maps[modality][subject] for subject in common_subjects}
+                    for modality in modalities
+                },
+                "labels": {
+                    modality: {subject: modality_label_maps[modality][subject] for subject in common_subjects}
+                    for modality in modalities
+                },
+            }
+            all_subject_keys.update(common_subjects)
+
+        if not all_subject_keys:
+            raise ValueError("BioVid Part A contains no subjects.")
+
+        sorted_subject_keys = sorted(all_subject_keys)
+        self.biovid_subject_key_to_int = {
+            subject_key: idx for idx, subject_key in enumerate(sorted_subject_keys)
+        }
+        self.biovid_subject_int_to_key = {
+            idx: subject_key for subject_key, idx in self.biovid_subject_key_to_int.items()
+        }
+
+        X_rows = []
+        y_rows = []
+        subject_rows = []
+        split_rows = []
+
+        for split_name in ("train", "test"):
+            split_code = self.split_name_to_code[split_name]
+            split_data_maps = split_maps[split_name]["data"]
+            split_label_maps = split_maps[split_name]["labels"]
+            split_subjects = sorted(split_data_maps[modalities[0]].keys())
+
+            for subject_key in split_subjects:
+                modality_arrays = []
+                reference_labels = None
+                for modality in modalities:
+                    data_array = np.load(split_data_maps[modality][subject_key])
+                    if data_array.ndim == 2:
+                        data_array = data_array[..., np.newaxis]
+                    if data_array.ndim != 3 or data_array.shape[-1] != 1:
+                        raise ValueError(
+                            f"Expected shape [n_samples, seq_len, 1] for "
+                            f"split={split_name}, subject={subject_key}, modality={modality}, "
+                            f"got {data_array.shape}"
+                        )
+                    modality_arrays.append(data_array.astype(np.float32, copy=False))
+
+                    labels = np.load(split_label_maps[modality][subject_key]).reshape(-1)
+                    labels = labels.astype(np.int32, copy=False)
+                    if reference_labels is None:
+                        reference_labels = labels
+                    elif not np.array_equal(reference_labels, labels):
+                        raise ValueError(
+                            f"Label mismatch across modalities for split={split_name}, "
+                            f"subject={subject_key}"
+                        )
+
+                subject_X = np.concatenate(modality_arrays, axis=2).astype(np.float32, copy=False)
+                subject_y = reference_labels
+                if subject_X.shape[0] != subject_y.shape[0]:
+                    raise ValueError(
+                        f"Sample/label count mismatch for split={split_name}, subject={subject_key}: "
+                        f"{subject_X.shape[0]} != {subject_y.shape[0]}"
+                    )
+
+                subject_id = int(self.biovid_subject_key_to_int[subject_key])
+                X_rows.append(subject_X)
+                y_rows.append(subject_y)
+                subject_rows.append(
+                    np.full(subject_X.shape[0], subject_id, dtype=np.int32)
+                )
+                split_rows.append(
+                    np.full(subject_X.shape[0], split_code, dtype=np.int8)
+                )
+
+        self.X = np.concatenate(X_rows, axis=0)
+        self.y = np.concatenate(y_rows, axis=0)
+        self.subjects = np.concatenate(subject_rows, axis=0)
+        self.sample_split_codes = np.concatenate(split_rows, axis=0)
+        self.y_onehot = None
+
+        self.split_masks = {
+            "train": self.sample_split_codes == self.split_name_to_code["train"],
+            "test": self.sample_split_codes == self.split_name_to_code["test"],
+        }
+        self.config.sequence_length = int(self.X.shape[1])
+        self.config.num_sensors = int(self.X.shape[2])
+
     def _build_index(self):
         """Build index mapping (subject, class) -> sample indices."""
-        base_index = {}
+        split_names = ["all"]
+        if self.has_predefined_split:
+            split_names = ["all", "train", "test"]
 
+        self.base_index_by_split = {}
+        self.index_by_split = {}
+        for split_name in split_names:
+            split_mask = self.split_masks.get(split_name)
+            if split_mask is None:
+                raise ValueError(f"Missing split mask for split='{split_name}'")
+            base_index = self._build_base_index_for_mask(split_mask)
+            self.base_index_by_split[split_name] = base_index
+            if self.window_shift_enabled:
+                self.index_by_split[split_name] = self._build_window_shift_index(base_index)
+            else:
+                self.index_by_split[split_name] = base_index
+
+        self.base_index = self.base_index_by_split["all"]
+        self.index = self.index_by_split["all"]
+        if self.window_shift_enabled:
+            self._log_window_shift_summary()
+
+        self._verify_index()
+
+    def _build_base_index_for_mask(
+        self, split_mask: np.ndarray
+    ) -> Dict[int, Dict[int, np.ndarray]]:
+        """Build base index mapping for a specific sample mask."""
+        base_index: Dict[int, Dict[int, np.ndarray]] = {}
         for subject in self.unique_subjects:
             base_index[subject] = {}
-            subject_mask = self.subjects == subject
-
+            subject_mask = (self.subjects == subject) & split_mask
             for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
                 class_mask = self.y == raw_class_id
                 combined_mask = subject_mask & class_mask
                 indices = np.where(combined_mask)[0]
                 base_index[subject][episodic_class_id] = indices
+        return base_index
 
-        self.base_index = base_index
-        if self.window_shift_enabled:
-            self.index = self._build_window_shift_index(base_index)
-            self._log_window_shift_summary()
-        else:
-            self.index = base_index
+    def _get_split_mask(self, split: str) -> np.ndarray:
+        """Return sample mask for split ('all', 'train', 'test')."""
+        normalized_split = split.lower()
+        if normalized_split not in self.split_masks:
+            available = ", ".join(sorted(self.split_masks.keys()))
+            raise ValueError(
+                f"Unknown split '{split}'. Available splits: {available}"
+            )
+        return self.split_masks[normalized_split]
 
-        # Verify index
-        self._verify_index()
+    def _get_index_for_split(self, split: str) -> Dict[int, Dict[int, np.ndarray]]:
+        """Return index mapping for the requested split."""
+        normalized_split = split.lower()
+        if normalized_split not in self.index_by_split:
+            available = ", ".join(sorted(self.index_by_split.keys()))
+            raise ValueError(
+                f"Unknown split '{split}'. Available indexed splits: {available}"
+            )
+        return self.index_by_split[normalized_split]
+
+    def _get_sampling_index_for_split(
+        self, split: str, use_base_index: bool = False
+    ) -> Dict[int, Dict[int, np.ndarray]]:
+        """Return index for sampling, optionally using non-augmented base entries."""
+        if use_base_index:
+            return self._get_base_index_for_split(split)
+        return self._get_index_for_split(split)
+
+    def _get_base_index_for_split(self, split: str) -> Dict[int, Dict[int, np.ndarray]]:
+        """Return non-windowed base index mapping for the requested split."""
+        normalized_split = split.lower()
+        if normalized_split not in self.base_index_by_split:
+            available = ", ".join(sorted(self.base_index_by_split.keys()))
+            raise ValueError(
+                f"Unknown split '{split}'. Available base-index splits: {available}"
+            )
+        return self.base_index_by_split[normalized_split]
 
     def _build_window_shift_index(
         self, base_index: Dict[int, Dict[int, np.ndarray]]
@@ -225,6 +500,27 @@ class PainMetaDataset:
             windows[i] = self.X[sample_idx, start_idx : start_idx + self.window_length_samples, :]
         return windows
 
+    def _gather_samples(self, refs_or_indices: np.ndarray) -> np.ndarray:
+        """Gather samples from either base indices [n] or window refs [n, 2]."""
+        if refs_or_indices.size == 0:
+            if self.window_shift_enabled:
+                seq_len = self.window_length_samples
+            elif refs_or_indices.ndim == 1:
+                seq_len = self.X.shape[1]
+            else:
+                seq_len = self.window_length_samples
+            return np.empty((0, seq_len, self.X.shape[2]), dtype=self.X.dtype)
+
+        if refs_or_indices.ndim == 2:
+            return self._extract_windows(refs_or_indices)
+
+        if self.window_shift_enabled:
+            start_idx = int(self.window_start_min_idx)
+            end_idx = start_idx + int(self.window_length_samples)
+            return self.X[refs_or_indices, start_idx:end_idx, :]
+
+        return self.X[refs_or_indices]
+
     def _log_window_shift_summary(self) -> None:
         """Log global augmentation metadata and class-wise counts."""
         if not self.window_shift_enabled:
@@ -269,7 +565,9 @@ class PainMetaDataset:
             f"total={total_augmented}"
         )
 
-    def log_window_shift_split_summary(self, split_name: str, subjects: List[int]) -> None:
+    def log_window_shift_split_summary(
+        self, split_name: str, subjects: List[int], split: str = "all"
+    ) -> None:
         """Log augmentation counts for a split's subject set."""
         if not self.window_shift_enabled:
             return
@@ -279,17 +577,20 @@ class PainMetaDataset:
             self.logger.info(f"Window shift [{split_name}] has no subjects.")
             return
 
+        base_index = self._get_base_index_for_split(split)
+        index = self._get_index_for_split(split)
         total_original = 0
         total_augmented = 0
         self.logger.info(
-            f"Window shift [{split_name}] subjects={selected_subjects} (n={len(selected_subjects)})"
+            f"Window shift [{split_name}] split={split} subjects={selected_subjects} "
+            f"(n={len(selected_subjects)})"
         )
         for class_id in range(self.config.n_way):
             original_count = int(
-                sum(len(self.base_index[subject][class_id]) for subject in selected_subjects)
+                sum(len(base_index[subject][class_id]) for subject in selected_subjects)
             )
             augmented_count = int(
-                sum(len(self.index[subject][class_id]) for subject in selected_subjects)
+                sum(len(index[subject][class_id]) for subject in selected_subjects)
             )
             created_count = augmented_count - original_count
             total_original += original_count
@@ -306,22 +607,22 @@ class PainMetaDataset:
 
     def _verify_index(self):
         """Verify that the index is valid for sampling."""
-        min_samples_per_class = float("inf")
-
-        for subject in self.unique_subjects:
-            for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
-                n_samples = len(self.index[subject][episodic_class_id])
-                min_samples_per_class = min(min_samples_per_class, n_samples)
-
-                if n_samples < self.config.k_shot + self.config.q_query:
-                    warnings.warn(
-                        f"Subject {subject}, raw class {raw_class_id} has only {n_samples} samples, "
-                        f"but {self.config.k_shot + self.config.q_query} are needed for sampling."
-                    )
-
-        self.logger.info(
-            f"  Minimum samples per (subject, class): {min_samples_per_class}"
-        )
+        for split_name, split_index in self.index_by_split.items():
+            min_samples_per_class = float("inf")
+            for subject in self.unique_subjects:
+                for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
+                    n_samples = len(split_index[subject][episodic_class_id])
+                    min_samples_per_class = min(min_samples_per_class, n_samples)
+                    if n_samples < self.config.k_shot + self.config.q_query:
+                        warnings.warn(
+                            f"Split {split_name}, subject {subject}, raw class {raw_class_id} "
+                            f"has only {n_samples} samples, but "
+                            f"{self.config.k_shot + self.config.q_query} are needed for sampling."
+                        )
+            self.logger.info(
+                f"  Minimum samples per (subject, class) in split={split_name}: "
+                f"{min_samples_per_class}"
+            )
 
     def _compute_normalization_stats(self):
         """Compute mean and std for normalization."""
@@ -408,19 +709,20 @@ class PainMetaDataset:
         return (data - stats["mean"]) / stats["std"]
 
     def compute_split_normalization_stats(
-        self, subjects: List[int]
+        self, subjects: List[int], split: str = "all"
     ) -> Dict[str, np.ndarray]:
         """Compute modality-wise stats over all samples/windows in a LOSO split."""
         selected_subjects = [int(subject) for subject in subjects]
         if not selected_subjects:
             raise ValueError("subjects must contain at least one subject id")
+        split_mask = self._get_split_mask(split)
 
         sum_values = np.zeros((self.X.shape[2],), dtype=np.float64)
         sum_square_values = np.zeros((self.X.shape[2],), dtype=np.float64)
         count = 0
 
         for subject in selected_subjects:
-            subject_indices = np.where(self.subjects == subject)[0]
+            subject_indices = np.where((self.subjects == subject) & split_mask)[0]
             if subject_indices.size == 0:
                 continue
 
@@ -452,7 +754,7 @@ class PainMetaDataset:
         }
 
     def get_subject_data(
-        self, subject: int, normalize: bool = True
+        self, subject: int, normalize: bool = True, split: str = "all"
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Get all data for a specific subject.
@@ -465,7 +767,7 @@ class PainMetaDataset:
             X: Data array of shape [n_samples, sequence_length, n_sensors]
             y: Labels array of shape [n_samples]
         """
-        mask = self.subjects == subject
+        mask = (self.subjects == subject) & self._get_split_mask(split)
         X = self.X[mask].copy()
         y = self.y[mask].copy()
 
@@ -485,6 +787,8 @@ class PainMetaDataset:
         allow_partial_query: bool = False,
         include_sample_subjects: bool = False,
         split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
+        split: str = "all",
+        use_base_index: bool = False,
     ) -> Dict[str, np.ndarray]:
         """
         Sample an N-way-K-shot task from a single subject.
@@ -520,6 +824,8 @@ class PainMetaDataset:
             allow_partial_query=allow_partial_query,
             include_sample_subjects=include_sample_subjects,
             split_normalization_stats=split_normalization_stats,
+            split=split,
+            use_base_index=use_base_index,
         )
 
     def sample_task_from_subjects(
@@ -533,6 +839,8 @@ class PainMetaDataset:
         allow_partial_query: bool = False,
         include_sample_subjects: bool = False,
         split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
+        split: str = "all",
+        use_base_index: bool = False,
     ) -> Dict[str, np.ndarray]:
         """Sample one task by pooling each class across the provided subjects."""
         k_shot = k_shot or self.config.k_shot
@@ -548,6 +856,10 @@ class PainMetaDataset:
         else:
             local_rng = np.random.default_rng()
 
+        split_index = self._get_sampling_index_for_split(
+            split,
+            use_base_index=use_base_index,
+        )
         support_X, support_y, support_subjects = [], [], []
         query_X, query_y, query_subjects = [], [], []
 
@@ -555,7 +867,7 @@ class PainMetaDataset:
             pooled_indices = []
             pooled_subject_ids = []
             for subject in selected_subjects:
-                indices = self.index[subject][class_id]
+                indices = split_index[subject][class_id]
                 pooled_indices.append(indices)
                 pooled_subject_ids.extend([subject] * len(indices))
 
@@ -579,16 +891,10 @@ class PainMetaDataset:
             support_subject_ids = sampled_subject_ids[:k_shot]
             query_subject_ids = sampled_subject_ids[k_shot:]
 
-            if self.window_shift_enabled:
-                support_X.append(self._extract_windows(support_idx))
-            else:
-                support_X.append(self.X[support_idx])
+            support_X.append(self._gather_samples(support_idx))
             support_y.append(np.full(k_shot, class_id, dtype=np.int32))
             support_subjects.append(support_subject_ids)
-            if self.window_shift_enabled:
-                query_X.append(self._extract_windows(query_idx))
-            else:
-                query_X.append(self.X[query_idx])
+            query_X.append(self._gather_samples(query_idx))
             query_y.append(np.full(len(query_idx), class_id, dtype=np.int32))
             query_subjects.append(query_subject_ids)
 
@@ -605,7 +911,10 @@ class PainMetaDataset:
         elif normalize_mode == "split":
             stats = split_normalization_stats
             if stats is None:
-                stats = self.compute_split_normalization_stats(selected_subjects)
+                stats = self.compute_split_normalization_stats(
+                    selected_subjects,
+                    split=split,
+                )
             support_X = self._apply_stats(support_X, stats)
             query_X = self._apply_stats(query_X, stats)
         elif normalize_mode == "support":
@@ -646,6 +955,8 @@ class PainMetaDataset:
         rng: Optional[np.random.Generator] = None,
         include_sample_subjects: bool = False,
         split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
+        split: str = "all",
+        use_base_index: bool = False,
     ) -> Dict[str, np.ndarray]:
         """
         Sample one task with support drawn from one subject and query from another.
@@ -675,12 +986,16 @@ class PainMetaDataset:
         else:
             local_rng = np.random.default_rng()
 
+        split_index = self._get_sampling_index_for_split(
+            split,
+            use_base_index=use_base_index,
+        )
         support_X, support_y, support_subjects = [], [], []
         query_X, query_y, query_subjects = [], [], []
 
         for class_id in range(self.config.n_way):
-            support_indices = self.index[support_subject][class_id]
-            query_indices = self.index[query_subject][class_id]
+            support_indices = split_index[support_subject][class_id]
+            query_indices = split_index[query_subject][class_id]
 
             if len(support_indices) < k_shot:
                 raise ValueError(
@@ -702,16 +1017,10 @@ class PainMetaDataset:
             sampled_support_idx = support_indices[support_positions]
             sampled_query_idx = query_indices[query_positions]
 
-            if self.window_shift_enabled:
-                support_X.append(self._extract_windows(sampled_support_idx))
-            else:
-                support_X.append(self.X[sampled_support_idx])
+            support_X.append(self._gather_samples(sampled_support_idx))
             support_y.append(np.full(k_shot, class_id, dtype=np.int32))
             support_subjects.append(np.full(k_shot, support_subject, dtype=np.int32))
-            if self.window_shift_enabled:
-                query_X.append(self._extract_windows(sampled_query_idx))
-            else:
-                query_X.append(self.X[sampled_query_idx])
+            query_X.append(self._gather_samples(sampled_query_idx))
             query_y.append(np.full(q_query, class_id, dtype=np.int32))
             query_subjects.append(np.full(q_query, query_subject, dtype=np.int32))
 
@@ -729,7 +1038,8 @@ class PainMetaDataset:
             if split_normalization_stats is None:
                 stats_subjects = sorted({support_subject, query_subject})
                 split_normalization_stats = self.compute_split_normalization_stats(
-                    stats_subjects
+                    stats_subjects,
+                    split=split,
                 )
             support_X = self._apply_stats(support_X, split_normalization_stats)
             query_X = self._apply_stats(query_X, split_normalization_stats)
@@ -764,6 +1074,7 @@ class PainMetaDataset:
         batch_size: int,
         k_shot: Optional[int] = None,
         q_query: Optional[int] = None,
+        split: str = "all",
     ) -> List[Dict[str, np.ndarray]]:
         """
         Sample a batch of tasks for meta-training.
@@ -778,7 +1089,19 @@ class PainMetaDataset:
             List of task dictionaries
         """
         sampled_subjects = np.random.choice(subjects, size=batch_size, replace=True)
-        return [self.sample_task(s, k_shot, q_query) for s in sampled_subjects]
+        return [
+            self.sample_task(s, k_shot, q_query, split=split) for s in sampled_subjects
+        ]
+
+    def get_split_subjects(self, split: str = "all") -> List[int]:
+        """Return sorted subject IDs that have samples in a split."""
+        normalized_split = split.lower()
+        if normalized_split not in self.split_subjects:
+            available = ", ".join(sorted(self.split_subjects.keys()))
+            raise ValueError(
+                f"Unknown split '{split}'. Available split subjects: {available}"
+            )
+        return list(self.split_subjects[normalized_split])
 
     def leave_one_subject_out_split(self, test_subject: int) -> Tuple[List[int], int]:
         """
@@ -791,11 +1114,19 @@ class PainMetaDataset:
             train_subjects: List of training subject IDs
             test_subject: Held-out subject ID
         """
+        if self.has_predefined_split:
+            train_subjects = self.get_split_subjects("train")
+            return train_subjects, int(test_subject)
+
         train_subjects = [s for s in self.unique_subjects if s != test_subject]
         return train_subjects, test_subject
 
     def get_few_shot_split(
-        self, subject: int, k_shot: int, seed: Optional[int] = None
+        self,
+        subject: int,
+        k_shot: int,
+        seed: Optional[int] = None,
+        split: str = "all",
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """
         Get a few-shot split for adaptation and evaluation.
@@ -810,26 +1141,21 @@ class PainMetaDataset:
             eval_set: Dictionary with remaining data for evaluation
         """
         local_rng = np.random.default_rng(seed)
+        split_index = self._get_index_for_split(split)
 
         support_X, support_y = [], []
         eval_X, eval_y = [], []
 
         for class_id in range(self.config.n_way):
-            indices = self.index[subject][class_id]
+            indices = split_index[subject][class_id]
             shuffled_indices = local_rng.permutation(indices)
 
             support_idx = shuffled_indices[:k_shot]
             eval_idx = shuffled_indices[k_shot:]
 
-            if self.window_shift_enabled:
-                support_X.append(self._extract_windows(support_idx))
-            else:
-                support_X.append(self.X[support_idx])
+            support_X.append(self._gather_samples(support_idx))
             support_y.append(np.full(len(support_idx), class_id, dtype=np.int32))
-            if self.window_shift_enabled:
-                eval_X.append(self._extract_windows(eval_idx))
-            else:
-                eval_X.append(self.X[eval_idx])
+            eval_X.append(self._gather_samples(eval_idx))
             eval_y.append(np.full(len(eval_idx), class_id, dtype=np.int32))
 
         support_X = np.concatenate(support_X, axis=0)

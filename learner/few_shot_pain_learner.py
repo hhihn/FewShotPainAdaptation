@@ -80,6 +80,8 @@ class FewShotPainLearner:
             "seed": self.seed,
             "deterministic_ops": self.deterministic_ops,
             "data_dir": self.data_dir,
+            "dataset_source": self.config.dataset_source,
+            "split_strategy": self.config.split_strategy,
             "learning_rate": self.learning_rate,
             "fusion_method": self.fusion_method,
             "sequence_length": self.config.sequence_length,

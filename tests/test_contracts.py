@@ -45,6 +45,54 @@ def _write_synthetic_dataset(
     np.save(data_dir / "subjects.npy", subjects)
 
 
+def _write_synthetic_biovid_dataset(
+    data_dir: Path,
+    num_subjects: int = 4,
+    num_classes: int = 5,
+    train_samples_per_class: int = 6,
+    test_samples_per_class: int = 2,
+    seq_len: int = 1152,
+) -> None:
+    """Create a tiny BioVid-like PartA train/test tree for split-contract tests."""
+    rng = np.random.default_rng(456)
+    root = data_dir / "BioVid" / "PartA"
+    modalities = ("GSR", "ECG", "EMG")
+    splits = {
+        "Train": train_samples_per_class,
+        "Test": test_samples_per_class,
+    }
+    subject_keys = [f"subject_{idx:02d}" for idx in range(num_subjects)]
+
+    for split_name, samples_per_class in splits.items():
+        for modality in modalities:
+            (root / split_name / modality).mkdir(parents=True, exist_ok=True)
+
+        for subject_idx, subject_key in enumerate(subject_keys):
+            labels = np.concatenate(
+                [
+                    np.full((samples_per_class, 1), class_id, dtype=np.uint8)
+                    for class_id in range(num_classes)
+                ],
+                axis=0,
+            )
+            for modality_idx, modality in enumerate(modalities):
+                # Inject small modality-specific shifts so the channels are not identical.
+                mean_shift = float(subject_idx * 0.25 + modality_idx * 0.1)
+                data = np.concatenate(
+                    [
+                        rng.normal(
+                            loc=class_id + mean_shift,
+                            scale=0.5,
+                            size=(samples_per_class, seq_len, 1),
+                        ).astype(np.float32)
+                        for class_id in range(num_classes)
+                    ],
+                    axis=0,
+                )
+                np.save(root / split_name / modality / f"{subject_key}_data.npy", data)
+                np.save(root / split_name / modality / f"{subject_key}_label.npy", labels)
+
+
 class ContractTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -251,6 +299,62 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(task["query_X"].shape[0], 2 * config.q_query)
         self.assertTrue(np.array_equal(np.unique(task["support_y"]), np.array([0, 1])))
         self.assertTrue(np.array_equal(np.unique(task["query_y"]), np.array([0, 1])))
+
+    def test_biovid_predefined_split_contracts(self):
+        tmp = tempfile.TemporaryDirectory()
+        data_dir = Path(tmp.name)
+        _write_synthetic_biovid_dataset(data_dir)
+
+        config = PainDatasetConfig(
+            dataset_source="biovid_part_a",
+            k_shot=1,
+            q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            subject_eval_tasks=1,
+            single_loso_fold=False,
+            seed=13,
+            deterministic_ops=True,
+        )
+        try:
+            # BioVid default binary classes should adapt to (0, 4).
+            self.assertEqual(config.task_class_ids, (0, 4))
+            self.assertEqual(config.split_strategy, "predefined")
+            self.assertFalse(config.enable_window_shift_augmentation)
+
+            dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
+            self.assertTrue(dataset.has_predefined_split)
+            self.assertEqual(
+                sorted(dataset.get_split_subjects("train")),
+                sorted(dataset.get_split_subjects("test")),
+            )
+
+            train_index = dataset._get_index_for_split("train")
+            test_index = dataset._get_index_for_split("test")
+            for subject in dataset.get_split_subjects("train"):
+                for class_id in range(config.n_way):
+                    self.assertGreater(
+                        len(train_index[int(subject)][class_id]),
+                        len(test_index[int(subject)][class_id]),
+                    )
+
+            cv = LOSOCrossValidator(dataset=dataset, seed=config.seed)
+            self.assertEqual(len(cv.subjects), 1)
+            fold = cv.get_fold(test_subject=cv.subjects[0])
+
+            train_task = fold["train_sampler"].get_task()
+            test_task = fold["test_sampler"].get_task()
+            expected_support = config.n_way * config.k_shot
+            expected_query = config.n_way * config.q_query
+            self.assertEqual(train_task["support_X"].shape, (expected_support, 1152, 3))
+            self.assertEqual(train_task["query_X"].shape, (expected_query, 1152, 3))
+            self.assertEqual(test_task["support_X"].shape, (expected_support, 1152, 3))
+            self.assertEqual(test_task["query_X"].shape, (expected_query, 1152, 3))
+            self.assertEqual(train_task["subject"], -1)
+            self.assertEqual(test_task["subject"], -1)
+        finally:
+            tmp.cleanup()
 
 
 if __name__ == "__main__":

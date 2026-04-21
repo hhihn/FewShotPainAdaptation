@@ -96,12 +96,39 @@ class PainDatasetConfig:
     sampling_rate_hz: int = 250  # Signal sampling rate used for time->index conversion
 
     # Data paths
+    dataset_source: str = "biovid_part_a"  # painmonit or biovid_part_a
+    split_strategy: str = "loso"  # loso or predefined
     data_variant: str = "real"  # real or mock
     data_path: str = "X_pre.npy"
     labels_path: str = "y_heater.npy"
     subjects_path: str = "subjects.npy"
+    biovid_part_dir: str = "PartA"
+    biovid_train_split_dir: str = "Train"
+    biovid_test_split_dir: str = "Test"
+    biovid_modalities: Tuple[str, ...] = ("GSR", "ECG", "EMG")
 
     def __post_init__(self) -> None:
+        if self.dataset_source not in {"painmonit", "biovid_part_a"}:
+            raise ValueError(
+                "dataset_source must be one of: 'painmonit', 'biovid_part_a'"
+            )
+        if self.split_strategy not in {"loso", "predefined"}:
+            raise ValueError("split_strategy must be one of: 'loso', 'predefined'")
+        if self.dataset_source == "biovid_part_a":
+            # BioVid Part A ships with an explicit train/test split.
+            self.split_strategy = "predefined"
+            self.num_stimuli_levels = 5
+            self.sampling_rate_hz = 256
+            # Avoid applying an additional sliding-window augmentation on top of
+            # BioVid Part A pre-segmented windows.
+            self.enable_window_shift_augmentation = False
+            if self.task_class_ids == (0, 5):
+                self.task_class_ids = (0, 4)
+            if self.data_variant == "mock":
+                raise ValueError(
+                    "data_variant='mock' is only supported for dataset_source='painmonit'"
+                )
+
         self.task_class_ids = tuple(int(class_id) for class_id in self.task_class_ids)
         if not self.task_class_ids:
             raise ValueError("task_class_ids must contain at least one class id")

@@ -44,4 +44,21 @@ pain elicitation was used to perform the assessment of the
 proposed approaches.
 In the case of the BioVid Heat Pain Database, the assessment
 is performed on windows of length 4.5 s with a shift of 4 s from
-the elicitations’ onset (see Figure 6).
+the elicitations’ onset (see Figure 6). Each signal within
+these specific windows consists of a one-dimensional array of
+size m = 4.5 × 256 = 1, 152 for the BioVid Heat Pain
+Database.
+Moreover, since a huge amount of parameters specific
+to the multi-modal DDCAE architectures has to be optimized,
+data augmentation was performed by shifting the 4.5 s (6.5 s,
+respectively) window of segmentation backward and forward in
+time with small shifts of 250 ms and a maximum total window
+shift of 1 s in each direction. These shifts were performed, starting
+from the initial position of the windows (as depicted in Figure 6).
+This procedure was performed uniquely during the training
+phase of the proposed architectures, resulting in generating nine
+times the total amount of training samples specific to the initial
+windows of segmentation. Following the optimization of the
+multi-modal DDCAE architectures, the evaluation of the trained
+architectures was performed on the initial windows of 4.5 s (6.5
+s, respectively) with a shift of 4 s from the elicitations’ onset.
