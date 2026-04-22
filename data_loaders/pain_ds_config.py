@@ -82,6 +82,10 @@ class PainDatasetConfig:
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
     summary_every_n_train_steps: int = 20  # Log composite train/val/heldout summary every N train batches
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
+    train_progress_write_every_n_batches: int = (
+        10  # Persist train_update CSV rows every N train batches
+    )
+    csv_flush_every_events: int = 100  # Flush CSV file handle every N written events
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
     enable_window_shift_augmentation: bool = (
@@ -212,6 +216,10 @@ class PainDatasetConfig:
             raise ValueError("gaussian_noise_std must be non-negative")
         if self.logging_verbosity not in {0, 1, 2}:
             raise ValueError("logging_verbosity must be one of: 0, 1, 2")
+        if self.train_progress_write_every_n_batches <= 0:
+            raise ValueError("train_progress_write_every_n_batches must be > 0")
+        if self.csv_flush_every_events <= 0:
+            raise ValueError("csv_flush_every_events must be > 0")
         if self.summary_every_n_train_steps <= 0:
             raise ValueError("summary_every_n_train_steps must be > 0")
         if self.data_variant not in {"real", "mock"}:

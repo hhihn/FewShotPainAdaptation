@@ -79,7 +79,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     logger.info("Stage 1/5: Building run configuration")
     config = PainDatasetConfig(
         seed=args.seed,
-        deterministic_ops=True,
+        deterministic_ops=bool(args.deterministic_ops),
         dataset_source=args.dataset_source,
         data_variant=args.data_variant,
         task_class_ids=task_class_ids,
@@ -99,6 +99,10 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         val_batch_size=max(1, int(args.val_batch_size)),
         val_every_n_train_steps=max(1, int(args.val_every_n_train_steps)),
         summary_every_n_train_steps=max(1, int(args.summary_every_n_train_steps)),
+        train_progress_write_every_n_batches=max(
+            1, int(args.train_progress_write_every_n_batches)
+        ),
+        csv_flush_every_events=max(1, int(args.csv_flush_every_events)),
         single_loso_fold=False,  # Full LOSO over all available subjects.
         embedding_dim=args.embedding_dim,
         num_tcn_blocks=len(filters_list),
@@ -166,6 +170,11 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
             "window_shift_enabled": bool(config.enable_window_shift_augmentation),
             "gaussian_noise_std": float(config.gaussian_noise_std),
+            "deterministic_ops": bool(config.deterministic_ops),
+            "train_progress_write_every_n_batches": int(
+                config.train_progress_write_every_n_batches
+            ),
+            "csv_flush_every_events": int(config.csv_flush_every_events),
             "max_folds": int(args.max_folds) if args.max_folds is not None else None,
         },
         "summary": summary,
@@ -239,9 +248,14 @@ def main() -> None:
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
+    parser.add_argument(
+        "--deterministic-ops",
+        action="store_true",
+        help="Enable deterministic TensorFlow ops (slower but reproducible).",
+    )
     parser.add_argument("--num-epochs", type=int, default=1)
     parser.add_argument("--tasks-per-epoch", type=int, default=1500)
-    parser.add_argument("--task-batch-size", type=int, default=25)
+    parser.add_argument("--task-batch-size", type=int, default=150)
     parser.add_argument("--val-tasks", type=int, default=100)
     parser.add_argument("--heldout-eval-tasks", type=int, default=100)
     parser.add_argument(
@@ -256,6 +270,16 @@ def main() -> None:
     parser.add_argument("--val-batch-size", type=int, default=32)
     parser.add_argument("--val-every-n-train-steps", type=int, default=20)
     parser.add_argument("--summary-every-n-train-steps", type=int, default=20)
+    parser.add_argument(
+        "--train-progress-write-every-n-batches",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "--csv-flush-every-events",
+        type=int,
+        default=100,
+    )
     parser.add_argument("--disable-window-shift", action="store_true")
     parser.add_argument(
         "--logging-verbosity",

@@ -7,8 +7,13 @@ from typing import Optional
 class TrainingProgressCSVWriter:
     """Write per-step training/evaluation progress for each fold to CSV."""
 
-    def __init__(self, output_dir: str = "outputs/training_progress"):
+    def __init__(
+        self,
+        output_dir: str = "outputs/training_progress",
+        flush_every_events: int = 100,
+    ):
         self.output_dir = output_dir
+        self.flush_every_events = max(1, int(flush_every_events))
         self._file = None
         self._writer = None
         self._start_time = 0.0
@@ -95,9 +100,12 @@ class TrainingProgressCSVWriter:
                 "similarity_margin": similarity_margin,
             }
         )
+        if self._time_index % self.flush_every_events == 0 and self._file is not None:
+            self._file.flush()
 
     def close(self) -> None:
         if self._file is not None:
+            self._file.flush()
             self._file.close()
         self._file = None
         self._writer = None

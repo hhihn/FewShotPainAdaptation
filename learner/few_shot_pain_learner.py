@@ -114,6 +114,8 @@ class FewShotPainLearner:
             "val_every_n_train_steps": self.config.val_every_n_train_steps,
             "summary_every_n_train_steps": self.config.summary_every_n_train_steps,
             "logging_verbosity": self.logging_verbosity,
+            "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
+            "csv_flush_every_events": self.config.csv_flush_every_events,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
             "tcn_dilation_rates": self.config.tcn_dilation_rates,
@@ -366,20 +368,62 @@ class FewShotPainLearner:
 
         return loss, accuracy
 
+    @staticmethod
+    def _stack_task_batch(
+        task_batch: list[dict],
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Pack a Python task list into dense batch tensors once per update."""
+        support_x_np = np.stack(
+            [task_dict["support_X"] for task_dict in task_batch], axis=0
+        )
+        support_y_np = np.stack(
+            [task_dict["support_y"] for task_dict in task_batch], axis=0
+        )
+        query_x_np = np.stack([task_dict["query_X"] for task_dict in task_batch], axis=0)
+        query_y_np = np.stack([task_dict["query_y"] for task_dict in task_batch], axis=0)
+        return (
+            tf.convert_to_tensor(support_x_np, dtype=tf.float32),
+            tf.convert_to_tensor(support_y_np, dtype=tf.int32),
+            tf.convert_to_tensor(query_x_np, dtype=tf.float32),
+            tf.convert_to_tensor(query_y_np, dtype=tf.int32),
+        )
+
+    @staticmethod
+    def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
+        """Return True when support/query tensors share identical shapes across tasks."""
+        if not task_batch:
+            return False
+        keys = ("support_X", "support_y", "query_X", "query_y")
+        reference_shapes = {
+            key: tuple(np.asarray(task_batch[0][key]).shape) for key in keys
+        }
+        for task_dict in task_batch[1:]:
+            for key in keys:
+                if tuple(np.asarray(task_dict[key]).shape) != reference_shapes[key]:
+                    return False
+        return True
+
     def train_batch_step(
         self, task_batch: list[dict]
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Single optimizer update using a batch of tasks."""
+        (
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
+        ) = self._stack_task_batch(task_batch)
         with tf.GradientTape() as tape:
             losses = []
             task_losses = []
             accuracies = []
             contrastive_losses = []
-            for task_dict in task_batch:
-                support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
-                support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
-                query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
-                query_y = tf.constant(task_dict["query_y"], dtype=tf.int32)
+            for support_x, support_y, query_x, query_y in zip(
+                tf.unstack(support_x_batch, axis=0),
+                tf.unstack(support_y_batch, axis=0),
+                tf.unstack(query_x_batch, axis=0),
+                tf.unstack(query_y_batch, axis=0),
+            ):
                 support_x = self._augment_training_inputs(support_x)
                 query_x = self._augment_training_inputs(query_x)
 
@@ -481,17 +525,36 @@ class FewShotPainLearner:
         losses = []
         task_losses = []
         contrastive_losses = []
-        all_true = []
-        all_pred = []
+        all_true_tensors = []
+        all_pred_tensors = []
         all_intra_class_scores = []
         all_inter_class_scores = []
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+        if self._task_batch_has_uniform_shapes(task_batch):
+            (
+                support_x_batch,
+                support_y_batch,
+                query_x_batch,
+                query_y_batch,
+            ) = self._stack_task_batch(task_batch)
+            task_iter = zip(
+                tf.unstack(support_x_batch, axis=0),
+                tf.unstack(support_y_batch, axis=0),
+                tf.unstack(query_x_batch, axis=0),
+                tf.unstack(query_y_batch, axis=0),
+            )
+        else:
+            task_iter = (
+                (
+                    tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32),
+                    tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32),
+                    tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32),
+                    tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32),
+                )
+                for task_dict in task_batch
+            )
 
-        for task_dict in task_batch:
-            support_x = tf.constant(task_dict["support_X"], dtype=tf.float32)
-            support_y = tf.constant(task_dict["support_y"], dtype=tf.int32)
-            query_x = tf.constant(task_dict["query_X"], dtype=tf.float32)
-            query_y_np = task_dict["query_y"].astype(np.int32)
-            query_y = tf.constant(query_y_np, dtype=tf.int32)
+        for support_x, support_y, query_x, query_y in task_iter:
 
             task_outputs = self._forward_task(
                 support_x,
@@ -505,31 +568,35 @@ class FewShotPainLearner:
             similarity_scores = task_outputs["similarity_scores"]
             loss = task_outputs["loss"]
             task_loss = task_outputs["task_loss"]
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
-            intra_class_scores, inter_class_scores = self._split_similarity_scores(
-                similarity_scores.numpy(), query_y_np
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+            intra_class_scores = tf.gather_nd(
+                similarity_scores,
+                tf.stack([row_indices, query_y], axis=1),
             )
+            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
 
-            losses.append(float(loss))
-            task_losses.append(float(task_loss))
-            contrastive_losses.append(float(task_outputs["contrastive_loss"]))
-            all_true.append(query_y_np)
-            all_pred.append(pred)
+            losses.append(tf.cast(loss, tf.float32))
+            task_losses.append(tf.cast(task_loss, tf.float32))
+            contrastive_losses.append(tf.cast(task_outputs["contrastive_loss"], tf.float32))
+            all_true_tensors.append(query_y)
+            all_pred_tensors.append(pred)
             all_intra_class_scores.append(intra_class_scores)
             all_inter_class_scores.append(inter_class_scores)
 
-        y_true = np.concatenate(all_true, axis=0)
-        y_pred = np.concatenate(all_pred, axis=0)
+        y_true = tf.concat(all_true_tensors, axis=0).numpy().astype(np.int32, copy=False)
+        y_pred = tf.concat(all_pred_tensors, axis=0).numpy().astype(np.int32, copy=False)
         metrics = self._compute_macro_metrics(y_true, y_pred)
         metrics.update(
             self._compute_similarity_metrics(
-                np.concatenate(all_intra_class_scores, axis=0),
-                np.concatenate(all_inter_class_scores, axis=0),
+                tf.concat(all_intra_class_scores, axis=0).numpy(),
+                tf.concat(all_inter_class_scores, axis=0).numpy(),
             )
         )
-        metrics["task_loss"] = float(np.mean(task_losses))
-        metrics["contrastive_loss"] = float(np.mean(contrastive_losses))
-        return float(np.mean(losses)), metrics
+        metrics["task_loss"] = float(tf.reduce_mean(tf.stack(task_losses)))
+        metrics["contrastive_loss"] = float(tf.reduce_mean(tf.stack(contrastive_losses)))
+        return float(tf.reduce_mean(tf.stack(losses))), metrics
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
@@ -708,12 +775,18 @@ class FewShotPainLearner:
         summary_every_n_train_steps = max(
             1, int(self.config.summary_every_n_train_steps)
         )
+        train_progress_write_every_n_batches = max(
+            1, int(self.config.train_progress_write_every_n_batches)
+        )
         progress = TrainingProgressReporter(
             logger=self.logger,
             train_log_every=train_log_every,
             eval_log_every=eval_log_every,
         )
-        csv_writer = TrainingProgressCSVWriter(output_dir=training_progress_output_dir)
+        csv_writer = TrainingProgressCSVWriter(
+            output_dir=training_progress_output_dir,
+            flush_every_events=max(1, int(self.config.csv_flush_every_events)),
+        )
         architecture_saved = False
 
         for fold, test_subject in enumerate(fold_subjects):
@@ -789,19 +862,23 @@ class FewShotPainLearner:
                     avg_step_time = elapsed / max(1, completed_train_steps)
                     remaining_steps = max(0, total_train_steps - completed_train_steps)
                     eta_seconds = remaining_steps * avg_step_time
-                    csv_writer.write_event(
-                        fold_idx=fold + 1,
-                        test_subject=test_subject,
-                        event_type="train_update",
-                        epoch=epoch + 1,
-                        epoch_total=num_epochs,
-                        step=processed_tasks,
-                        step_total=tasks_per_epoch,
-                        loss=float(loss),
-                        task_loss=float(task_loss),
-                        contrastive_loss=float(contrastive_loss),
-                        accuracy=float(acc),
-                    )
+                    if (
+                        processed_batches % train_progress_write_every_n_batches == 0
+                        or processed_tasks == tasks_per_epoch
+                    ):
+                        csv_writer.write_event(
+                            fold_idx=fold + 1,
+                            test_subject=test_subject,
+                            event_type="train_update",
+                            epoch=epoch + 1,
+                            epoch_total=num_epochs,
+                            step=processed_tasks,
+                            step_total=tasks_per_epoch,
+                            loss=float(loss),
+                            task_loss=float(task_loss),
+                            contrastive_loss=float(contrastive_loss),
+                            accuracy=float(acc),
+                        )
                     progress.log_step(
                         stage="Train task",
                         fold_idx=fold + 1,
