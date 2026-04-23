@@ -814,19 +814,90 @@ class PainMetaDataset:
                 - query_X: [n_way * q_query, seq_len, n_sensors]
                 - query_y: [n_way * q_query]
         """
-        return self.sample_task_from_subjects(
-            subjects=[subject],
-            k_shot=k_shot,
-            q_query=q_query,
-            seed=seed,
-            normalize_mode=normalize_mode,
-            rng=rng,
-            allow_partial_query=allow_partial_query,
-            include_sample_subjects=include_sample_subjects,
-            split_normalization_stats=split_normalization_stats,
-            split=split,
+        k_shot = k_shot or self.config.k_shot
+        q_query = q_query or self.config.q_query
+        subject = int(subject)
+
+        if rng is not None:
+            local_rng = rng
+        elif seed is not None:
+            local_rng = np.random.default_rng(seed)
+        else:
+            local_rng = np.random.default_rng()
+
+        split_index = self._get_sampling_index_for_split(
+            split,
             use_base_index=use_base_index,
         )
+
+        support_X, support_y = [], []
+        query_X, query_y = [], []
+        support_subjects, query_subjects = [], []
+
+        for class_id in range(self.config.n_way):
+            indices = split_index[subject][class_id]
+            total_to_sample = self._resolve_total_samples_to_draw(
+                available_count=len(indices),
+                k_shot=k_shot,
+                q_query=q_query,
+                allow_partial_query=allow_partial_query,
+            )
+            sampled_positions = local_rng.choice(
+                len(indices), size=total_to_sample, replace=False
+            )
+            sampled_indices = indices[sampled_positions]
+            support_idx = sampled_indices[:k_shot]
+            query_idx = sampled_indices[k_shot:]
+
+            support_X.append(self._gather_samples(support_idx))
+            support_y.append(np.full(k_shot, class_id, dtype=np.int32))
+            query_X.append(self._gather_samples(query_idx))
+            query_y.append(np.full(len(query_idx), class_id, dtype=np.int32))
+
+            if include_sample_subjects:
+                support_subjects.append(np.full(k_shot, subject, dtype=np.int32))
+                query_subjects.append(np.full(len(query_idx), subject, dtype=np.int32))
+
+        support_X = np.concatenate(support_X, axis=0)
+        support_y = np.concatenate(support_y, axis=0)
+        query_X = np.concatenate(query_X, axis=0)
+        query_y = np.concatenate(query_y, axis=0)
+
+        if normalize_mode == "subject":
+            support_X = self._normalize_data(support_X, subject)
+            query_X = self._normalize_data(query_X, subject)
+        elif normalize_mode == "split":
+            stats = split_normalization_stats
+            if stats is None:
+                stats = self.compute_split_normalization_stats([subject], split=split)
+            support_X = self._apply_stats(support_X, stats)
+            query_X = self._apply_stats(query_X, stats)
+        elif normalize_mode == "support":
+            stats = self._compute_batch_stats(support_X)
+            support_X = self._apply_stats(support_X, stats)
+            query_X = self._apply_stats(query_X, stats)
+        elif normalize_mode == "none":
+            pass
+        else:
+            raise ValueError(
+                f"Unknown normalize_mode: {normalize_mode}. Use 'subject', 'split', 'support', or 'none'."
+            )
+
+        support_perm = local_rng.permutation(len(support_y))
+        query_perm = local_rng.permutation(len(query_y))
+        task = {
+            "support_X": support_X[support_perm],
+            "support_y": support_y[support_perm],
+            "query_X": query_X[query_perm],
+            "query_y": query_y[query_perm],
+            "subject": subject,
+        }
+        if include_sample_subjects:
+            task["support_subjects"] = np.concatenate(support_subjects, axis=0)[
+                support_perm
+            ]
+            task["query_subjects"] = np.concatenate(query_subjects, axis=0)[query_perm]
+        return task
 
     def sample_task_from_subjects(
         self,

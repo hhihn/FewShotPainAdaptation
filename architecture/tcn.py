@@ -246,7 +246,8 @@ class TemporalConvolutionalNetwork(keras.Model):
         for block in self.tcn_blocks:
             x = block(x, training=training)
 
-        self.logger.debug(f"After TCN blocks: {tf.shape(x)}")
+        if self.logger.isEnabledFor(10):
+            self.logger.debug("After TCN blocks: %s", x.shape)
 
         if self.use_attention:
             if self.attention_pool is not None:
@@ -254,14 +255,16 @@ class TemporalConvolutionalNetwork(keras.Model):
 
             attention_output = self.attention(x, x, training=training)
             x = self.attention_norm(x + attention_output)
-            self.logger.debug(f"After attention: {tf.shape(x)}")
+            if self.logger.isEnabledFor(10):
+                self.logger.debug("After attention: %s", x.shape)
 
             # Global pooling
             x = self.global_pooling(x)
         else:
             x = self.flatten_layer(x)
 
-        self.logger.debug(f"After global pool: {tf.shape(x)}")
+        if self.logger.isEnabledFor(10):
+            self.logger.debug("After global pool: %s", x.shape)
 
         # Final embedding
         x = self.embedding_dense_hidden(x)

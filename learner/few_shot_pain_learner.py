@@ -1,6 +1,8 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import json
 import gc
 import io
@@ -48,6 +50,14 @@ class FewShotPainLearner:
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
+        self.support_size = int(self.config.n_way * self.config.k_shot)
+        self.query_size = int(self.config.n_way * self.config.q_query)
+        self.num_sensors = int(len(self.config.sensor_idx))
+        self.sequence_length = int(self.config.sequence_length)
+        self.train_prefetch_batches = max(
+            1, int(getattr(self.config, "train_prefetch_batches", 2))
+        )
+        self._compiled_train_batch_step = None
         self.logging_verbosity = int(getattr(config, "logging_verbosity", 1))
         self.logger = setup_logger("few_shot_pain_learner")
         if self.logging_verbosity <= 0:
@@ -114,6 +124,7 @@ class FewShotPainLearner:
             "val_every_n_train_steps": self.config.val_every_n_train_steps,
             "summary_every_n_train_steps": self.config.summary_every_n_train_steps,
             "logging_verbosity": self.logging_verbosity,
+            "train_prefetch_batches": self.train_prefetch_batches,
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
             "csv_flush_every_events": self.config.csv_flush_every_events,
             "embedding_dim": self.embedding_dim,
@@ -167,10 +178,13 @@ class FewShotPainLearner:
             tf.keras.backend.clear_session()
             gc.collect()
 
-        num_sensors = len(self.config.sensor_idx)
+        # Keep runtime dimensions in sync with dataset-dependent config updates.
+        self.sequence_length = int(self.config.sequence_length)
+        self.num_sensors = int(self.config.num_sensors)
+
         self.model = MultimodalPrototypicalNetwork(
             sequence_length=self.config.sequence_length,
-            num_sensors=num_sensors,
+            num_sensors=self.num_sensors,
             num_classes=self.config.n_way,
             embedding_dim=self.embedding_dim,
             modality_names=self.config.modality_names,
@@ -194,6 +208,95 @@ class FewShotPainLearner:
             fusion_ib_beta=self.config.fusion_ib_beta,
         )
         self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate)
+        self._build_compiled_train_batch_step()
+
+    def _build_compiled_train_batch_step(self) -> None:
+        """Build a compiled train-step function bound to current model/optimizer vars."""
+        self._compiled_train_batch_step = tf.function(
+            self._train_batch_step_compiled_impl,
+            reduce_retracing=True,
+            input_signature=[
+                tf.TensorSpec(
+                    shape=(
+                        None,
+                        self.support_size,
+                        self.sequence_length,
+                        self.num_sensors,
+                    ),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, self.support_size), dtype=tf.int32),
+                tf.TensorSpec(
+                    shape=(
+                        None,
+                        self.query_size,
+                        self.sequence_length,
+                        self.num_sensors,
+                    ),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
+            ],
+        )
+
+    def _train_batch_step_compiled_impl(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Compiled optimizer update over one batch of episodic tasks."""
+        with tf.GradientTape() as tape:
+
+            def _per_task_step(inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]):
+                support_x, support_y, query_x, query_y = inputs
+                support_x = self._augment_training_inputs(support_x)
+                query_x = self._augment_training_inputs(query_x)
+
+                task_outputs = self._forward_task(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    query_y=query_y,
+                    training=True,
+                )
+                logits = task_outputs["logits"]
+                loss = tf.cast(task_outputs["loss"], tf.float32)
+                task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
+                contrastive_loss = tf.cast(
+                    task_outputs["contrastive_loss"],
+                    tf.float32,
+                )
+                predictions = tf.argmax(logits, axis=1, output_type=tf.int64)
+                accuracy = tf.reduce_mean(
+                    tf.cast(
+                        tf.equal(predictions, tf.cast(query_y, tf.int64)),
+                        tf.float32,
+                    )
+                )
+                return loss, task_loss, accuracy, contrastive_loss
+
+            losses, task_losses, accuracies, contrastive_losses = tf.map_fn(
+                _per_task_step,
+                (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
+                fn_output_signature=(
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                ),
+                parallel_iterations=16,
+            )
+
+            batch_loss = tf.reduce_mean(losses)
+            batch_task_loss = tf.reduce_mean(task_losses)
+            batch_acc = tf.reduce_mean(accuracies)
+            batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
+
+        gradients = tape.gradient(batch_loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return batch_loss, batch_task_loss, batch_acc, batch_contrastive_loss
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
         """Return regularization losses added by submodules, or zero if absent."""
@@ -369,10 +472,10 @@ class FewShotPainLearner:
         return loss, accuracy
 
     @staticmethod
-    def _stack_task_batch(
+    def _stack_task_batch_numpy(
         task_batch: list[dict],
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Pack a Python task list into dense batch tensors once per update."""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Pack a Python task list into dense NumPy arrays once per update."""
         support_x_np = np.stack(
             [task_dict["support_X"] for task_dict in task_batch], axis=0
         )
@@ -381,6 +484,16 @@ class FewShotPainLearner:
         )
         query_x_np = np.stack([task_dict["query_X"] for task_dict in task_batch], axis=0)
         query_y_np = np.stack([task_dict["query_y"] for task_dict in task_batch], axis=0)
+        return support_x_np, support_y_np, query_x_np, query_y_np
+
+    @staticmethod
+    def _stack_task_batch(
+        task_batch: list[dict],
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Pack a Python task list into dense batch tensors once per update."""
+        support_x_np, support_y_np, query_x_np, query_y_np = (
+            FewShotPainLearner._stack_task_batch_numpy(task_batch)
+        )
         return (
             tf.convert_to_tensor(support_x_np, dtype=tf.float32),
             tf.convert_to_tensor(support_y_np, dtype=tf.int32),
@@ -389,30 +502,85 @@ class FewShotPainLearner:
         )
 
     @staticmethod
-    def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
-        """Return True when support/query tensors share identical shapes across tasks."""
-        if not task_batch:
-            return False
-        keys = ("support_X", "support_y", "query_X", "query_y")
-        reference_shapes = {
-            key: tuple(np.asarray(task_batch[0][key]).shape) for key in keys
-        }
-        for task_dict in task_batch[1:]:
-            for key in keys:
-                if tuple(np.asarray(task_dict[key]).shape) != reference_shapes[key]:
-                    return False
-        return True
+    def _sample_and_stack_task_batch_numpy(
+        sampler,
+        batch_size: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Sample one task batch and pack it into dense NumPy arrays."""
+        task_batch = [sampler.get_task() for _ in range(max(1, int(batch_size)))]
+        return FewShotPainLearner._stack_task_batch_numpy(task_batch)
 
-    def train_batch_step(
-        self, task_batch: list[dict]
+    def _iter_prefetched_task_batches(
+        self,
+        sampler,
+        tasks_per_epoch: int,
+    ):
+        """Yield `(batch_size, stacked_numpy_batch)` with async CPU prefetch."""
+        batch_sizes = [
+            min(self.train_batch_size, tasks_per_epoch - task_start)
+            for task_start in range(0, tasks_per_epoch, self.train_batch_size)
+        ]
+        if not batch_sizes:
+            return
+
+        prefetch_batches = max(1, int(self.train_prefetch_batches))
+        if prefetch_batches <= 1:
+            for batch_size in batch_sizes:
+                yield batch_size, self._sample_and_stack_task_batch_numpy(
+                    sampler,
+                    batch_size,
+                )
+            return
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = deque()
+            next_batch_idx = 0
+
+            while (
+                next_batch_idx < len(batch_sizes)
+                and len(pending) < prefetch_batches
+            ):
+                batch_size = batch_sizes[next_batch_idx]
+                pending.append(
+                    (
+                        batch_size,
+                        executor.submit(
+                            self._sample_and_stack_task_batch_numpy,
+                            sampler,
+                            batch_size,
+                        ),
+                    )
+                )
+                next_batch_idx += 1
+
+            while pending:
+                batch_size, batch_future = pending.popleft()
+                batch_arrays = batch_future.result()
+
+                if next_batch_idx < len(batch_sizes):
+                    next_size = batch_sizes[next_batch_idx]
+                    pending.append(
+                        (
+                            next_size,
+                            executor.submit(
+                                self._sample_and_stack_task_batch_numpy,
+                                sampler,
+                                next_size,
+                            ),
+                        )
+                    )
+                    next_batch_idx += 1
+
+                yield batch_size, batch_arrays
+
+    def _train_batch_step_eager_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Single optimizer update using a batch of tasks."""
-        (
-            support_x_batch,
-            support_y_batch,
-            query_x_batch,
-            query_y_batch,
-        ) = self._stack_task_batch(task_batch)
+        """Eager fallback for one optimizer update using a batch of tasks."""
         with tf.GradientTape() as tape:
             losses = []
             task_losses = []
@@ -457,6 +625,67 @@ class FewShotPainLearner:
         gradients = tape.gradient(batch_loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
         return batch_loss, batch_task_loss, batch_acc, batch_contrastive_loss
+
+    def _train_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Run compiled train step, with eager fallback if compilation fails."""
+        if self._compiled_train_batch_step is not None:
+            try:
+                return self._compiled_train_batch_step(
+                    support_x_batch,
+                    support_y_batch,
+                    query_x_batch,
+                    query_y_batch,
+                )
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                self.logger.warning(
+                    "Compiled train step failed once; falling back to eager for this batch. "
+                    f"error={exc!r}"
+                )
+                self._compiled_train_batch_step = None
+        return self._train_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
+        )
+
+    @staticmethod
+    def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
+        """Return True when support/query tensors share identical shapes across tasks."""
+        if not task_batch:
+            return False
+        keys = ("support_X", "support_y", "query_X", "query_y")
+        reference_shapes = {
+            key: tuple(np.asarray(task_batch[0][key]).shape) for key in keys
+        }
+        for task_dict in task_batch[1:]:
+            for key in keys:
+                if tuple(np.asarray(task_dict[key]).shape) != reference_shapes[key]:
+                    return False
+        return True
+
+    def train_batch_step(
+        self, task_batch: list[dict]
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Single optimizer update using a batch of tasks."""
+        (
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
+        ) = self._stack_task_batch(task_batch)
+        return self._train_batch_step_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
+        )
 
     def evaluate_task(self, support_x, support_y, query_x, query_y):
         """Evaluate on one task without updating weights."""
@@ -842,15 +1071,32 @@ class FewShotPainLearner:
                 processed_tasks = 0
                 processed_batches = 0
 
-                for task_start in range(0, tasks_per_epoch, self.train_batch_size):
-                    current_batch_size = min(
-                        self.train_batch_size, tasks_per_epoch - task_start
-                    )
-                    task_batch = [
-                        train_sampler.get_task() for _ in range(current_batch_size)
-                    ]
-                    loss, task_loss, acc, contrastive_loss = self.train_batch_step(
-                        task_batch
+                for current_batch_size, (
+                    support_x_np,
+                    support_y_np,
+                    query_x_np,
+                    query_y_np,
+                ) in self._iter_prefetched_task_batches(
+                    train_sampler,
+                    tasks_per_epoch,
+                ):
+                    loss, task_loss, acc, contrastive_loss = self._train_batch_step_tensors(
+                        support_x_batch=tf.convert_to_tensor(
+                            support_x_np,
+                            dtype=tf.float32,
+                        ),
+                        support_y_batch=tf.convert_to_tensor(
+                            support_y_np,
+                            dtype=tf.int32,
+                        ),
+                        query_x_batch=tf.convert_to_tensor(
+                            query_x_np,
+                            dtype=tf.float32,
+                        ),
+                        query_y_batch=tf.convert_to_tensor(
+                            query_y_np,
+                            dtype=tf.int32,
+                        ),
                     )
                     processed_tasks += current_batch_size
                     processed_batches += 1

@@ -129,6 +129,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         heldout_eval_tasks=max(1, args.heldout_tasks),
         num_epochs=1,
         single_loso_fold=True,
+        train_prefetch_batches=max(
+            1, int(getattr(args, "train_prefetch_batches", 2))
+        ),
         embedding_dim=args.embedding_dim,
         num_tcn_blocks=len(filters_list),
         filters_list=filters_list,
@@ -515,6 +518,7 @@ def main() -> None:
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
+    parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(
         "--logging-verbosity",
         type=int,

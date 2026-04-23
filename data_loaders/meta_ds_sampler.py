@@ -81,6 +81,7 @@ class SixWayKShotSampler:
             if not self.active_subjects:
                 raise ValueError("Must provide test_subject or test_subjects for test mode")
             self.tasks_per_epoch = self.config.heldout_eval_tasks
+        self.active_subjects_array = np.asarray(self.active_subjects, dtype=np.int32)
 
         self.logger.info(
             "Initialized sampler: "
@@ -119,8 +120,8 @@ class SixWayKShotSampler:
         """Sample a single task."""
         normalize_mode = self.config.task_normalize_mode
         use_base_index = self.mode == "test"
-        active_subjects = [int(subject) for subject in self.active_subjects]
-        if not active_subjects:
+        active_subjects = self.active_subjects_array
+        if active_subjects.size == 0:
             raise ValueError(f"No active subjects configured for mode={self.mode}")
 
         mode = self.task_construction_mode

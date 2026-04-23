@@ -205,7 +205,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
         self.logger.debug(f"Built CNN encoder with {modality_name}")
-        self.logger.debug(model.summary())
+        if self.logger.isEnabledFor(10):
+            self.logger.debug("Encoder summary for %s:", modality_name)
+            model.summary(print_fn=self.logger.debug)
         return model
 
     def _encode_modality_stack(self, x, training=False):
@@ -407,11 +409,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
         support_embeddings = (support_embeddings - support_mean) / support_std
         query_embeddings = (query_embeddings - support_mean) / support_std
 
-        self.logger.debug(f"Support embeddings shape: {tf.shape(support_embeddings)}")
-        self.logger.debug(f"Query embeddings shape: {tf.shape(query_embeddings)}")
+        if self.logger.isEnabledFor(10):
+            self.logger.debug(
+                "Support embeddings shape: %s", support_embeddings.shape
+            )
+            self.logger.debug("Query embeddings shape: %s", query_embeddings.shape)
 
         prototypes = self._compute_prototypes(support_embeddings, support_y)
-        self.logger.debug(f"Prototypes shape: {tf.shape(prototypes)}")
+        if self.logger.isEnabledFor(10):
+            self.logger.debug("Prototypes shape: %s", prototypes.shape)
         distances = self.compute_distances(query_embeddings, prototypes)
 
         if self.classifier_mode == "prototype":

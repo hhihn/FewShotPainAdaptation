@@ -99,6 +99,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         val_batch_size=max(1, int(args.val_batch_size)),
         val_every_n_train_steps=max(1, int(args.val_every_n_train_steps)),
         summary_every_n_train_steps=max(1, int(args.summary_every_n_train_steps)),
+        train_prefetch_batches=max(
+            1, int(getattr(args, "train_prefetch_batches", 2))
+        ),
         train_progress_write_every_n_batches=max(
             1, int(args.train_progress_write_every_n_batches)
         ),
@@ -175,6 +178,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
                 config.train_progress_write_every_n_batches
             ),
             "csv_flush_every_events": int(config.csv_flush_every_events),
+            "train_prefetch_batches": int(config.train_prefetch_batches),
             "max_folds": int(args.max_folds) if args.max_folds is not None else None,
         },
         "summary": summary,
@@ -270,6 +274,7 @@ def main() -> None:
     parser.add_argument("--val-batch-size", type=int, default=32)
     parser.add_argument("--val-every-n-train-steps", type=int, default=20)
     parser.add_argument("--summary-every-n-train-steps", type=int, default=20)
+    parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(
         "--train-progress-write-every-n-batches",
         type=int,

@@ -82,6 +82,7 @@ class PainDatasetConfig:
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
     summary_every_n_train_steps: int = 20  # Log composite train/val/heldout summary every N train batches
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
+    train_prefetch_batches: int = 2  # Number of asynchronously prepared train batches
     train_progress_write_every_n_batches: int = (
         10  # Persist train_update CSV rows every N train batches
     )
@@ -216,6 +217,8 @@ class PainDatasetConfig:
             raise ValueError("gaussian_noise_std must be non-negative")
         if self.logging_verbosity not in {0, 1, 2}:
             raise ValueError("logging_verbosity must be one of: 0, 1, 2")
+        if self.train_prefetch_batches <= 0:
+            raise ValueError("train_prefetch_batches must be > 0")
         if self.train_progress_write_every_n_batches <= 0:
             raise ValueError("train_progress_write_every_n_batches must be > 0")
         if self.csv_flush_every_events <= 0:
