@@ -868,6 +868,58 @@ class FewShotPainLearner:
             [sampler.get_task() for _ in range(num_tasks)],
         )
 
+    @staticmethod
+    def _set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
+        """Update sampler task size in-place for temporary held-out evaluation sweeps."""
+        sampler.k_shot = int(k_shot)
+        sampler.q_query = int(q_query)
+        if hasattr(sampler, "n_way"):
+            sampler.support_size = int(sampler.n_way * sampler.k_shot)
+            sampler.query_size = int(sampler.n_way * sampler.q_query)
+
+    def _evaluate_sampler_loss_and_metrics_at_task_size(
+        self,
+        sampler,
+        num_tasks: int,
+        *,
+        k_shot: int,
+        q_query: int,
+    ) -> tuple[float, dict]:
+        """Evaluate sampler metrics with a temporary k-shot/q-query override."""
+        original_k = int(sampler.k_shot)
+        original_q = int(sampler.q_query)
+        self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
+        try:
+            return self._evaluate_sampler_loss_and_metrics(sampler, num_tasks=num_tasks)
+        finally:
+            self._set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
+
+    def _adapt_on_sampler_at_task_size(
+        self,
+        sampler,
+        *,
+        adaptation_steps: int,
+        k_shot: int,
+        q_query: int,
+    ) -> list[float]:
+        """Run adaptation on tasks drawn with temporary k-shot/q-query override."""
+        original_k = int(sampler.k_shot)
+        original_q = int(sampler.q_query)
+        self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
+        adaptation_losses = []
+        try:
+            for _ in range(max(1, int(adaptation_steps))):
+                adapt_task = sampler.get_task()
+                support_x = tf.constant(adapt_task["support_X"], dtype=tf.float32)
+                support_y = tf.constant(adapt_task["support_y"], dtype=tf.int32)
+                query_x = tf.constant(adapt_task["query_X"], dtype=tf.float32)
+                query_y = tf.constant(adapt_task["query_y"], dtype=tf.int32)
+                adapt_loss, _ = self.train_step(support_x, support_y, query_x, query_y)
+                adaptation_losses.append(float(adapt_loss))
+            return adaptation_losses
+        finally:
+            self._set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
+
     def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
         """Build model and save model architecture summaries to a text file."""
         support_x = tf.constant(sample_task["support_X"], dtype=tf.float32)
@@ -953,6 +1005,13 @@ class FewShotPainLearner:
         eval_log_every = max(1, int(self.config.eval_log_every))
         val_batch_size = max(1, int(self.config.val_batch_size))
         val_every_n_train_steps = max(1, int(self.config.val_every_n_train_steps))
+        configured_eval_pair = (int(self.config.k_shot), int(self.config.q_query))
+        heldout_eval_pairs = [configured_eval_pair, (1, 1), (5, 5), (10, 10)]
+        dedup_pairs: list[tuple[int, int]] = []
+        for eval_pair in heldout_eval_pairs:
+            if eval_pair not in dedup_pairs:
+                dedup_pairs.append(eval_pair)
+        heldout_eval_pairs = dedup_pairs
 
         cv_results = {
             "train_losses": [],
@@ -975,6 +1034,31 @@ class FewShotPainLearner:
             "k_shot_f1s": [],
             "k_shot_intra_class_similarities": [],
             "k_shot_inter_class_similarities": [],
+            "heldout_eval_task_sizes": [
+                {"k_shot": int(k_shot), "q_query": int(q_query)}
+                for k_shot, q_query in heldout_eval_pairs
+            ],
+            "heldout_eval_by_task_size": {
+                f"k{k_shot}_q{q_query}": {
+                    "k_shot": int(k_shot),
+                    "q_query": int(q_query),
+                    "zero_shot_losses": [],
+                    "zero_shot_accuracies": [],
+                    "zero_shot_precisions": [],
+                    "zero_shot_recalls": [],
+                    "zero_shot_f1s": [],
+                    "zero_shot_intra_class_similarities": [],
+                    "zero_shot_inter_class_similarities": [],
+                    "k_shot_losses": [],
+                    "k_shot_accuracies": [],
+                    "k_shot_precisions": [],
+                    "k_shot_recalls": [],
+                    "k_shot_f1s": [],
+                    "k_shot_intra_class_similarities": [],
+                    "k_shot_inter_class_similarities": [],
+                }
+                for k_shot, q_query in heldout_eval_pairs
+            },
             "training_progress_files": [],
             "model_architecture_file": None,
         }
@@ -1356,10 +1440,123 @@ class FewShotPainLearner:
                         elapsed_seconds=time.perf_counter() - train_start_time,
                     )
 
-            # Zero-shot performance (after training on M-1 subjects).
-            zero_shot_loss, zero_shot_metrics = self._evaluate_sampler_loss_and_metrics(
-                test_sampler, num_tasks=heldout_eval_tasks
-            )
+            # Held-out evaluation sweep across fixed and additional support/query sizes.
+            pre_adaptation_weights = self.model.get_weights()
+            sweep_metrics_by_size = {}
+            for eval_k_shot, eval_q_query in heldout_eval_pairs:
+                size_key = f"k{eval_k_shot}_q{eval_q_query}"
+
+                self.model.set_weights(pre_adaptation_weights)
+                zero_shot_loss, zero_shot_metrics = (
+                    self._evaluate_sampler_loss_and_metrics_at_task_size(
+                        test_sampler,
+                        num_tasks=heldout_eval_tasks,
+                        k_shot=eval_k_shot,
+                        q_query=eval_q_query,
+                    )
+                )
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type=f"zero_shot_summary_{size_key}",
+                    loss=zero_shot_loss,
+                    accuracy=zero_shot_metrics["accuracy"],
+                    precision=zero_shot_metrics["precision"],
+                    recall=zero_shot_metrics["recall"],
+                    f1=zero_shot_metrics["f1"],
+                    intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
+                    inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
+                )
+                if (eval_k_shot, eval_q_query) == configured_eval_pair:
+                    progress.log_adaptation_start(
+                        fold_idx=fold + 1,
+                        total_folds=num_subjects,
+                        test_subject=int(test_subject),
+                        adaptation_steps=k_shot_adaptation_steps,
+                    )
+
+                adaptation_losses = self._adapt_on_sampler_at_task_size(
+                    test_sampler,
+                    adaptation_steps=k_shot_adaptation_steps,
+                    k_shot=eval_k_shot,
+                    q_query=eval_q_query,
+                )
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type=f"adaptation_phase_{size_key}",
+                    loss=float(np.mean(adaptation_losses)) if adaptation_losses else 0.0,
+                )
+
+                k_shot_loss, k_shot_metrics = (
+                    self._evaluate_sampler_loss_and_metrics_at_task_size(
+                        test_sampler,
+                        num_tasks=heldout_eval_tasks,
+                        k_shot=eval_k_shot,
+                        q_query=eval_q_query,
+                    )
+                )
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type=f"k_shot_summary_{size_key}",
+                    loss=k_shot_loss,
+                    accuracy=k_shot_metrics["accuracy"],
+                    precision=k_shot_metrics["precision"],
+                    recall=k_shot_metrics["recall"],
+                    f1=k_shot_metrics["f1"],
+                    intra_class_similarity=k_shot_metrics["intra_class_similarity"],
+                    inter_class_similarity=k_shot_metrics["inter_class_similarity"],
+                )
+
+                sweep_metrics_by_size[size_key] = {
+                    "zero_shot_loss": zero_shot_loss,
+                    "zero_shot_metrics": zero_shot_metrics,
+                    "adaptation_mean_loss": (
+                        float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
+                    ),
+                    "k_shot_loss": k_shot_loss,
+                    "k_shot_metrics": k_shot_metrics,
+                }
+                size_results = cv_results["heldout_eval_by_task_size"][size_key]
+                size_results["zero_shot_losses"].append(zero_shot_loss)
+                size_results["zero_shot_accuracies"].append(zero_shot_metrics["accuracy"])
+                size_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
+                size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
+                size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
+                size_results["zero_shot_intra_class_similarities"].append(
+                    zero_shot_metrics["intra_class_similarity"]
+                )
+                size_results["zero_shot_inter_class_similarities"].append(
+                    zero_shot_metrics["inter_class_similarity"]
+                )
+                size_results["k_shot_losses"].append(k_shot_loss)
+                size_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
+                size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
+                size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
+                size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
+                size_results["k_shot_intra_class_similarities"].append(
+                    k_shot_metrics["intra_class_similarity"]
+                )
+                size_results["k_shot_inter_class_similarities"].append(
+                    k_shot_metrics["inter_class_similarity"]
+                )
+
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] [Heldout size {size_key}] "
+                    f"zero_shot_acc={zero_shot_metrics['accuracy']:.4f}, "
+                    f"k_shot_acc={k_shot_metrics['accuracy']:.4f}"
+                )
+
+            fixed_size_key = f"k{configured_eval_pair[0]}_q{configured_eval_pair[1]}"
+            fixed_size_metrics = sweep_metrics_by_size[fixed_size_key]
+            zero_shot_loss = fixed_size_metrics["zero_shot_loss"]
+            zero_shot_metrics = fixed_size_metrics["zero_shot_metrics"]
+            fixed_adaptation_mean_loss = fixed_size_metrics["adaptation_mean_loss"]
+            k_shot_loss = fixed_size_metrics["k_shot_loss"]
+            k_shot_metrics = fixed_size_metrics["k_shot_metrics"]
+
+            # Keep legacy fixed-size event names for downstream tooling compatibility.
             csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
@@ -1372,41 +1569,11 @@ class FewShotPainLearner:
                 intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
                 inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
             )
-            progress.log_subject_summary(
-                stage="Zero-shot",
-                fold_idx=fold + 1,
-                total_folds=num_subjects,
-                test_subject=int(test_subject),
-                loss=zero_shot_loss,
-                metrics=zero_shot_metrics,
-            )
-
-            # K-shot adaptation on held-out subject data.
-            progress.log_adaptation_start(
-                fold_idx=fold + 1,
-                total_folds=num_subjects,
-                test_subject=int(test_subject),
-                adaptation_steps=k_shot_adaptation_steps,
-            )
-            adaptation_losses = []
-            for _ in range(k_shot_adaptation_steps):
-                adapt_task = test_sampler.get_task()
-                support_x = tf.constant(adapt_task["support_X"], dtype=tf.float32)
-                support_y = tf.constant(adapt_task["support_y"], dtype=tf.int32)
-                query_x = tf.constant(adapt_task["query_X"], dtype=tf.float32)
-                query_y = tf.constant(adapt_task["query_y"], dtype=tf.int32)
-                adapt_loss, _ = self.train_step(support_x, support_y, query_x, query_y)
-                adaptation_losses.append(float(adapt_loss))
             csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
                 event_type="adaptation_phase",
-                loss=float(np.mean(adaptation_losses)) if adaptation_losses else 0.0,
-            )
-
-            # K-shot performance (after adaptation).
-            k_shot_loss, k_shot_metrics = self._evaluate_sampler_loss_and_metrics(
-                test_sampler, num_tasks=heldout_eval_tasks
+                loss=fixed_adaptation_mean_loss,
             )
             csv_writer.write_event(
                 fold_idx=fold + 1,
@@ -1419,6 +1586,15 @@ class FewShotPainLearner:
                 f1=k_shot_metrics["f1"],
                 intra_class_similarity=k_shot_metrics["intra_class_similarity"],
                 inter_class_similarity=k_shot_metrics["inter_class_similarity"],
+            )
+
+            progress.log_subject_summary(
+                stage="Zero-shot",
+                fold_idx=fold + 1,
+                total_folds=num_subjects,
+                test_subject=int(test_subject),
+                loss=zero_shot_loss,
+                metrics=zero_shot_metrics,
             )
             progress.log_subject_summary(
                 stage="K-shot",
