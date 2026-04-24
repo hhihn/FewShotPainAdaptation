@@ -908,7 +908,7 @@ class FewShotPainLearner:
         self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
         adaptation_losses = []
         try:
-            for _ in range(max(1, int(adaptation_steps))):
+            for _ in range(max(0, int(adaptation_steps))):
                 adapt_task = sampler.get_task()
                 support_x = tf.constant(adapt_task["support_X"], dtype=tf.float32)
                 support_y = tf.constant(adapt_task["support_y"], dtype=tf.int32)
@@ -1000,7 +1000,7 @@ class FewShotPainLearner:
         tasks_per_epoch = max(1, int(self.config.tasks_per_epoch))
         val_tasks = max(1, int(self.config.val_tasks))
         heldout_eval_tasks = max(1, int(self.config.heldout_eval_tasks))
-        k_shot_adaptation_steps = max(1, int(self.config.k_shot_adaptation_steps))
+        k_shot_adaptation_steps = max(0, int(self.config.k_shot_adaptation_steps))
         train_log_every = max(1, int(self.config.train_log_every))
         eval_log_every = max(1, int(self.config.eval_log_every))
         val_batch_size = max(1, int(self.config.val_batch_size))
@@ -1468,12 +1468,13 @@ class FewShotPainLearner:
                     inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
                 )
                 if (eval_k_shot, eval_q_query) == configured_eval_pair:
-                    progress.log_adaptation_start(
-                        fold_idx=fold + 1,
-                        total_folds=num_subjects,
-                        test_subject=int(test_subject),
-                        adaptation_steps=k_shot_adaptation_steps,
-                    )
+                    if k_shot_adaptation_steps > 0:
+                        progress.log_adaptation_start(
+                            fold_idx=fold + 1,
+                            total_folds=num_subjects,
+                            test_subject=int(test_subject),
+                            adaptation_steps=k_shot_adaptation_steps,
+                        )
 
                 adaptation_losses = self._adapt_on_sampler_at_task_size(
                     test_sampler,

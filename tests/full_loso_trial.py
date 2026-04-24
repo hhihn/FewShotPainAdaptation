@@ -93,7 +93,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         val_tasks=max(1, int(args.val_tasks)),
         heldout_eval_tasks=max(1, int(args.heldout_eval_tasks)),
         num_epochs=max(1, int(args.num_epochs)),
-        k_shot_adaptation_steps=max(1, int(args.k_shot_adaptation_steps)),
+        k_shot_adaptation_steps=max(0, int(args.k_shot_adaptation_steps)),
         train_log_every=max(1, int(args.train_log_every)),
         eval_log_every=max(1, int(args.eval_log_every)),
         val_batch_size=max(1, int(args.val_batch_size)),
@@ -258,10 +258,10 @@ def main() -> None:
         help="Enable deterministic TensorFlow ops (slower but reproducible).",
     )
     parser.add_argument("--num-epochs", type=int, default=1)
-    parser.add_argument("--tasks-per-epoch", type=int, default=1500)
-    parser.add_argument("--task-batch-size", type=int, default=150)
-    parser.add_argument("--val-tasks", type=int, default=100)
-    parser.add_argument("--heldout-eval-tasks", type=int, default=100)
+    parser.add_argument("--tasks-per-epoch", type=int, default=1)
+    parser.add_argument("--task-batch-size", type=int, default=1)
+    parser.add_argument("--val-tasks", type=int, default=1)
+    parser.add_argument("--heldout-eval-tasks", type=int, default=1)
     parser.add_argument(
         "--subject-eval-tasks",
         type=int,
@@ -307,7 +307,7 @@ def main() -> None:
     parser.add_argument(
         "--max-folds",
         type=int,
-        default=None,
+        default=1,
         help="Optional debug limit. Omit for full LOSO over all subjects.",
     )
     parser.add_argument(
