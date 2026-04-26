@@ -90,7 +90,9 @@ def _write_synthetic_biovid_dataset(
                     axis=0,
                 )
                 np.save(root / split_name / modality / f"{subject_key}_data.npy", data)
-                np.save(root / split_name / modality / f"{subject_key}_label.npy", labels)
+                np.save(
+                    root / split_name / modality / f"{subject_key}_label.npy", labels
+                )
 
 
 class ContractTests(unittest.TestCase):
@@ -191,8 +193,12 @@ class ContractTests(unittest.TestCase):
         expected_val_subject = (
             -1 if len(fold["val_subjects"]) > 1 else fold["val_subjects"][0]
         )
-        self.assertEqual(fold["train_sampler"].get_task()["subject"], expected_train_subject)
-        self.assertEqual(fold["val_sampler"].get_task()["subject"], expected_val_subject)
+        self.assertEqual(
+            fold["train_sampler"].get_task()["subject"], expected_train_subject
+        )
+        self.assertEqual(
+            fold["val_sampler"].get_task()["subject"], expected_val_subject
+        )
         self.assertEqual(
             fold["test_sampler"].get_task()["subject"],
             int(dataset.unique_subjects[0]),

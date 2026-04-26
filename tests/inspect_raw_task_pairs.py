@@ -149,9 +149,7 @@ def _modality_summary_stats(
                 "min": float(np.min(class_values)),
                 "max": float(np.max(class_values)),
                 "rms": float(np.sqrt(np.mean(np.square(class_values)))),
-                "diff_energy": float(
-                    np.mean(np.square(np.diff(class_values, axis=1)))
-                ),
+                "diff_energy": float(np.mean(np.square(np.diff(class_values, axis=1)))),
             }
         summaries[modality_name] = modality_summary
     return summaries

@@ -108,7 +108,9 @@ class LOSOCrossValidator:
             train_subjects, _ = self.dataset.leave_one_subject_out_split(test_subject)
             test_subjects = [int(test_subject)]
             effective_test_subject = int(test_subject)
-            fold_seed = None if self.seed is None else int(self.seed) + int(test_subject)
+            fold_seed = (
+                None if self.seed is None else int(self.seed) + int(test_subject)
+            )
             train_data_split = "all"
             val_data_split = "all"
             test_data_split = "all"

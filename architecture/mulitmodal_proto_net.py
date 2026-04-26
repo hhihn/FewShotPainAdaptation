@@ -228,7 +228,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         elif self.fusion_method == "gated":
             normalized_embeddings = []
             modality_embeddings = tf.unstack(fused, axis=1)
-            for modality_name, embedding in zip(self.modality_names, modality_embeddings):
+            for modality_name, embedding in zip(
+                self.modality_names, modality_embeddings
+            ):
                 normalized_embeddings.append(
                     self.gating_norm_layers[modality_name](embedding, training=training)
                 )
@@ -330,10 +332,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         if self.distance_metric == "euclidean":
             return tf.sqrt(
                 tf.reduce_sum(
-                    (
-                        tf.expand_dims(a_embeddings, 1)
-                        - tf.expand_dims(b_embeddings, 0)
-                    )
+                    (tf.expand_dims(a_embeddings, 1) - tf.expand_dims(b_embeddings, 0))
                     ** 2,
                     axis=2,
                 )
@@ -371,7 +370,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
         class_scores = []
         for class_id in range(self.num_classes):
-            class_mask = tf.cast(tf.equal(support_y, class_id), support_similarities.dtype)
+            class_mask = tf.cast(
+                tf.equal(support_y, class_id), support_similarities.dtype
+            )
             class_scores.append(
                 tf.reduce_logsumexp(
                     support_similarities
@@ -386,7 +387,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         support_modality_embeddings = self._encode_modality_stack(
             support_x, training=training
         )
-        query_modality_embeddings = self._encode_modality_stack(query_x, training=training)
+        query_modality_embeddings = self._encode_modality_stack(
+            query_x, training=training
+        )
         modality_mean = tf.reduce_mean(
             support_modality_embeddings, axis=0, keepdims=True
         )
@@ -397,7 +400,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         support_modality_embeddings = (
             support_modality_embeddings - modality_mean
         ) / modality_std
-        query_modality_embeddings = (query_modality_embeddings - modality_mean) / modality_std
+        query_modality_embeddings = (
+            query_modality_embeddings - modality_mean
+        ) / modality_std
         support_embeddings = self._fuse_modality_stack(
             support_modality_embeddings, training=training
         )
@@ -405,14 +410,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
             query_modality_embeddings, training=training
         )
         support_mean = tf.reduce_mean(support_embeddings, axis=0, keepdims=True)
-        support_std = tf.math.reduce_std(support_embeddings, axis=0, keepdims=True) + 1e-6
+        support_std = (
+            tf.math.reduce_std(support_embeddings, axis=0, keepdims=True) + 1e-6
+        )
         support_embeddings = (support_embeddings - support_mean) / support_std
         query_embeddings = (query_embeddings - support_mean) / support_std
 
         if self.logger.isEnabledFor(10):
-            self.logger.debug(
-                "Support embeddings shape: %s", support_embeddings.shape
-            )
+            self.logger.debug("Support embeddings shape: %s", support_embeddings.shape)
             self.logger.debug("Query embeddings shape: %s", query_embeddings.shape)
 
         prototypes = self._compute_prototypes(support_embeddings, support_y)
@@ -426,11 +431,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 query_embeddings, prototypes
             )
         elif self.classifier_mode == "soft_knn":
-            logits = self._compute_soft_knn_logits(
-                support_embeddings=support_embeddings,
-                support_y=support_y,
-                query_embeddings=query_embeddings,
-            ) * self.logit_scale
+            logits = (
+                self._compute_soft_knn_logits(
+                    support_embeddings=support_embeddings,
+                    support_y=support_y,
+                    query_embeddings=query_embeddings,
+                )
+                * self.logit_scale
+            )
             similarity_scores = self.compute_similarity_scores(
                 query_embeddings, prototypes
             )

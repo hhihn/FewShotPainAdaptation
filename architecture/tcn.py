@@ -94,7 +94,7 @@ class TemporalConvolutionalNetwork(keras.Model):
                 filters=filters_list[i],
                 block_idx=i,
                 pooling_size=pooling_size,
-                pooling_stride=2
+                pooling_stride=2,
             )
             inputs = new_inputs
             self.tcn_blocks.append(block)
@@ -116,14 +116,16 @@ class TemporalConvolutionalNetwork(keras.Model):
                     pool_size=self.attention_pool_size,
                     strides=self.attention_pool_size,
                     padding="valid",
-                    name="attention_pool"
+                    name="attention_pool",
                 )
 
             # Normalization after attention
             self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
 
             # Global pooling
-            self.global_pooling = keras.layers.GlobalAveragePooling1D(name="global_pooling")
+            self.global_pooling = keras.layers.GlobalAveragePooling1D(
+                name="global_pooling"
+            )
 
         else:
             # Flatten
@@ -131,21 +133,30 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
-            1024, activation="elu", name="embedding_dense_hidden", kernel_initializer="he_normal"
+            1024,
+            activation="elu",
+            name="embedding_dense_hidden",
+            kernel_initializer="he_normal",
         )
         self.embedding_dense_hidden_dropout = keras.layers.Dropout(
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
         )
         self.embedding_dense_hidden_2 = keras.layers.Dense(
-            512, activation="elu", name="embedding_dense_hidden_2", kernel_initializer="he_normal"
+            512,
+            activation="elu",
+            name="embedding_dense_hidden_2",
+            kernel_initializer="he_normal",
         )
         self.embedding_dense_hidden_dropout_2 = keras.layers.Dropout(
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout_2",
         )
         self.embedding_dense = keras.layers.Dense(
-            embedding_dim, activation="elu", name="embedding_dense", kernel_initializer="he_normal"
+            embedding_dim,
+            activation="elu",
+            name="embedding_dense",
+            kernel_initializer="he_normal",
         )
         self.embedding_dense_dropout = keras.layers.Dropout(
             rate=self.dropout_rate,
@@ -170,13 +181,12 @@ class TemporalConvolutionalNetwork(keras.Model):
             name=f"cnn_block_{block_idx}_conv1",
         )(inputs)
         x = keras.layers.BatchNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
-        x = keras.layers.MaxPool1D(pool_size=pooling_size,
-                                   strides=pooling_stride,
-                                   name=f"cnn_block_{block_idx}_maxpool",
-                                   )(x)
-        return keras.Model(
-            inputs=inputs, outputs=x, name=f"cnn_block_{block_idx}"
-        ), x
+        x = keras.layers.MaxPool1D(
+            pool_size=pooling_size,
+            strides=pooling_stride,
+            name=f"cnn_block_{block_idx}_maxpool",
+        )(x)
+        return keras.Model(inputs=inputs, outputs=x, name=f"cnn_block_{block_idx}"), x
 
     def _build_tcn_block(
         self, inputs, filters: int, dilation_rate: int, block_idx: int
@@ -217,7 +227,9 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"tcn_block_{block_idx}_residual_proj",
         )(inputs)
-        residual_add = keras.layers.Add(name=f"tcn_block_{block_idx}_add")([x, residual])
+        residual_add = keras.layers.Add(name=f"tcn_block_{block_idx}_add")(
+            [x, residual]
+        )
         residual_norm = keras.layers.LayerNormalization(
             name=f"tcn_block_{block_idx}_resnorm"
         )(residual_add)

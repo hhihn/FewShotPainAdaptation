@@ -42,7 +42,9 @@ def _accuracy_from_logits(logits: tf.Tensor, labels: tf.Tensor) -> tf.Tensor:
     return tf.reduce_mean(tf.cast(tf.equal(preds, labels), tf.float32))
 
 
-def _build_model(config: PainDatasetConfig, fusion_method: str) -> MultimodalPrototypicalNetwork:
+def _build_model(
+    config: PainDatasetConfig, fusion_method: str
+) -> MultimodalPrototypicalNetwork:
     return MultimodalPrototypicalNetwork(
         sequence_length=config.sequence_length,
         num_sensors=len(config.sensor_idx),

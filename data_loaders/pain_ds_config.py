@@ -14,7 +14,7 @@ class PainDatasetConfig:
     num_sensors: int = 3  # Number of modalities
     num_tcn_blocks: int = 7  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        16, # Number of Filters in the Convolutional Layers
+        16,  # Number of Filters in the Convolutional Layers
         16,
         32,
         32,
@@ -24,8 +24,8 @@ class PainDatasetConfig:
     )
     tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
-    strides: int = 2 # Stride used by temporal pooling between TCN blocks
-    pooling_size: int = 2 # Pool size used between TCN blocks
+    strides: int = 2  # Stride used by temporal pooling between TCN blocks
+    pooling_size: int = 2  # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
     embedding_dim: int = 96  # Encoder embedding dimension
     tcn_attention_heads: int = 4  # Number of self-attention heads inside the TCN
@@ -60,7 +60,9 @@ class PainDatasetConfig:
     )  # Number of classes per task; derived from task_class_ids
     k_shot: int = 3  # Support samples per class
     q_query: int = 3  # Query samples per class
-    task_normalize_mode: str = "subject"  # Episodic normalization: subject, split, support, or none
+    task_normalize_mode: str = (
+        "subject"  # Episodic normalization: subject, split, support, or none
+    )
     task_construction_mode: str = (
         "single_subject"  # single_subject, cross_subject, or mixed
     )
@@ -80,7 +82,9 @@ class PainDatasetConfig:
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
-    summary_every_n_train_steps: int = 20  # Log composite train/val/heldout summary every N train batches
+    summary_every_n_train_steps: int = (
+        20  # Log composite train/val/heldout summary every N train batches
+    )
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
     train_prefetch_batches: int = 2  # Number of asynchronously prepared train batches
     train_progress_write_every_n_batches: int = (
@@ -164,9 +168,7 @@ class PainDatasetConfig:
                 "task_construction_mode must be one of: 'single_subject', 'cross_subject', 'mixed'"
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
-            raise ValueError(
-                "classifier_mode must be one of: 'prototype', 'soft_knn'"
-            )
+            raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
         if self.supcon_loss_weight < 0:
             raise ValueError("supcon_loss_weight must be non-negative")
         if self.supcon_temperature <= 0:
@@ -196,9 +198,7 @@ class PainDatasetConfig:
                 int(dilation_rate) for dilation_rate in self.tcn_dilation_rates
             ]
             if len(self.tcn_dilation_rates) != self.num_tcn_blocks:
-                raise ValueError(
-                    "tcn_dilation_rates length must match num_tcn_blocks"
-                )
+                raise ValueError("tcn_dilation_rates length must match num_tcn_blocks")
             if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
                 raise ValueError("tcn_dilation_rates values must be > 0")
         if self.sampling_rate_hz <= 0:

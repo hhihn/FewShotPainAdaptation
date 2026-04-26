@@ -52,7 +52,9 @@ class PainMetaDataset:
         """
         self.logger = setup_logger("PainMetaDataset")
         self.config = config or PainDatasetConfig()
-        self.task_class_ids = tuple(int(class_id) for class_id in self.config.task_class_ids)
+        self.task_class_ids = tuple(
+            int(class_id) for class_id in self.config.task_class_ids
+        )
         self.data_dir = Path(data_dir)
         self.logger.debug(f"Data directory: {self.data_dir}")
         self.normalize = normalize
@@ -124,8 +126,12 @@ class PainMetaDataset:
             for split_name, split_mask in self.split_masks.items()
         }
         if self.has_predefined_split:
-            train_count = int(np.sum(self.split_masks.get("train", np.zeros(0, dtype=bool))))
-            test_count = int(np.sum(self.split_masks.get("test", np.zeros(0, dtype=bool))))
+            train_count = int(
+                np.sum(self.split_masks.get("train", np.zeros(0, dtype=bool)))
+            )
+            test_count = int(
+                np.sum(self.split_masks.get("test", np.zeros(0, dtype=bool)))
+            )
             self.logger.info(
                 f"  Predefined split counts: train={train_count}, test={test_count}"
             )
@@ -157,10 +163,9 @@ class PainMetaDataset:
             self.data_dir,
         )
         for candidate in candidates:
-            if (
-                (candidate / self.config.biovid_train_split_dir).is_dir()
-                and (candidate / self.config.biovid_test_split_dir).is_dir()
-            ):
+            if (candidate / self.config.biovid_train_split_dir).is_dir() and (
+                candidate / self.config.biovid_test_split_dir
+            ).is_dir():
                 return candidate
         raise FileNotFoundError(
             "Could not resolve BioVid PartA directory with Train/Test subfolders from "
@@ -211,7 +216,8 @@ class PainMetaDataset:
                 data_files = sorted(modality_dir.glob("*_data.npy"))
                 label_files = sorted(modality_dir.glob("*_label.npy"))
                 data_map = {
-                    self._subject_key_from_data_filename(path): path for path in data_files
+                    self._subject_key_from_data_filename(path): path
+                    for path in data_files
                 }
                 label_map = {
                     self._subject_key_from_label_filename(path): path
@@ -231,7 +237,10 @@ class PainMetaDataset:
 
             common_subjects = sorted(
                 set.intersection(
-                    *(set(modality_data_maps[modality].keys()) for modality in modalities)
+                    *(
+                        set(modality_data_maps[modality].keys())
+                        for modality in modalities
+                    )
                 )
             )
             if not common_subjects:
@@ -239,11 +248,17 @@ class PainMetaDataset:
 
             split_maps[split_name] = {
                 "data": {
-                    modality: {subject: modality_data_maps[modality][subject] for subject in common_subjects}
+                    modality: {
+                        subject: modality_data_maps[modality][subject]
+                        for subject in common_subjects
+                    }
                     for modality in modalities
                 },
                 "labels": {
-                    modality: {subject: modality_label_maps[modality][subject] for subject in common_subjects}
+                    modality: {
+                        subject: modality_label_maps[modality][subject]
+                        for subject in common_subjects
+                    }
                     for modality in modalities
                 },
             }
@@ -257,7 +272,8 @@ class PainMetaDataset:
             subject_key: idx for idx, subject_key in enumerate(sorted_subject_keys)
         }
         self.biovid_subject_int_to_key = {
-            idx: subject_key for subject_key, idx in self.biovid_subject_key_to_int.items()
+            idx: subject_key
+            for subject_key, idx in self.biovid_subject_key_to_int.items()
         }
 
         X_rows = []
@@ -286,7 +302,9 @@ class PainMetaDataset:
                         )
                     modality_arrays.append(data_array.astype(np.float32, copy=False))
 
-                    labels = np.load(split_label_maps[modality][subject_key]).reshape(-1)
+                    labels = np.load(split_label_maps[modality][subject_key]).reshape(
+                        -1
+                    )
                     labels = labels.astype(np.int32, copy=False)
                     if reference_labels is None:
                         reference_labels = labels
@@ -296,7 +314,9 @@ class PainMetaDataset:
                             f"subject={subject_key}"
                         )
 
-                subject_X = np.concatenate(modality_arrays, axis=2).astype(np.float32, copy=False)
+                subject_X = np.concatenate(modality_arrays, axis=2).astype(
+                    np.float32, copy=False
+                )
                 subject_y = reference_labels
                 if subject_X.shape[0] != subject_y.shape[0]:
                     raise ValueError(
@@ -342,7 +362,9 @@ class PainMetaDataset:
             base_index = self._build_base_index_for_mask(split_mask)
             self.base_index_by_split[split_name] = base_index
             if self.window_shift_enabled:
-                self.index_by_split[split_name] = self._build_window_shift_index(base_index)
+                self.index_by_split[split_name] = self._build_window_shift_index(
+                    base_index
+                )
             else:
                 self.index_by_split[split_name] = base_index
 
@@ -373,9 +395,7 @@ class PainMetaDataset:
         normalized_split = split.lower()
         if normalized_split not in self.split_masks:
             available = ", ".join(sorted(self.split_masks.keys()))
-            raise ValueError(
-                f"Unknown split '{split}'. Available splits: {available}"
-            )
+            raise ValueError(f"Unknown split '{split}'. Available splits: {available}")
         return self.split_masks[normalized_split]
 
     def _get_index_for_split(self, split: str) -> Dict[int, Dict[int, np.ndarray]]:
@@ -471,11 +491,13 @@ class PainMetaDataset:
                 if sample_indices.size == 0:
                     expanded_index[subject][class_id] = np.empty((0, 2), dtype=np.int64)
                     continue
-                repeated_sample_indices = np.repeat(sample_indices, window_start_indices.size)
-                repeated_starts = np.tile(window_start_indices, sample_indices.size)
-                refs = np.column_stack((repeated_sample_indices, repeated_starts)).astype(
-                    np.int64, copy=False
+                repeated_sample_indices = np.repeat(
+                    sample_indices, window_start_indices.size
                 )
+                repeated_starts = np.tile(window_start_indices, sample_indices.size)
+                refs = np.column_stack(
+                    (repeated_sample_indices, repeated_starts)
+                ).astype(np.int64, copy=False)
                 expanded_index[subject][class_id] = refs
 
         return expanded_index
@@ -483,7 +505,9 @@ class PainMetaDataset:
     def _extract_windows(self, refs: np.ndarray) -> np.ndarray:
         """Extract fixed windows from [sample_idx, start_idx] references."""
         if refs.size == 0:
-            return np.empty((0, self.window_length_samples, self.X.shape[2]), dtype=self.X.dtype)
+            return np.empty(
+                (0, self.window_length_samples, self.X.shape[2]), dtype=self.X.dtype
+            )
 
         if refs.ndim != 2 or refs.shape[1] != 2:
             raise ValueError(
@@ -497,7 +521,9 @@ class PainMetaDataset:
             dtype=self.X.dtype,
         )
         for i, (sample_idx, start_idx) in enumerate(zip(sample_indices, start_indices)):
-            windows[i] = self.X[sample_idx, start_idx : start_idx + self.window_length_samples, :]
+            windows[i] = self.X[
+                sample_idx, start_idx : start_idx + self.window_length_samples, :
+            ]
         return windows
 
     def _gather_samples(self, refs_or_indices: np.ndarray) -> np.ndarray:
@@ -547,10 +573,16 @@ class PainMetaDataset:
         total_augmented = 0
         for class_id in range(self.config.n_way):
             original_count = int(
-                sum(len(self.base_index[subject][class_id]) for subject in self.unique_subjects)
+                sum(
+                    len(self.base_index[subject][class_id])
+                    for subject in self.unique_subjects
+                )
             )
             augmented_count = int(
-                sum(len(self.index[subject][class_id]) for subject in self.unique_subjects)
+                sum(
+                    len(self.index[subject][class_id])
+                    for subject in self.unique_subjects
+                )
             )
             created_count = augmented_count - original_count
             total_original += original_count
@@ -743,7 +775,9 @@ class PainMetaDataset:
                 count += subject_data.shape[0] * subject_data.shape[1]
 
         if count == 0:
-            raise ValueError("No samples available to compute split normalization stats")
+            raise ValueError(
+                "No samples available to compute split normalization stats"
+            )
 
         mean = sum_values / count
         variance = np.maximum((sum_square_values / count) - np.square(mean), 0.0)
@@ -1251,7 +1285,9 @@ class PainMetaDataset:
         query_subject_ids_out = np.concatenate(query_subject_ids_out, axis=0)
 
         if normalize_mode == "subject":
-            support_X = self._normalize_data_by_subjects(support_X, support_subject_ids_out)
+            support_X = self._normalize_data_by_subjects(
+                support_X, support_subject_ids_out
+            )
             query_X = self._normalize_data_by_subjects(query_X, query_subject_ids_out)
         elif normalize_mode == "split":
             if split_normalization_stats is None:

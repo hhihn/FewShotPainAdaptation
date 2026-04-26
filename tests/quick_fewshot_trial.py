@@ -80,13 +80,17 @@ def _cyclic_task_batch(
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _write_csv(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     flat_payload = {
-        key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value
+        key: json.dumps(value, sort_keys=True)
+        if isinstance(value, (dict, list))
+        else value
         for key, value in payload.items()
     }
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -129,9 +133,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         heldout_eval_tasks=max(1, args.heldout_tasks),
         num_epochs=1,
         single_loso_fold=True,
-        train_prefetch_batches=max(
-            1, int(getattr(args, "train_prefetch_batches", 2))
-        ),
+        train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
         embedding_dim=args.embedding_dim,
         num_tcn_blocks=len(filters_list),
         filters_list=filters_list,
@@ -165,7 +167,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
             sample_task=train_tasks[0],
             output_path=args.model_architecture_output,
         )
-    train_eval_tasks = train_tasks[: max(1, min(args.train_eval_tasks, len(train_tasks)))]
+    train_eval_tasks = train_tasks[
+        : max(1, min(args.train_eval_tasks, len(train_tasks)))
+    ]
     val_tasks = _sample_subject_tasks(fold["val_sampler"], args.val_tasks)
     heldout_tasks = _sample_tasks(fold["test_sampler"], args.heldout_tasks)
 
@@ -197,7 +201,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     for update_idx in range(max(1, args.updates)):
         update_start = time.perf_counter()
         task_batch = _cyclic_task_batch(train_tasks, update_idx, args.task_batch_size)
-        loss, task_loss, accuracy, contrastive_loss = learner.train_batch_step(task_batch)
+        loss, task_loss, accuracy, contrastive_loss = learner.train_batch_step(
+            task_batch
+        )
         elapsed = time.perf_counter() - start_time
         avg_update_time = elapsed / max(1, update_idx + 1)
         eta_seconds = (total_updates - (update_idx + 1)) * avg_update_time
@@ -249,7 +255,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
             ]
         )
     )
-    heldout_generalization_gap = float(after_train["accuracy"] - after_heldout["accuracy"])
+    heldout_generalization_gap = float(
+        after_train["accuracy"] - after_heldout["accuracy"]
+    )
 
     payload: dict[str, Any] = {
         "script": "tests/quick_fewshot_trial.py",
@@ -288,7 +296,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "update_history": update_history,
         "final_composite_accuracy": final_composite_accuracy,
         "heldout_generalization_gap": heldout_generalization_gap,
-        "train_accuracy_delta": float(after_train["accuracy"] - before_train["accuracy"]),
+        "train_accuracy_delta": float(
+            after_train["accuracy"] - before_train["accuracy"]
+        ),
         "val_accuracy_delta": float(after_val["accuracy"] - before_val["accuracy"]),
         "heldout_accuracy_delta": float(
             after_heldout["accuracy"] - before_heldout["accuracy"]

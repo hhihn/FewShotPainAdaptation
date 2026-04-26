@@ -356,7 +356,9 @@ class FewShotPainLearner:
         """Compiled optimizer update over one batch of episodic tasks."""
         with tf.GradientTape() as tape:
 
-            def _per_task_step(inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]):
+            def _per_task_step(
+                inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor],
+            ):
                 support_x, support_y, query_x, query_y = inputs
                 support_x = self._augment_training_inputs(support_x)
                 query_x = self._augment_training_inputs(query_x)
@@ -466,9 +468,7 @@ class FewShotPainLearner:
         labels = tf.reshape(labels, [-1])
         same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
         different_label = tf.logical_not(same_label)
-        indices_not_equal = tf.logical_not(
-            tf.eye(tf.shape(labels)[0], dtype=tf.bool)
-        )
+        indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
         positive_mask = tf.logical_and(same_label, indices_not_equal)
 
         anchor_positive_dist = tf.expand_dims(pairwise_distance, 2)
@@ -516,7 +516,10 @@ class FewShotPainLearner:
         model_aux_loss = self._compute_model_aux_loss(dtype=task_loss.dtype)
 
         embeddings = tf.concat(
-            [episode_outputs["support_embeddings"], episode_outputs["query_embeddings"]],
+            [
+                episode_outputs["support_embeddings"],
+                episode_outputs["query_embeddings"],
+            ],
             axis=0,
         )
         labels = tf.concat([support_y, query_y], axis=0)
@@ -524,16 +527,14 @@ class FewShotPainLearner:
         contrastive_loss = tf.constant(0.0, dtype=task_loss.dtype)
         triplet_loss = tf.constant(0.0, dtype=task_loss.dtype)
         if self.supcon_loss_weight > 0:
-            contrastive_loss = (
-                tf.cast(self.supcon_loss_weight, task_loss.dtype)
-                * self._compute_supervised_contrastive_loss(embeddings, labels)
-            )
+            contrastive_loss = tf.cast(
+                self.supcon_loss_weight, task_loss.dtype
+            ) * self._compute_supervised_contrastive_loss(embeddings, labels)
             total_aux_loss += contrastive_loss
         if self.triplet_loss_weight > 0:
-            triplet_loss = (
-                tf.cast(self.triplet_loss_weight, task_loss.dtype)
-                * self._compute_batch_all_triplet_loss(embeddings, labels)
-            )
+            triplet_loss = tf.cast(
+                self.triplet_loss_weight, task_loss.dtype
+            ) * self._compute_batch_all_triplet_loss(embeddings, labels)
             total_aux_loss += triplet_loss
         total_loss = task_loss + total_aux_loss
 
@@ -589,8 +590,12 @@ class FewShotPainLearner:
         support_y_np = np.stack(
             [task_dict["support_y"] for task_dict in task_batch], axis=0
         )
-        query_x_np = np.stack([task_dict["query_X"] for task_dict in task_batch], axis=0)
-        query_y_np = np.stack([task_dict["query_y"] for task_dict in task_batch], axis=0)
+        query_x_np = np.stack(
+            [task_dict["query_X"] for task_dict in task_batch], axis=0
+        )
+        query_y_np = np.stack(
+            [task_dict["query_y"] for task_dict in task_batch], axis=0
+        )
         return support_x_np, support_y_np, query_x_np, query_y_np
 
     @staticmethod
@@ -633,9 +638,12 @@ class FewShotPainLearner:
         prefetch_batches = max(1, int(self.train_prefetch_batches))
         if prefetch_batches <= 1:
             for batch_size in batch_sizes:
-                yield batch_size, self._sample_and_stack_task_batch_numpy(
-                    sampler,
+                yield (
                     batch_size,
+                    self._sample_and_stack_task_batch_numpy(
+                        sampler,
+                        batch_size,
+                    ),
                 )
             return
 
@@ -643,10 +651,7 @@ class FewShotPainLearner:
             pending = deque()
             next_batch_idx = 0
 
-            while (
-                next_batch_idx < len(batch_sizes)
-                and len(pending) < prefetch_batches
-            ):
+            while next_batch_idx < len(batch_sizes) and len(pending) < prefetch_batches:
                 batch_size = batch_sizes[next_batch_idx]
                 pending.append(
                     (
@@ -1059,9 +1064,13 @@ class FewShotPainLearner:
                     tf.stack([row_indices, query_y], axis=1),
                 )
                 inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-                inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
+                inter_class_scores = tf.boolean_mask(
+                    similarity_scores, inter_class_mask
+                )
 
-                losses.append(tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1]))
+                losses.append(
+                    tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1])
+                )
                 task_losses.append(
                     tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
                 )
@@ -1075,8 +1084,12 @@ class FewShotPainLearner:
                 all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
                 all_inter_class_scores.append(tf.reshape(inter_class_scores, [-1]))
 
-        y_true = tf.concat(all_true_tensors, axis=0).numpy().astype(np.int32, copy=False)
-        y_pred = tf.concat(all_pred_tensors, axis=0).numpy().astype(np.int32, copy=False)
+        y_true = (
+            tf.concat(all_true_tensors, axis=0).numpy().astype(np.int32, copy=False)
+        )
+        y_pred = (
+            tf.concat(all_pred_tensors, axis=0).numpy().astype(np.int32, copy=False)
+        )
         metrics = self._compute_macro_metrics(y_true, y_pred)
         metrics.update(
             self._compute_similarity_metrics(
@@ -1390,8 +1403,10 @@ class FewShotPainLearner:
 
         num_subjects = len(fold_subjects)
         fold_checkpoint_interval = max(1, int(np.ceil(num_subjects / 10)))
-        total_train_steps = num_subjects * num_epochs * max(
-            1, int(np.ceil(tasks_per_epoch / self.train_batch_size))
+        total_train_steps = (
+            num_subjects
+            * num_epochs
+            * max(1, int(np.ceil(tasks_per_epoch / self.train_batch_size)))
         )
         completed_train_steps = 0
         train_start_time = time.perf_counter()
@@ -1474,23 +1489,25 @@ class FewShotPainLearner:
                     train_sampler,
                     tasks_per_epoch,
                 ):
-                    loss, task_loss, acc, contrastive_loss = self._train_batch_step_tensors(
-                        support_x_batch=tf.convert_to_tensor(
-                            support_x_np,
-                            dtype=tf.float32,
-                        ),
-                        support_y_batch=tf.convert_to_tensor(
-                            support_y_np,
-                            dtype=tf.int32,
-                        ),
-                        query_x_batch=tf.convert_to_tensor(
-                            query_x_np,
-                            dtype=tf.float32,
-                        ),
-                        query_y_batch=tf.convert_to_tensor(
-                            query_y_np,
-                            dtype=tf.int32,
-                        ),
+                    loss, task_loss, acc, contrastive_loss = (
+                        self._train_batch_step_tensors(
+                            support_x_batch=tf.convert_to_tensor(
+                                support_x_np,
+                                dtype=tf.float32,
+                            ),
+                            support_y_batch=tf.convert_to_tensor(
+                                support_y_np,
+                                dtype=tf.int32,
+                            ),
+                            query_x_batch=tf.convert_to_tensor(
+                                query_x_np,
+                                dtype=tf.float32,
+                            ),
+                            query_y_batch=tf.convert_to_tensor(
+                                query_y_np,
+                                dtype=tf.int32,
+                            ),
+                        )
                     )
                     processed_tasks += current_batch_size
                     processed_batches += 1
@@ -1601,9 +1618,8 @@ class FewShotPainLearner:
                         )
 
                     should_run_validation = (
-                        (processed_batches % val_every_n_train_steps == 0)
-                        or (processed_tasks == tasks_per_epoch)
-                    )
+                        processed_batches % val_every_n_train_steps == 0
+                    ) or (processed_tasks == tasks_per_epoch)
                     if not should_run_validation:
                         continue
 
@@ -1619,10 +1635,13 @@ class FewShotPainLearner:
                             val_batch_size, val_tasks - val_task_start
                         )
                         val_task_batch = [
-                            val_sampler.get_task() for _ in range(current_val_batch_size)
+                            val_sampler.get_task()
+                            for _ in range(current_val_batch_size)
                         ]
-                        val_loss, val_metrics = self._evaluate_task_batch_loss_and_metrics(
-                            val_task_batch,
+                        val_loss, val_metrics = (
+                            self._evaluate_task_batch_loss_and_metrics(
+                                val_task_batch,
+                            )
                         )
                         validation_losses.append(val_loss)
                         validation_task_losses.append(val_metrics["task_loss"])
@@ -1707,7 +1726,9 @@ class FewShotPainLearner:
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
                 avg_val_loss = (
-                    float(np.mean(epoch_val_losses)) if epoch_val_losses else float("nan")
+                    float(np.mean(epoch_val_losses))
+                    if epoch_val_losses
+                    else float("nan")
                 )
                 avg_val_acc = (
                     float(np.mean(epoch_val_accs)) if epoch_val_accs else float("nan")
@@ -1737,7 +1758,10 @@ class FewShotPainLearner:
                         f"overall_eta={self._format_seconds(overall_eta_seconds)}"
                     )
 
-                if self.logging_verbosity >= 1 and fold_summary_reference["train"] is not None:
+                if (
+                    self.logging_verbosity >= 1
+                    and fold_summary_reference["train"] is not None
+                ):
                     self._log_composite_summary(
                         prefix=(
                             f"[Fold {fold + 1}/{num_subjects}] "
@@ -1848,8 +1872,12 @@ class FewShotPainLearner:
                 }
                 size_results = cv_results["heldout_eval_by_task_size"][size_key]
                 size_results["zero_shot_losses"].append(zero_shot_loss)
-                size_results["zero_shot_accuracies"].append(zero_shot_metrics["accuracy"])
-                size_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
+                size_results["zero_shot_accuracies"].append(
+                    zero_shot_metrics["accuracy"]
+                )
+                size_results["zero_shot_precisions"].append(
+                    zero_shot_metrics["precision"]
+                )
                 size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
                 size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
                 size_results["zero_shot_intra_class_similarities"].append(

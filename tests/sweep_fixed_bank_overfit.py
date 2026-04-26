@@ -128,9 +128,12 @@ def main() -> None:
     )
 
     results: list[SweepResult] = []
-    for run_index, (fusion_method, classifier_mode, normalize_mode, num_fixed_tasks) in enumerate(
-        combinations, start=1
-    ):
+    for run_index, (
+        fusion_method,
+        classifier_mode,
+        normalize_mode,
+        num_fixed_tasks,
+    ) in enumerate(combinations, start=1):
         logger.info(
             f"[Run {run_index}/{len(combinations)}] "
             f"fusion={fusion_method}, classifier={classifier_mode}, "

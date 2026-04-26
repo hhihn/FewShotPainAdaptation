@@ -21,7 +21,9 @@ from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
 
 
-def _build_model(config: PainDatasetConfig, fusion_method: str) -> MultimodalPrototypicalNetwork:
+def _build_model(
+    config: PainDatasetConfig, fusion_method: str
+) -> MultimodalPrototypicalNetwork:
     return MultimodalPrototypicalNetwork(
         sequence_length=config.sequence_length,
         num_sensors=len(config.sensor_idx),
@@ -69,7 +71,9 @@ def _extract_split_arrays(
     normalize_mode: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     valid_raw_labels = np.array(dataset.task_class_ids, dtype=np.int32)
-    label_to_episode = {raw_label: idx for idx, raw_label in enumerate(valid_raw_labels)}
+    label_to_episode = {
+        raw_label: idx for idx, raw_label in enumerate(valid_raw_labels)
+    }
     valid_mask = np.isin(dataset.y, valid_raw_labels)
 
     X = dataset.X[valid_mask].copy()
@@ -82,7 +86,9 @@ def _extract_split_arrays(
     elif normalize_mode == "none":
         pass
     else:
-        raise ValueError("normalize_mode must be 'subject' or 'none' for embedding probes")
+        raise ValueError(
+            "normalize_mode must be 'subject' or 'none' for embedding probes"
+        )
 
     train_mask = np.isin(subjects, np.array(train_subjects, dtype=np.int32))
     heldout_mask = subjects == int(held_out_subject)

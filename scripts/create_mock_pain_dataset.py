@@ -38,7 +38,9 @@ def _build_class_template(
     base_phase = 0.4 * class_id
     base_amp = 0.9 + 0.15 * class_id
 
-    modality_offsets = np.array([0.10, -0.05, 0.25, -0.12, 0.18, -0.08], dtype=np.float32)
+    modality_offsets = np.array(
+        [0.10, -0.05, 0.25, -0.12, 0.18, -0.08], dtype=np.float32
+    )
     modality_scales = np.array([1.0, 0.7, 1.2, 0.85, 1.1, 0.95], dtype=np.float32)
 
     for modality_idx in range(num_modalities):
@@ -97,10 +99,15 @@ def generate_mock_dataset(
             sample += subject_shift
 
             # Small within-class noise keeps samples similar while preserving class identity.
-            sample += rng.normal(loc=0.0, scale=0.04, size=sample.shape).astype(np.float32)
-            sample += 0.03 * np.sin(
-                np.linspace(0.0, 6.0 * np.pi, sequence_length, dtype=np.float32)
-            )[:, None]
+            sample += rng.normal(loc=0.0, scale=0.04, size=sample.shape).astype(
+                np.float32
+            )
+            sample += (
+                0.03
+                * np.sin(
+                    np.linspace(0.0, 6.0 * np.pi, sequence_length, dtype=np.float32)
+                )[:, None]
+            )
 
             X[sample_idx, :, :, 0] = sample
             y[sample_idx, class_id] = 1

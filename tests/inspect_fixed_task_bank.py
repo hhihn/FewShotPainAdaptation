@@ -228,9 +228,7 @@ def inspect_fixed_task_bank(
         all_splits.append(np.array(["support"] * len(task["support_y"]), dtype="<U8"))
         all_splits.append(np.array(["query"] * len(task["query_y"]), dtype="<U8"))
         all_prototypes.append(prototypes)
-        all_prototype_task_ids.append(
-            np.full(config.n_way, task_idx, dtype=np.int32)
-        )
+        all_prototype_task_ids.append(np.full(config.n_way, task_idx, dtype=np.int32))
         all_prototype_labels.append(np.arange(config.n_way, dtype=np.int32))
 
     output = Path(output_path)

@@ -49,7 +49,9 @@ def _metric_summary(values: list[float]) -> dict[str, float]:
 def _build_summary(cv_results: dict[str, Any]) -> dict[str, Any]:
     return {
         "num_folds": int(len(cv_results.get("zero_shot_accuracies", []))),
-        "zero_shot_accuracy": _metric_summary(cv_results.get("zero_shot_accuracies", [])),
+        "zero_shot_accuracy": _metric_summary(
+            cv_results.get("zero_shot_accuracies", [])
+        ),
         "k_shot_accuracy": _metric_summary(cv_results.get("k_shot_accuracies", [])),
         "zero_shot_loss": _metric_summary(cv_results.get("zero_shot_losses", [])),
         "k_shot_loss": _metric_summary(cv_results.get("k_shot_losses", [])),
@@ -60,7 +62,9 @@ def _build_summary(cv_results: dict[str, Any]) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
@@ -99,9 +103,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         val_batch_size=max(1, int(args.val_batch_size)),
         val_every_n_train_steps=max(1, int(args.val_every_n_train_steps)),
         summary_every_n_train_steps=max(1, int(args.summary_every_n_train_steps)),
-        train_prefetch_batches=max(
-            1, int(getattr(args, "train_prefetch_batches", 2))
-        ),
+        train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
         train_progress_write_every_n_batches=max(
             1, int(args.train_progress_write_every_n_batches)
         ),

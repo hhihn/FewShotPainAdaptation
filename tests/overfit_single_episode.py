@@ -66,12 +66,12 @@ def _pairwise_bank_cosine_stats(
         normalized_embeddings, normalized_embeddings, transpose_b=True
     )
     labels = tf.reshape(labels, [-1])
-    same_class_mask = tf.equal(
-        tf.expand_dims(labels, 1), tf.expand_dims(labels, 0)
-    )
+    same_class_mask = tf.equal(tf.expand_dims(labels, 1), tf.expand_dims(labels, 0))
     diag_mask = tf.eye(tf.shape(labels)[0], dtype=tf.bool)
     same_class_mask = tf.logical_and(same_class_mask, tf.logical_not(diag_mask))
-    diff_class_mask = tf.logical_and(tf.logical_not(same_class_mask), tf.logical_not(diag_mask))
+    diff_class_mask = tf.logical_and(
+        tf.logical_not(same_class_mask), tf.logical_not(diag_mask)
+    )
 
     same_values = tf.boolean_mask(similarities, same_class_mask)
     diff_values = tf.boolean_mask(similarities, diff_class_mask)
@@ -107,7 +107,9 @@ def _collect_bank_embeddings(
         support_x, support_y, query_x, query_y = _to_tensors(task)
         support_embeddings = model.encode(support_x, training=False)
         query_embeddings = model.encode(query_x, training=False)
-        bank_embeddings.append(tf.concat([support_embeddings, query_embeddings], axis=0))
+        bank_embeddings.append(
+            tf.concat([support_embeddings, query_embeddings], axis=0)
+        )
         bank_labels.append(tf.concat([support_y, query_y], axis=0))
     return tf.concat(bank_embeddings, axis=0), tf.concat(bank_labels, axis=0)
 
@@ -184,17 +186,13 @@ def _compute_supervised_contrastive_loss(
 ) -> tf.Tensor:
     """Label-aware supervised contrastive loss over one episode."""
     normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
-    logits = tf.matmul(
-        normalized_embeddings, normalized_embeddings, transpose_b=True
-    )
+    logits = tf.matmul(normalized_embeddings, normalized_embeddings, transpose_b=True)
     logits = logits / tf.cast(temperature, logits.dtype)
 
     batch_size = tf.shape(labels)[0]
     labels = tf.reshape(labels, (-1, 1))
     positive_mask = tf.cast(tf.equal(labels, tf.transpose(labels)), logits.dtype)
-    logits_mask = tf.ones_like(positive_mask) - tf.eye(
-        batch_size, dtype=logits.dtype
-    )
+    logits_mask = tf.ones_like(positive_mask) - tf.eye(batch_size, dtype=logits.dtype)
     positive_mask = positive_mask * logits_mask
 
     logits = logits - tf.reduce_max(logits, axis=1, keepdims=True)
@@ -819,14 +817,16 @@ def run_fixed_episode_bank_overfit(
                         "For subject_mode='cross_subject_pairs' and val_mode='same_subject_pair', "
                         "num_val_tasks must equal num_fixed_tasks so each train pair gets one disjoint val task."
                     )
-                fixed_tasks, val_tasks, subject_pairs = _sample_paired_cross_subject_banks(
-                    dataset=dataset,
-                    train_subjects=train_subjects,
-                    k_shot=k_shot,
-                    q_query=q_query,
-                    num_pairs=num_fixed_tasks,
-                    normalize_mode=normalize_mode,
-                    rng=rng,
+                fixed_tasks, val_tasks, subject_pairs = (
+                    _sample_paired_cross_subject_banks(
+                        dataset=dataset,
+                        train_subjects=train_subjects,
+                        k_shot=k_shot,
+                        q_query=q_query,
+                        num_pairs=num_fixed_tasks,
+                        normalize_mode=normalize_mode,
+                        rng=rng,
+                    )
                 )
                 logger.info(
                     f"Paired cross-subject train/validation banks sampled: "
@@ -880,7 +880,9 @@ def run_fixed_episode_bank_overfit(
                 )
                 support_embeddings = episode_outputs["support_embeddings"]
                 query_embeddings = episode_outputs["query_embeddings"]
-                all_embeddings = tf.concat([support_embeddings, query_embeddings], axis=0)
+                all_embeddings = tf.concat(
+                    [support_embeddings, query_embeddings], axis=0
+                )
                 all_labels = tf.concat([support_y, query_y], axis=0)
 
                 if config.supcon_loss_weight > 0:
@@ -905,7 +907,8 @@ def run_fixed_episode_bank_overfit(
                     task_loss
                     + aux_loss
                     + tf.cast(config.supcon_loss_weight, task_loss.dtype) * supcon_loss
-                    + tf.cast(config.triplet_loss_weight, task_loss.dtype) * triplet_loss
+                    + tf.cast(config.triplet_loss_weight, task_loss.dtype)
+                    * triplet_loss
                 )
                 per_task_losses.append(total_loss)
 
@@ -915,9 +918,7 @@ def run_fixed_episode_bank_overfit(
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
         report_due = (
-            batch_step == 1
-            or batch_step % log_every == 0
-            or batch_step == num_batches
+            batch_step == 1 or batch_step % log_every == 0 or batch_step == num_batches
         )
         if not report_due:
             continue
@@ -1090,7 +1091,12 @@ def main() -> None:
         "--subject-mode",
         type=str,
         default="mixed",
-        choices=("mixed", "single_subject_bank", "cross_subject_task", "cross_subject_pairs"),
+        choices=(
+            "mixed",
+            "single_subject_bank",
+            "cross_subject_task",
+            "cross_subject_pairs",
+        ),
         help="Sample fixed-bank tasks from all train subjects, one train subject only, a single fixed support/query pair, or many support/query pairs.",
     )
     parser.add_argument(
