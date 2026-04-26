@@ -1260,6 +1260,42 @@ class FewShotPainLearner:
             f"elapsed_seconds={elapsed_seconds:.2f}"
         )
 
+    def _log_cross_validation_aggregate(
+        self,
+        cv_results: dict,
+        *,
+        title: str,
+    ) -> None:
+        """Log aggregate cross-validation metrics in the same format as final summary."""
+        self.logger.info(f"\n{'=' * 60}")
+        self.logger.info(title)
+        self.logger.info(f"{'=' * 60}")
+        self.logger.info(
+            f"Average Zero-shot Accuracy: {np.mean(cv_results['zero_shot_accuracies']):.4f} "
+            f"(±{np.std(cv_results['zero_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average K-shot Accuracy: {np.mean(cv_results['k_shot_accuracies']):.4f} "
+            f"(±{np.std(cv_results['k_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average Zero-shot Loss: {np.mean(cv_results['zero_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            "Average Zero-shot Similarities: "
+            f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(
+            "Average K-shot Similarities: "
+            f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(f"{'=' * 60}\n")
+
     def train(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
@@ -1353,6 +1389,7 @@ class FewShotPainLearner:
             fold_subjects = self.cv.subjects
 
         num_subjects = len(fold_subjects)
+        fold_checkpoint_interval = max(1, int(np.ceil(num_subjects / 10)))
         total_train_steps = num_subjects * num_epochs * max(
             1, int(np.ceil(tasks_per_epoch / self.train_batch_size))
         )
@@ -1943,34 +1980,24 @@ class FewShotPainLearner:
                 test_loss=zero_shot_loss,
                 test_accuracy=zero_shot_metrics["accuracy"],
             )
+            completed_folds = fold + 1
+            should_log_checkpoint_summary = (
+                completed_folds < num_subjects
+                and completed_folds % fold_checkpoint_interval == 0
+            )
+            if should_log_checkpoint_summary:
+                completion_pct = 100.0 * completed_folds / max(1, num_subjects)
+                self._log_cross_validation_aggregate(
+                    cv_results,
+                    title=(
+                        "CROSS-VALIDATION RESULTS "
+                        f"({completed_folds}/{num_subjects} folds, {completion_pct:.1f}% complete)"
+                    ),
+                )
 
-        self.logger.info(f"\n{'=' * 60}")
-        self.logger.info("CROSS-VALIDATION RESULTS")
-        self.logger.info(f"{'=' * 60}")
-        self.logger.info(
-            f"Average Zero-shot Accuracy: {np.mean(cv_results['zero_shot_accuracies']):.4f} "
-            f"(±{np.std(cv_results['zero_shot_accuracies']):.4f})"
+        self._log_cross_validation_aggregate(
+            cv_results,
+            title="CROSS-VALIDATION RESULTS",
         )
-        self.logger.info(
-            f"Average K-shot Accuracy: {np.mean(cv_results['k_shot_accuracies']):.4f} "
-            f"(±{np.std(cv_results['k_shot_accuracies']):.4f})"
-        )
-        self.logger.info(
-            f"Average Zero-shot Loss: {np.mean(cv_results['zero_shot_losses']):.4f}"
-        )
-        self.logger.info(
-            f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
-        )
-        self.logger.info(
-            "Average Zero-shot Similarities: "
-            f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
-            f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
-        )
-        self.logger.info(
-            "Average K-shot Similarities: "
-            f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
-            f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
-        )
-        self.logger.info(f"{'=' * 60}\n")
 
         return cv_results
