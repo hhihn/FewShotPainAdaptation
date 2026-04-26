@@ -58,6 +58,7 @@ class FewShotPainLearner:
             1, int(getattr(self.config, "train_prefetch_batches", 2))
         )
         self._compiled_train_batch_step = None
+        self._compiled_eval_batch_step = None
         self.logging_verbosity = int(getattr(config, "logging_verbosity", 1))
         self.logger = setup_logger("few_shot_pain_learner")
         if self.logging_verbosity <= 0:
@@ -209,6 +210,7 @@ class FewShotPainLearner:
         )
         self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate)
         self._build_compiled_train_batch_step()
+        self._build_compiled_eval_batch_step()
 
     def _build_compiled_train_batch_step(self) -> None:
         """Build a compiled train-step function bound to current model/optimizer vars."""
@@ -237,6 +239,111 @@ class FewShotPainLearner:
                 ),
                 tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
             ],
+        )
+
+    def _build_compiled_eval_batch_step(self) -> None:
+        """Build a compiled evaluation function for batches of episodic tasks."""
+        self._compiled_eval_batch_step = tf.function(
+            self._eval_task_batch_step_compiled_impl,
+            reduce_retracing=True,
+            input_signature=[
+                tf.TensorSpec(
+                    shape=(None, None, self.sequence_length, self.num_sensors),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, None), dtype=tf.int32),
+                tf.TensorSpec(
+                    shape=(None, None, self.sequence_length, self.num_sensors),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, None), dtype=tf.int32),
+            ],
+        )
+
+    def _eval_task_batch_step_compiled_impl(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+    ]:
+        """Compiled evaluation over a batch of tasks without optimizer updates."""
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+
+        def _per_task_eval(inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]):
+            support_x, support_y, query_x, query_y = inputs
+            task_outputs = self._forward_task(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                query_y=query_y,
+                training=False,
+                return_similarity_scores=True,
+            )
+            logits = task_outputs["logits"]
+            similarity_scores = task_outputs["similarity_scores"]
+            loss = tf.cast(task_outputs["loss"], tf.float32)
+            task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
+            contrastive_loss = tf.cast(task_outputs["contrastive_loss"], tf.float32)
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+
+            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+            intra_class_scores = tf.gather_nd(
+                similarity_scores,
+                tf.stack([row_indices, query_y], axis=1),
+            )
+            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
+
+            return (
+                loss,
+                task_loss,
+                contrastive_loss,
+                query_y,
+                pred,
+                intra_class_scores,
+                inter_class_scores,
+            )
+
+        (
+            losses,
+            task_losses,
+            contrastive_losses,
+            y_true_batch,
+            y_pred_batch,
+            intra_class_scores_batch,
+            inter_class_scores_batch,
+        ) = tf.map_fn(
+            _per_task_eval,
+            (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
+            fn_output_signature=(
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+            ),
+            parallel_iterations=16,
+        )
+
+        return (
+            tf.reshape(losses, [-1]),
+            tf.reshape(task_losses, [-1]),
+            tf.reshape(contrastive_losses, [-1]),
+            tf.reshape(y_true_batch, [-1]),
+            tf.reshape(y_pred_batch, [-1]),
+            tf.reshape(intra_class_scores_batch, [-1]),
+            tf.reshape(inter_class_scores_batch, [-1]),
         )
 
     def _train_batch_step_compiled_impl(
@@ -655,6 +762,115 @@ class FewShotPainLearner:
             query_y_batch=query_y_batch,
         )
 
+    def _eval_task_batch_step_eager_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+    ]:
+        """Eager fallback for task-batch evaluation without optimizer updates."""
+        losses = []
+        task_losses = []
+        contrastive_losses = []
+        true_labels = []
+        pred_labels = []
+        intra_scores = []
+        inter_scores = []
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+
+        for support_x, support_y, query_x, query_y in zip(
+            tf.unstack(support_x_batch, axis=0),
+            tf.unstack(support_y_batch, axis=0),
+            tf.unstack(query_x_batch, axis=0),
+            tf.unstack(query_y_batch, axis=0),
+        ):
+            task_outputs = self._forward_task(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                query_y=query_y,
+                training=False,
+                return_similarity_scores=True,
+            )
+            logits = task_outputs["logits"]
+            similarity_scores = task_outputs["similarity_scores"]
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+            intra_class_scores = tf.gather_nd(
+                similarity_scores,
+                tf.stack([row_indices, query_y], axis=1),
+            )
+            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
+
+            losses.append(tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1]))
+            task_losses.append(
+                tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
+            )
+            contrastive_losses.append(
+                tf.reshape(tf.cast(task_outputs["contrastive_loss"], tf.float32), [1])
+            )
+            true_labels.append(tf.reshape(query_y, [-1]))
+            pred_labels.append(tf.reshape(pred, [-1]))
+            intra_scores.append(tf.reshape(intra_class_scores, [-1]))
+            inter_scores.append(tf.reshape(inter_class_scores, [-1]))
+
+        return (
+            tf.concat(losses, axis=0),
+            tf.concat(task_losses, axis=0),
+            tf.concat(contrastive_losses, axis=0),
+            tf.concat(true_labels, axis=0),
+            tf.concat(pred_labels, axis=0),
+            tf.concat(intra_scores, axis=0),
+            tf.concat(inter_scores, axis=0),
+        )
+
+    def _eval_task_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+        tf.Tensor,
+    ]:
+        """Run compiled task-batch eval, with eager fallback if compilation fails."""
+        if self._compiled_eval_batch_step is not None:
+            try:
+                return self._compiled_eval_batch_step(
+                    support_x_batch,
+                    support_y_batch,
+                    query_x_batch,
+                    query_y_batch,
+                )
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                self.logger.warning(
+                    "Compiled eval step failed once; falling back to eager for eval batches. "
+                    f"error={exc!r}"
+                )
+                self._compiled_eval_batch_step = None
+        return self._eval_task_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
+        )
+
     @staticmethod
     def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
         """Return True when support/query tensors share identical shapes across tasks."""
@@ -749,8 +965,13 @@ class FewShotPainLearner:
     def _evaluate_task_batch_loss_and_metrics(
         self,
         task_batch: list[dict],
+        *,
+        forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate classification/similarity metrics."""
+        if not task_batch:
+            raise ValueError("task_batch must contain at least one task")
+
         losses = []
         task_losses = []
         contrastive_losses = []
@@ -758,61 +979,101 @@ class FewShotPainLearner:
         all_pred_tensors = []
         all_intra_class_scores = []
         all_inter_class_scores = []
-        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
-        if self._task_batch_has_uniform_shapes(task_batch):
+        use_batched_forward = (
+            forward_batch_size is not None and int(forward_batch_size) > 1
+        )
+
+        if use_batched_forward and self._task_batch_has_uniform_shapes(task_batch):
             (
                 support_x_batch,
                 support_y_batch,
                 query_x_batch,
                 query_y_batch,
             ) = self._stack_task_batch(task_batch)
-            task_iter = zip(
-                tf.unstack(support_x_batch, axis=0),
-                tf.unstack(support_y_batch, axis=0),
-                tf.unstack(query_x_batch, axis=0),
-                tf.unstack(query_y_batch, axis=0),
-            )
-        else:
-            task_iter = (
+            eval_batch_size = max(1, int(forward_batch_size))
+            total_tasks = len(task_batch)
+            for task_start in range(0, total_tasks, eval_batch_size):
+                task_end = min(total_tasks, task_start + eval_batch_size)
                 (
-                    tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32),
-                    tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32),
-                    tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32),
-                    tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32),
+                    batch_losses,
+                    batch_task_losses,
+                    batch_contrastive_losses,
+                    batch_y_true,
+                    batch_y_pred,
+                    batch_intra_scores,
+                    batch_inter_scores,
+                ) = self._eval_task_batch_step_tensors(
+                    support_x_batch=support_x_batch[task_start:task_end],
+                    support_y_batch=support_y_batch[task_start:task_end],
+                    query_x_batch=query_x_batch[task_start:task_end],
+                    query_y_batch=query_y_batch[task_start:task_end],
                 )
-                for task_dict in task_batch
-            )
+                losses.append(tf.reshape(batch_losses, [-1]))
+                task_losses.append(tf.reshape(batch_task_losses, [-1]))
+                contrastive_losses.append(tf.reshape(batch_contrastive_losses, [-1]))
+                all_true_tensors.append(tf.reshape(batch_y_true, [-1]))
+                all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
+                all_intra_class_scores.append(tf.reshape(batch_intra_scores, [-1]))
+                all_inter_class_scores.append(tf.reshape(batch_inter_scores, [-1]))
+        else:
+            class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+            if self._task_batch_has_uniform_shapes(task_batch):
+                (
+                    support_x_batch,
+                    support_y_batch,
+                    query_x_batch,
+                    query_y_batch,
+                ) = self._stack_task_batch(task_batch)
+                task_iter = zip(
+                    tf.unstack(support_x_batch, axis=0),
+                    tf.unstack(support_y_batch, axis=0),
+                    tf.unstack(query_x_batch, axis=0),
+                    tf.unstack(query_y_batch, axis=0),
+                )
+            else:
+                task_iter = (
+                    (
+                        tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32),
+                        tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32),
+                        tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32),
+                        tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32),
+                    )
+                    for task_dict in task_batch
+                )
 
-        for support_x, support_y, query_x, query_y in task_iter:
+            for support_x, support_y, query_x, query_y in task_iter:
+                task_outputs = self._forward_task(
+                    support_x,
+                    support_y,
+                    query_x,
+                    query_y,
+                    training=False,
+                    return_similarity_scores=True,
+                )
+                logits = task_outputs["logits"]
+                similarity_scores = task_outputs["similarity_scores"]
+                pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+                row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+                intra_class_scores = tf.gather_nd(
+                    similarity_scores,
+                    tf.stack([row_indices, query_y], axis=1),
+                )
+                inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+                inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
 
-            task_outputs = self._forward_task(
-                support_x,
-                support_y,
-                query_x,
-                query_y,
-                training=False,
-                return_similarity_scores=True,
-            )
-            logits = task_outputs["logits"]
-            similarity_scores = task_outputs["similarity_scores"]
-            loss = task_outputs["loss"]
-            task_loss = task_outputs["task_loss"]
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
-            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
-            intra_class_scores = tf.gather_nd(
-                similarity_scores,
-                tf.stack([row_indices, query_y], axis=1),
-            )
-            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
-
-            losses.append(tf.cast(loss, tf.float32))
-            task_losses.append(tf.cast(task_loss, tf.float32))
-            contrastive_losses.append(tf.cast(task_outputs["contrastive_loss"], tf.float32))
-            all_true_tensors.append(query_y)
-            all_pred_tensors.append(pred)
-            all_intra_class_scores.append(intra_class_scores)
-            all_inter_class_scores.append(inter_class_scores)
+                losses.append(tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1]))
+                task_losses.append(
+                    tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
+                )
+                contrastive_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["contrastive_loss"], tf.float32), [1]
+                    )
+                )
+                all_true_tensors.append(tf.reshape(query_y, [-1]))
+                all_pred_tensors.append(tf.reshape(pred, [-1]))
+                all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
+                all_inter_class_scores.append(tf.reshape(inter_class_scores, [-1]))
 
         y_true = tf.concat(all_true_tensors, axis=0).numpy().astype(np.int32, copy=False)
         y_pred = tf.concat(all_pred_tensors, axis=0).numpy().astype(np.int32, copy=False)
@@ -823,9 +1084,11 @@ class FewShotPainLearner:
                 tf.concat(all_inter_class_scores, axis=0).numpy(),
             )
         )
-        metrics["task_loss"] = float(tf.reduce_mean(tf.stack(task_losses)))
-        metrics["contrastive_loss"] = float(tf.reduce_mean(tf.stack(contrastive_losses)))
-        return float(tf.reduce_mean(tf.stack(losses))), metrics
+        metrics["task_loss"] = float(tf.reduce_mean(tf.concat(task_losses, axis=0)))
+        metrics["contrastive_loss"] = float(
+            tf.reduce_mean(tf.concat(contrastive_losses, axis=0))
+        )
+        return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
@@ -861,11 +1124,16 @@ class FewShotPainLearner:
         }
 
     def _evaluate_sampler_loss_and_metrics(
-        self, sampler, num_tasks: int
+        self,
+        sampler,
+        num_tasks: int,
+        *,
+        forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
         """Evaluate average loss plus classification/similarity metrics on tasks."""
         return self._evaluate_task_batch_loss_and_metrics(
             [sampler.get_task() for _ in range(num_tasks)],
+            forward_batch_size=forward_batch_size,
         )
 
     @staticmethod
@@ -884,13 +1152,18 @@ class FewShotPainLearner:
         *,
         k_shot: int,
         q_query: int,
+        forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
         """Evaluate sampler metrics with a temporary k-shot/q-query override."""
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
         self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
         try:
-            return self._evaluate_sampler_loss_and_metrics(sampler, num_tasks=num_tasks)
+            return self._evaluate_sampler_loss_and_metrics(
+                sampler,
+                num_tasks=num_tasks,
+                forward_batch_size=forward_batch_size,
+            )
         finally:
             self._set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
 
@@ -1443,6 +1716,13 @@ class FewShotPainLearner:
             # Held-out evaluation sweep across fixed and additional support/query sizes.
             pre_adaptation_weights = self.model.get_weights()
             sweep_metrics_by_size = {}
+            run_adaptation = k_shot_adaptation_steps > 0
+            if not run_adaptation:
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    "Skipping held-out adaptation sweep because "
+                    "k_shot_adaptation_steps=0."
+                )
             for eval_k_shot, eval_q_query in heldout_eval_pairs:
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
@@ -1453,6 +1733,7 @@ class FewShotPainLearner:
                         num_tasks=heldout_eval_tasks,
                         k_shot=eval_k_shot,
                         q_query=eval_q_query,
+                        forward_batch_size=self.train_batch_size,
                     )
                 )
                 csv_writer.write_event(
@@ -1476,27 +1757,36 @@ class FewShotPainLearner:
                             adaptation_steps=k_shot_adaptation_steps,
                         )
 
-                adaptation_losses = self._adapt_on_sampler_at_task_size(
-                    test_sampler,
-                    adaptation_steps=k_shot_adaptation_steps,
-                    k_shot=eval_k_shot,
-                    q_query=eval_q_query,
-                )
-                csv_writer.write_event(
-                    fold_idx=fold + 1,
-                    test_subject=test_subject,
-                    event_type=f"adaptation_phase_{size_key}",
-                    loss=float(np.mean(adaptation_losses)) if adaptation_losses else 0.0,
-                )
-
-                k_shot_loss, k_shot_metrics = (
-                    self._evaluate_sampler_loss_and_metrics_at_task_size(
+                if run_adaptation:
+                    adaptation_losses = self._adapt_on_sampler_at_task_size(
                         test_sampler,
-                        num_tasks=heldout_eval_tasks,
+                        adaptation_steps=k_shot_adaptation_steps,
                         k_shot=eval_k_shot,
                         q_query=eval_q_query,
                     )
-                )
+                    csv_writer.write_event(
+                        fold_idx=fold + 1,
+                        test_subject=test_subject,
+                        event_type=f"adaptation_phase_{size_key}",
+                        loss=float(np.mean(adaptation_losses))
+                        if adaptation_losses
+                        else 0.0,
+                    )
+                    k_shot_loss, k_shot_metrics = (
+                        self._evaluate_sampler_loss_and_metrics_at_task_size(
+                            test_sampler,
+                            num_tasks=heldout_eval_tasks,
+                            k_shot=eval_k_shot,
+                            q_query=eval_q_query,
+                            forward_batch_size=self.train_batch_size,
+                        )
+                    )
+                else:
+                    adaptation_losses = []
+                    # With zero adaptation steps, k-shot reflects the zero-shot state.
+                    k_shot_loss = float(zero_shot_loss)
+                    k_shot_metrics = dict(zero_shot_metrics)
+
                 csv_writer.write_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,
@@ -1570,12 +1860,13 @@ class FewShotPainLearner:
                 intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
                 inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
             )
-            csv_writer.write_event(
-                fold_idx=fold + 1,
-                test_subject=test_subject,
-                event_type="adaptation_phase",
-                loss=fixed_adaptation_mean_loss,
-            )
+            if run_adaptation:
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type="adaptation_phase",
+                    loss=fixed_adaptation_mean_loss,
+                )
             csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
