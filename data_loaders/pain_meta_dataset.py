@@ -45,7 +45,7 @@ class PainMetaDataset:
         Initialize the dataset.
 
         Args:
-            data_dir: Directory containing X.npy, y_heater.npy, subjects.npy
+            data_dir: Directory containing X/y/subject arrays as .npy or .npz files
             config: Dataset configuration
             normalize: Whether to normalize the data
             normalize_per_subject: If True, normalize per subject; else global normalization
@@ -143,17 +143,55 @@ class PainMetaDataset:
                 "split_strategy='predefined' requires dataset_source='biovid_part_a'."
             )
 
-        self.X = np.load(self.data_dir / self.config.data_path)[
+        self.X = self._load_numpy_array(self.data_dir / self.config.data_path)[
             :, :, self.config.sensor_idx, :
         ]
         self.logger.info(f"X.shape: {self.X.shape}")
-        self.y_onehot = np.load(self.data_dir / self.config.labels_path)
+        self.y_onehot = self._load_numpy_array(self.data_dir / self.config.labels_path)
         self.logger.info(f"y_onehot.shape: {self.y_onehot.shape}")
-        self.subjects = np.load(self.data_dir / self.config.subjects_path)
+        self.subjects = self._load_numpy_array(self.data_dir / self.config.subjects_path)
         self.logger.info(f"subjects.shape: {self.subjects}")
         self.y = np.argmax(self.y_onehot, axis=1)
         self.sample_split_codes = np.full(len(self.y), -1, dtype=np.int8)
         self.split_masks = {"all": np.ones(len(self.y), dtype=bool)}
+
+    @staticmethod
+    def _candidate_array_paths(path: Path) -> tuple[Path, ...]:
+        if path.suffix in {".npy", ".npz"}:
+            alternate_suffix = ".npz" if path.suffix == ".npy" else ".npy"
+            return (path, path.with_suffix(alternate_suffix))
+        return (path, path.with_suffix(".npz"), path.with_suffix(".npy"))
+
+    @classmethod
+    def _resolve_array_path(cls, path: Path) -> Path:
+        for candidate in cls._candidate_array_paths(path):
+            if candidate.is_file():
+                return candidate
+        candidates = ", ".join(
+            str(candidate) for candidate in cls._candidate_array_paths(path)
+        )
+        raise FileNotFoundError(f"Could not find numpy array file. Tried: {candidates}")
+
+    @classmethod
+    def _load_numpy_array(cls, path: Path) -> np.ndarray:
+        """Load an array saved as .npy or compressed .npz.
+
+        For .npz files, the converter in scripts/ stores arrays under the key
+        "data". Single-array archives without that key are also accepted.
+        """
+        resolved_path = cls._resolve_array_path(path)
+        loaded = np.load(resolved_path, allow_pickle=False)
+        if isinstance(loaded, np.lib.npyio.NpzFile):
+            with loaded:
+                if "data" in loaded.files:
+                    return loaded["data"]
+                if len(loaded.files) == 1:
+                    return loaded[loaded.files[0]]
+                raise ValueError(
+                    f"Expected key 'data' or a single array in {resolved_path}; "
+                    f"found keys={loaded.files}"
+                )
+        return loaded
 
     def _resolve_biovid_part_dir(self) -> Path:
         """Resolve the BioVid PartA directory from common repository layouts."""
@@ -174,19 +212,48 @@ class PainMetaDataset:
 
     @staticmethod
     def _subject_key_from_data_filename(path: Path) -> str:
-        """Convert '<subject>_data.npy' to '<subject>'."""
-        suffix = "_data.npy"
-        if not path.name.endswith(suffix):
+        """Convert '<subject>_data.npy/.npz' to '<subject>'."""
+        if path.suffix not in {".npy", ".npz"}:
+            raise ValueError(f"Unexpected data filename extension: {path.name}")
+        suffix = "_data"
+        if not path.stem.endswith(suffix):
             raise ValueError(f"Unexpected data filename format: {path.name}")
-        return path.name[: -len(suffix)]
+        return path.stem[: -len(suffix)]
 
     @staticmethod
     def _subject_key_from_label_filename(path: Path) -> str:
-        """Convert '<subject>_label.npy' to '<subject>'."""
-        suffix = "_label.npy"
-        if not path.name.endswith(suffix):
+        """Convert '<subject>_label.npy/.npz' to '<subject>'."""
+        if path.suffix not in {".npy", ".npz"}:
+            raise ValueError(f"Unexpected label filename extension: {path.name}")
+        suffix = "_label"
+        if not path.stem.endswith(suffix):
             raise ValueError(f"Unexpected label filename format: {path.name}")
-        return path.name[: -len(suffix)]
+        return path.stem[: -len(suffix)]
+
+    @staticmethod
+    def _prefer_npz(paths: List[Path]) -> Path:
+        return sorted(paths, key=lambda path: (path.suffix != ".npz", path.name))[0]
+
+    @classmethod
+    def _collect_biovid_files(cls, modality_dir: Path, file_kind: str) -> Dict[str, Path]:
+        paths = sorted(
+            list(modality_dir.glob(f"*_{file_kind}.npy"))
+            + list(modality_dir.glob(f"*_{file_kind}.npz"))
+        )
+        grouped_paths: Dict[str, List[Path]] = {}
+        for path in paths:
+            if file_kind == "data":
+                subject_key = cls._subject_key_from_data_filename(path)
+            elif file_kind == "label":
+                subject_key = cls._subject_key_from_label_filename(path)
+            else:
+                raise ValueError(f"Unsupported BioVid file kind: {file_kind}")
+            grouped_paths.setdefault(subject_key, []).append(path)
+
+        return {
+            subject_key: cls._prefer_npz(subject_paths)
+            for subject_key, subject_paths in grouped_paths.items()
+        }
 
     def _load_biovid_part_a_data(self) -> None:
         """Load BioVid Part A pre-segmented train/test files."""
@@ -213,16 +280,8 @@ class PainMetaDataset:
                         f"Expected modality directory missing: {modality_dir}"
                     )
 
-                data_files = sorted(modality_dir.glob("*_data.npy"))
-                label_files = sorted(modality_dir.glob("*_label.npy"))
-                data_map = {
-                    self._subject_key_from_data_filename(path): path
-                    for path in data_files
-                }
-                label_map = {
-                    self._subject_key_from_label_filename(path): path
-                    for path in label_files
-                }
+                data_map = self._collect_biovid_files(modality_dir, "data")
+                label_map = self._collect_biovid_files(modality_dir, "label")
 
                 missing_label = sorted(set(data_map) - set(label_map))
                 missing_data = sorted(set(label_map) - set(data_map))
@@ -291,7 +350,9 @@ class PainMetaDataset:
                 modality_arrays = []
                 reference_labels = None
                 for modality in modalities:
-                    data_array = np.load(split_data_maps[modality][subject_key])
+                    data_array = self._load_numpy_array(
+                        split_data_maps[modality][subject_key]
+                    )
                     if data_array.ndim == 2:
                         data_array = data_array[..., np.newaxis]
                     if data_array.ndim != 3 or data_array.shape[-1] != 1:
@@ -302,9 +363,9 @@ class PainMetaDataset:
                         )
                     modality_arrays.append(data_array.astype(np.float32, copy=False))
 
-                    labels = np.load(split_label_maps[modality][subject_key]).reshape(
-                        -1
-                    )
+                    labels = self._load_numpy_array(
+                        split_label_maps[modality][subject_key]
+                    ).reshape(-1)
                     labels = labels.astype(np.int32, copy=False)
                     if reference_labels is None:
                         reference_labels = labels

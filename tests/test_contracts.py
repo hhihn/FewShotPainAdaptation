@@ -17,6 +17,7 @@ def _write_synthetic_dataset(
     reps_per_class: int = 4,
     seq_len: int = 2500,
     full_sensor_count: int = 6,
+    compressed: bool = False,
 ) -> None:
     """Create a small deterministic dataset compatible with sensor_idx=[1,4,5]."""
     rng = np.random.default_rng(123)
@@ -40,9 +41,14 @@ def _write_synthetic_dataset(
     y = np.stack(y_rows, axis=0)
     subjects = np.array(subject_rows, dtype=np.int32)
 
-    np.save(data_dir / "X_pre.npy", X)
-    np.save(data_dir / "y_heater.npy", y)
-    np.save(data_dir / "subjects.npy", subjects)
+    if compressed:
+        np.savez_compressed(data_dir / "X_pre.npz", data=X)
+        np.savez_compressed(data_dir / "y_heater.npz", data=y)
+        np.savez_compressed(data_dir / "subjects.npz", data=subjects)
+    else:
+        np.save(data_dir / "X_pre.npy", X)
+        np.save(data_dir / "y_heater.npy", y)
+        np.save(data_dir / "subjects.npy", subjects)
 
 
 def _write_synthetic_biovid_dataset(
@@ -52,6 +58,7 @@ def _write_synthetic_biovid_dataset(
     train_samples_per_class: int = 6,
     test_samples_per_class: int = 2,
     seq_len: int = 1152,
+    compressed: bool = False,
 ) -> None:
     """Create a tiny BioVid-like PartA train/test tree for split-contract tests."""
     rng = np.random.default_rng(456)
@@ -89,10 +96,24 @@ def _write_synthetic_biovid_dataset(
                     ],
                     axis=0,
                 )
-                np.save(root / split_name / modality / f"{subject_key}_data.npy", data)
-                np.save(
-                    root / split_name / modality / f"{subject_key}_label.npy", labels
-                )
+                if compressed:
+                    np.savez_compressed(
+                        root / split_name / modality / f"{subject_key}_data.npz",
+                        data=data,
+                    )
+                    np.savez_compressed(
+                        root / split_name / modality / f"{subject_key}_label.npz",
+                        data=labels,
+                    )
+                else:
+                    np.save(
+                        root / split_name / modality / f"{subject_key}_data.npy",
+                        data,
+                    )
+                    np.save(
+                        root / split_name / modality / f"{subject_key}_label.npy",
+                        labels,
+                    )
 
 
 class ContractTests(unittest.TestCase):
@@ -102,6 +123,7 @@ class ContractTests(unittest.TestCase):
         _write_synthetic_dataset(self.data_dir)
 
         self.config = PainDatasetConfig(
+            dataset_source="painmonit",
             sequence_length=2500,
             n_way=6,
             num_stimuli_levels=6,
@@ -209,6 +231,7 @@ class ContractTests(unittest.TestCase):
         data_dir = Path(tmp.name)
         _write_synthetic_dataset(data_dir, num_subjects=4)
         config = PainDatasetConfig(
+            dataset_source="painmonit",
             sequence_length=2500,
             n_way=6,
             num_stimuli_levels=6,
@@ -281,6 +304,7 @@ class ContractTests(unittest.TestCase):
 
     def test_two_way_task_class_mapping(self):
         config = PainDatasetConfig(
+            dataset_source="painmonit",
             sequence_length=2500,
             num_stimuli_levels=6,
             task_class_ids=(0, 5),
@@ -375,6 +399,63 @@ class ContractTests(unittest.TestCase):
             self.assertNotEqual(train_task["subject"], held_out_subject)
             self.assertNotEqual(val_task["subject"], held_out_subject)
             self.assertEqual(test_task["subject"], held_out_subject)
+        finally:
+            tmp.cleanup()
+
+    def test_painmonit_loader_accepts_compressed_npz_arrays(self):
+        tmp = tempfile.TemporaryDirectory()
+        data_dir = Path(tmp.name)
+        _write_synthetic_dataset(data_dir, compressed=True)
+
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            sequence_length=2500,
+            n_way=6,
+            num_stimuli_levels=6,
+            k_shot=1,
+            q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            heldout_eval_tasks=1,
+            single_loso_fold=False,
+            seed=7,
+            deterministic_ops=True,
+        )
+        try:
+            dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
+            self.assertEqual(dataset.X.shape, (72, 2500, 3))
+            self.assertEqual(dataset.y.shape, (72,))
+            self.assertEqual(dataset.subjects.shape, (72,))
+        finally:
+            tmp.cleanup()
+
+    def test_biovid_loader_accepts_compressed_npz_tree(self):
+        tmp = tempfile.TemporaryDirectory()
+        data_dir = Path(tmp.name)
+        _write_synthetic_biovid_dataset(data_dir, compressed=True)
+
+        config = PainDatasetConfig(
+            dataset_source="biovid_part_a",
+            k_shot=1,
+            q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            heldout_eval_tasks=1,
+            single_loso_fold=False,
+            seed=13,
+            deterministic_ops=True,
+        )
+        try:
+            dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
+            self.assertTrue(dataset.has_predefined_split)
+            self.assertEqual(dataset.X.shape[1:], (1152, 3))
+            self.assertEqual(sorted(np.unique(dataset.y).tolist()), [0, 1, 2, 3, 4])
+            self.assertEqual(
+                sorted(dataset.get_split_subjects("train")),
+                sorted(dataset.get_split_subjects("test")),
+            )
         finally:
             tmp.cleanup()
 
