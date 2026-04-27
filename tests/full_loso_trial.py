@@ -114,6 +114,11 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         filters_list=filters_list,
         tcn_attention_key_dim=args.tcn_attention_key_dim,
         tcn_attention_pool_size=args.tcn_attention_pool_size,
+        use_attention=bool(getattr(args, "use_attention", False)),
+        supcon_loss_weight=float(getattr(args, "supcon_loss_weight", 0.0)),
+        supcon_temperature=float(getattr(args, "supcon_temperature", 0.05)),
+        triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
+        triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -167,6 +172,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "learning_rate": float(args.learning_rate),
             "embedding_dim": int(config.embedding_dim),
             "filters": list(filters_list),
+            "use_attention": bool(config.use_attention),
             "num_epochs": int(config.num_epochs),
             "tasks_per_epoch": int(config.tasks_per_epoch),
             "train_batch_size": int(config.train_batch_size),
@@ -175,6 +181,10 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
             "window_shift_enabled": bool(config.enable_window_shift_augmentation),
             "gaussian_noise_std": float(config.gaussian_noise_std),
+            "supcon_loss_weight": float(config.supcon_loss_weight),
+            "supcon_temperature": float(config.supcon_temperature),
+            "triplet_loss_weight": float(config.triplet_loss_weight),
+            "triplet_margin": float(config.triplet_margin),
             "deterministic_ops": bool(config.deterministic_ops),
             "train_progress_write_every_n_batches": int(
                 config.train_progress_write_every_n_batches
@@ -253,6 +263,11 @@ def main() -> None:
     parser.add_argument("--filters", type=str, default="16,16,32,32,64,64,128")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
+    parser.add_argument("--use-attention", action="store_true")
+    parser.add_argument("--supcon-loss-weight", type=float, default=0.0)
+    parser.add_argument("--supcon-temperature", type=float, default=0.05)
+    parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
+    parser.add_argument("--triplet-margin", type=float, default=0.2)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
     parser.add_argument(
         "--deterministic-ops",

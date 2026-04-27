@@ -27,6 +27,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         tcn_attention_key_dim: int = 32,
         tcn_attention_dropout: float = 0.2,
         tcn_attention_pool_size: int = 8,
+        use_attention: bool = False,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "mean",
         distance_metric: str = "cosine",
@@ -57,6 +58,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             tcn_attention_key_dim: Key dimension per TCN attention head
             tcn_attention_dropout: Dropout used by the TCN self-attention layer
             tcn_attention_pool_size: Downsample factor before TCN self-attention
+            use_attention: If True, enable self-attention inside each TCN encoder
             fusion_transformer_heads: Number of attention heads in transformer fusion
             fusion_transformer_layers: Number of transformer blocks in fusion
             fusion_transformer_ffn_dim: FFN hidden size in transformer fusion
@@ -82,6 +84,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.tcn_attention_key_dim = tcn_attention_key_dim
         self.tcn_attention_dropout = tcn_attention_dropout
         self.tcn_attention_pool_size = tcn_attention_pool_size
+        self.use_attention = bool(use_attention)
         self.fusion_transformer_heads = fusion_transformer_heads
         self.fusion_transformer_layers = fusion_transformer_layers
         self.fusion_transformer_ffn_dim = fusion_transformer_ffn_dim
@@ -105,6 +108,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 tcn_attention_key_dim=tcn_attention_key_dim,
                 tcn_attention_dropout=tcn_attention_dropout,
                 tcn_attention_pool_size=tcn_attention_pool_size,
+                use_attention=use_attention,
                 filters_list=filters_list,
             )
 
@@ -184,6 +188,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         tcn_attention_key_dim: int,
         tcn_attention_dropout: float,
         tcn_attention_pool_size: int,
+        use_attention: bool,
         filters_list: Optional[List[int]] = None,
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
@@ -201,6 +206,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             strides=strides,
             pooling_size=pooling_size,
             attention_pool_size=tcn_attention_pool_size,
+            use_attention=use_attention,
             filters_list=filters_list,
         )
 

@@ -139,6 +139,11 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         filters_list=filters_list,
         tcn_attention_key_dim=args.tcn_attention_key_dim,
         tcn_attention_pool_size=args.tcn_attention_pool_size,
+        use_attention=bool(getattr(args, "use_attention", False)),
+        supcon_loss_weight=float(getattr(args, "supcon_loss_weight", 0.0)),
+        supcon_temperature=float(getattr(args, "supcon_temperature", 0.05)),
+        triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
+        triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -280,8 +285,13 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "normalize_mode": args.normalize_mode,
         "embedding_dim": args.embedding_dim,
         "filters": list(filters_list),
+        "use_attention": bool(config.use_attention),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
+        "supcon_loss_weight": float(config.supcon_loss_weight),
+        "supcon_temperature": float(config.supcon_temperature),
+        "triplet_loss_weight": float(config.triplet_loss_weight),
+        "triplet_margin": float(config.triplet_margin),
         "model_architecture_file": model_architecture_file,
         "before": {
             "train": before_train,
@@ -527,6 +537,11 @@ def main() -> None:
     parser.add_argument("--filters", type=str, default="16,16,32,32,64,64,128")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
+    parser.add_argument("--use-attention", action="store_true")
+    parser.add_argument("--supcon-loss-weight", type=float, default=0.0)
+    parser.add_argument("--supcon-temperature", type=float, default=0.05)
+    parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
+    parser.add_argument("--triplet-margin", type=float, default=0.2)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
     parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(
