@@ -40,6 +40,8 @@ class PainDatasetConfig:
     clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
+    loso_start_index: Optional[int] = None  # 1-based inclusive LOSO fold start
+    loso_stop_index: Optional[int] = None  # 1-based inclusive LOSO fold stop
     # Sensors used
     painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
     # Modality information
@@ -226,6 +228,20 @@ class PainDatasetConfig:
             raise ValueError("csv_flush_every_events must be > 0")
         if self.summary_every_n_train_steps <= 0:
             raise ValueError("summary_every_n_train_steps must be > 0")
+        if self.loso_start_index is not None:
+            self.loso_start_index = int(self.loso_start_index)
+            if self.loso_start_index <= 0:
+                raise ValueError("loso_start_index must be a positive 1-based index")
+        if self.loso_stop_index is not None:
+            self.loso_stop_index = int(self.loso_stop_index)
+            if self.loso_stop_index <= 0:
+                raise ValueError("loso_stop_index must be a positive 1-based index")
+        if (
+            self.loso_start_index is not None
+            and self.loso_stop_index is not None
+            and self.loso_stop_index < self.loso_start_index
+        ):
+            raise ValueError("loso_stop_index must be >= loso_start_index")
         if self.data_variant not in {"real", "mock"}:
             raise ValueError("data_variant must be one of: 'real', 'mock'")
         if self.data_variant == "mock":

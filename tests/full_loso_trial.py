@@ -109,6 +109,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         ),
         csv_flush_every_events=max(1, int(args.csv_flush_every_events)),
         single_loso_fold=False,  # Full LOSO over all available subjects.
+        loso_start_index=args.loso_start_index,
+        loso_stop_index=args.loso_stop_index,
         embedding_dim=args.embedding_dim,
         num_tcn_blocks=len(filters_list),
         filters_list=filters_list,
@@ -132,13 +134,22 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         fusion_method=args.fusion_method,
     )
 
-    if args.max_folds is not None and args.max_folds > 0:
+    if (
+        args.max_folds is not None
+        and args.max_folds > 0
+        and args.loso_start_index is None
+        and args.loso_stop_index is None
+    ):
         max_folds = int(args.max_folds)
         original_fold_count = len(learner.cv.subjects)
         learner.cv.subjects = list(learner.cv.subjects[:max_folds])
         logger.info(
             "Stage 2.1/5: Limiting fold count for this run "
             f"(requested={max_folds}, original={original_fold_count}, used={len(learner.cv.subjects)})"
+        )
+    elif args.max_folds is not None and args.max_folds > 0:
+        logger.info(
+            "Stage 2.1/5: Ignoring --max-folds because an explicit LOSO index range is configured"
         )
 
     logger.info(
@@ -191,6 +202,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "csv_flush_every_events": int(config.csv_flush_every_events),
             "train_prefetch_batches": int(config.train_prefetch_batches),
+            "loso_start_index": config.loso_start_index,
+            "loso_stop_index": config.loso_stop_index,
             "max_folds": int(args.max_folds) if args.max_folds is not None else None,
         },
         "summary": summary,
@@ -324,8 +337,20 @@ def main() -> None:
     parser.add_argument(
         "--max-folds",
         type=int,
-        default=1,
+        default=None,
         help="Optional debug limit. Omit for full LOSO over all subjects.",
+    )
+    parser.add_argument(
+        "--loso-start-index",
+        type=int,
+        default=None,
+        help="1-based inclusive LOSO fold index to start from.",
+    )
+    parser.add_argument(
+        "--loso-stop-index",
+        type=int,
+        default=None,
+        help="1-based inclusive LOSO fold index to stop at.",
     )
     parser.add_argument(
         "--output-json",

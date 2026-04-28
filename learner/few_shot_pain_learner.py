@@ -145,6 +145,8 @@ class FewShotPainLearner:
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "single_loso_fold": self.config.single_loso_fold,
             "single_loso_test_subject": self.config.single_loso_test_subject,
+            "loso_start_index": self.config.loso_start_index,
+            "loso_stop_index": self.config.loso_stop_index,
             "sensor_idx": list(self.config.sensor_idx),
             "modality_names": list(self.config.modality_names),
         }
@@ -261,6 +263,51 @@ class FewShotPainLearner:
                 tf.TensorSpec(shape=(None, None), dtype=tf.int32),
             ],
         )
+
+    def _get_loso_fold_subjects(self) -> list[int]:
+        """Return held-out subjects selected by single-fold and LOSO index config."""
+        subjects = [int(subject) for subject in self.cv.subjects]
+        if not subjects:
+            raise ValueError("No LOSO subjects are available.")
+
+        start_index = self.config.loso_start_index
+        stop_index = self.config.loso_stop_index
+        range_configured = start_index is not None or stop_index is not None
+
+        if self.config.single_loso_fold and not range_configured:
+            if self.config.single_loso_test_subject is not None:
+                selected_subject = int(self.config.single_loso_test_subject)
+                if selected_subject not in subjects:
+                    raise ValueError(
+                        f"single_loso_test_subject={selected_subject} is not in available subjects."
+                    )
+                fold_subjects = [selected_subject]
+            else:
+                fold_subjects = [subjects[0]]
+            self.logger.info(
+                f"single_loso_fold=True: running only one fold with held-out subject={fold_subjects[0]}"
+            )
+            return fold_subjects
+
+        if start_index is None and stop_index is None:
+            return subjects
+
+        start_offset = 0 if start_index is None else int(start_index) - 1
+        stop_offset = len(subjects) if stop_index is None else int(stop_index)
+        fold_subjects = subjects[start_offset:stop_offset]
+        if not fold_subjects:
+            raise ValueError(
+                "Configured LOSO index range selected no subjects "
+                f"(loso_start_index={start_index}, loso_stop_index={stop_index}, "
+                f"available_folds={len(subjects)})."
+            )
+
+        self.logger.info(
+            "Running LOSO index range "
+            f"{start_index or 1}..{stop_index or len(subjects)} "
+            f"(1-based inclusive), selected {len(fold_subjects)} of {len(subjects)} folds."
+        )
+        return fold_subjects
 
     def _eval_task_batch_step_compiled_impl(
         self,
@@ -1387,22 +1434,7 @@ class FewShotPainLearner:
             "model_architecture_file": None,
         }
 
-        if self.config.single_loso_fold:
-            if self.config.single_loso_test_subject is not None:
-                selected_subject = self.config.single_loso_test_subject
-                if selected_subject not in self.cv.subjects:
-                    raise ValueError(
-                        f"single_loso_test_subject={selected_subject} is not in available subjects."
-                    )
-                fold_subjects = [selected_subject]
-            else:
-                fold_subjects = [self.cv.subjects[0]]
-            self.logger.info(
-                f"single_loso_fold=True: running only one fold with held-out subject={fold_subjects[0]}"
-            )
-        else:
-            fold_subjects = self.cv.subjects
-
+        fold_subjects = self._get_loso_fold_subjects()
         num_subjects = len(fold_subjects)
         fold_checkpoint_interval = max(1, int(np.ceil(num_subjects / 10)))
         total_train_steps = (
