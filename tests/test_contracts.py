@@ -3,7 +3,9 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import tensorflow as tf
 
+from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
 from data_loaders.pain_meta_dataset import PainMetaDataset
@@ -140,6 +142,43 @@ class ContractTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_gated_fusion_weights_embeddings_then_averages(self):
+        model = MultimodalPrototypicalNetwork(
+            sequence_length=16,
+            num_sensors=3,
+            num_classes=2,
+            embedding_dim=4,
+            num_tcn_blocks=1,
+            filters_list=[4],
+            fusion_method="gated",
+        )
+        for gate_layer in model.gating_norm_layers.values():
+            gate_layer(tf.zeros((1, model.embedding_dim)))
+            gate_layer.set_weights(
+                [
+                    np.zeros(
+                        (model.embedding_dim, model.embedding_dim),
+                        dtype=np.float32,
+                    ),
+                    np.zeros((model.embedding_dim,), dtype=np.float32),
+                ]
+            )
+
+        modality_embeddings = tf.constant(
+            [
+                [
+                    [1.0, 2.0, 3.0, 4.0],
+                    [2.0, 4.0, 6.0, 8.0],
+                    [3.0, 6.0, 9.0, 12.0],
+                ]
+            ],
+            dtype=tf.float32,
+        )
+
+        fused = model._fuse_modality_stack(modality_embeddings)
+        expected = tf.reduce_mean(modality_embeddings * 0.5, axis=1)
+        np.testing.assert_allclose(fused.numpy(), expected.numpy(), rtol=1e-6)
 
     def test_loso_split_contracts(self):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)

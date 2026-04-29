@@ -125,16 +125,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
             self.gating_norm_layers = {
                 modality_name: keras.layers.Dense(
                     embedding_dim,
-                    activation="tanh",
+                    activation="sigmoid",
                     name=f"gated_norm_{modality_name}",
                 )
                 for modality_name in modality_names
             }
-            self.gating_softmax_layer = keras.layers.Dense(
-                len(modality_names) * embedding_dim,
-                name="gated_fusion_logits",
-            )
-            self.gating_layer = None
         elif fusion_method == "transformer_ib":
             self.fused_embedding_dim = embedding_dim
             self.fusion_layer = TransformerInformationBottleneckFusion(
@@ -232,27 +227,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
         if self.fusion_method == "mean":
             fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
         elif self.fusion_method == "gated":
-            normalized_embeddings = []
+            gated_embeddings = []
             modality_embeddings = tf.unstack(fused, axis=1)
             for modality_name, embedding in zip(
                 self.modality_names, modality_embeddings
             ):
-                normalized_embeddings.append(
-                    self.gating_norm_layers[modality_name](embedding, training=training)
-                )
+                gate = self.gating_norm_layers[modality_name](embedding)
+                gated_embeddings.append(embedding * gate)
 
-            normalized_concat = tf.concat(
-                normalized_embeddings, axis=1
-            )  # [batch, num_modalities * embedding_dim]
-            gate_logits = self.gating_softmax_layer(
-                normalized_concat, training=training
-            )
-            gate_weights = tf.nn.softmax(gate_logits, axis=1)
-            gate_weights = tf.reshape(
-                gate_weights,
-                [-1, len(self.modality_names), self.embedding_dim],
-            )
-            fused = tf.reduce_sum(fused * gate_weights, axis=1)
+            fused = tf.reduce_mean(tf.stack(gated_embeddings, axis=1), axis=1)
         else:  # self.fusion_method == "transformer_ib":
             fused = self.fusion_layer(fused, training=training)
 
