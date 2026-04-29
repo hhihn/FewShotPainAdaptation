@@ -180,6 +180,31 @@ class ContractTests(unittest.TestCase):
         expected = tf.reduce_mean(modality_embeddings * 0.5, axis=1)
         np.testing.assert_allclose(fused.numpy(), expected.numpy(), rtol=1e-6)
 
+    def test_use_attention_adds_efficient_attention_to_each_encoder(self):
+        model = MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=2,
+            embedding_dim=8,
+            num_tcn_blocks=2,
+            filters_list=[8, 8],
+            fusion_method="mean",
+            tcn_attention_heads=2,
+            tcn_attention_key_dim=4,
+            tcn_attention_pool_size=1,
+            use_attention=True,
+        )
+
+        embeddings = model.encode(tf.random.normal((2, 32, 3)), training=False)
+        self.assertEqual(embeddings.shape, (2, 8))
+
+        for encoder in model.modality_encoders.values():
+            layer_names = {layer.name for layer in encoder.layers}
+            self.assertIn("efficient_attention_query", layer_names)
+            self.assertIn("efficient_attention_key", layer_names)
+            self.assertIn("efficient_attention_value", layer_names)
+            self.assertNotIn("self_attention", layer_names)
+
     def test_loso_split_contracts(self):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)
         cv = LOSOCrossValidator(

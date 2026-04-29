@@ -28,11 +28,11 @@ class PainDatasetConfig:
     pooling_size: int = 2  # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
     embedding_dim: int = 96  # Encoder embedding dimension
-    tcn_attention_heads: int = 4  # Number of self-attention heads inside the TCN
+    tcn_attention_heads: int = 4  # Number of attention-pooling heads inside the TCN
     tcn_attention_key_dim: int = 128  # Key dimension per TCN attention head
-    tcn_attention_dropout: float = 0.2  # Dropout inside the TCN attention layer
-    tcn_attention_pool_size: int = 0  # Downsample factor before self-attention
-    use_attention: bool = False  # If True, enable self-attention inside each TCN encoder
+    tcn_attention_dropout: float = 0.2  # Dropout inside TCN attention pooling
+    tcn_attention_pool_size: int = 0  # Downsample factor before attention pooling
+    use_attention: bool = False  # If True, enable attention pooling in each TCN encoder
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
     fusion_transformer_layers: int = 2  # Number of transformer fusion layers
     fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
