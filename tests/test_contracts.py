@@ -143,6 +143,43 @@ class ContractTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_triplet_mining_strategy_validation(self):
+        self.assertEqual(PainDatasetConfig().triplet_mining_strategy, "batch_hard")
+        with self.assertRaises(ValueError):
+            PainDatasetConfig(triplet_mining_strategy="semi_hard")
+
+    def test_batch_hard_triplet_loss_uses_hardest_positive_and_negative(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.triplet_loss_weight = 1.0
+        learner.triplet_margin = 0.5
+
+        embeddings = tf.constant(
+            [
+                [1.0, 0.0],
+                [0.5, np.sqrt(3.0) / 2.0],
+                [-0.5, np.sqrt(3.0) / 2.0],
+                [-1.0, 0.0],
+            ],
+            dtype=tf.float32,
+        )
+        labels = tf.constant([0, 0, 1, 1], dtype=tf.int32)
+
+        loss = learner._compute_batch_hard_triplet_loss(embeddings, labels)
+
+        self.assertAlmostEqual(float(loss.numpy()), 0.25, places=5)
+
+    def test_batch_hard_triplet_loss_ignores_invalid_anchors(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.triplet_loss_weight = 1.0
+        learner.triplet_margin = 0.5
+
+        embeddings = tf.eye(3, dtype=tf.float32)
+        labels = tf.constant([0, 1, 2], dtype=tf.int32)
+
+        loss = learner._compute_batch_hard_triplet_loss(embeddings, labels)
+
+        self.assertEqual(float(loss.numpy()), 0.0)
+
     def test_gated_fusion_weights_embeddings_then_averages(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=16,

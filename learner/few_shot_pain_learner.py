@@ -49,6 +49,7 @@ class FewShotPainLearner:
         self.supcon_temperature = float(config.supcon_temperature)
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
+        self.triplet_mining_strategy = str(config.triplet_mining_strategy)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
         self.support_size = int(self.config.n_way * self.config.k_shot)
         self.query_size = int(self.config.n_way * self.config.q_query)
@@ -113,6 +114,7 @@ class FewShotPainLearner:
             "supcon_temperature": self.supcon_temperature,
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
+            "triplet_mining_strategy": self.triplet_mining_strategy,
             "train_batch_size": self.train_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
@@ -323,6 +325,7 @@ class FewShotPainLearner:
         tf.Tensor,
         tf.Tensor,
         tf.Tensor,
+        tf.Tensor,
     ]:
         """Compiled evaluation over a batch of tasks without optimizer updates."""
         class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
@@ -342,6 +345,7 @@ class FewShotPainLearner:
             loss = tf.cast(task_outputs["loss"], tf.float32)
             task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
             contrastive_loss = tf.cast(task_outputs["contrastive_loss"], tf.float32)
+            triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
             pred = tf.argmax(logits, axis=1, output_type=tf.int32)
 
             row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
@@ -356,6 +360,7 @@ class FewShotPainLearner:
                 loss,
                 task_loss,
                 contrastive_loss,
+                triplet_loss,
                 query_y,
                 pred,
                 intra_class_scores,
@@ -366,6 +371,7 @@ class FewShotPainLearner:
             losses,
             task_losses,
             contrastive_losses,
+            triplet_losses,
             y_true_batch,
             y_pred_batch,
             intra_class_scores_batch,
@@ -374,6 +380,7 @@ class FewShotPainLearner:
             _per_task_eval,
             (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
             fn_output_signature=(
+                tf.TensorSpec(shape=(), dtype=tf.float32),
                 tf.TensorSpec(shape=(), dtype=tf.float32),
                 tf.TensorSpec(shape=(), dtype=tf.float32),
                 tf.TensorSpec(shape=(), dtype=tf.float32),
@@ -389,6 +396,7 @@ class FewShotPainLearner:
             tf.reshape(losses, [-1]),
             tf.reshape(task_losses, [-1]),
             tf.reshape(contrastive_losses, [-1]),
+            tf.reshape(triplet_losses, [-1]),
             tf.reshape(y_true_batch, [-1]),
             tf.reshape(y_pred_batch, [-1]),
             tf.reshape(intra_class_scores_batch, [-1]),
@@ -401,7 +409,7 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Compiled optimizer update over one batch of episodic tasks."""
         with tf.GradientTape() as tape:
 
@@ -426,6 +434,7 @@ class FewShotPainLearner:
                     task_outputs["contrastive_loss"],
                     tf.float32,
                 )
+                triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
                 predictions = tf.argmax(logits, axis=1, output_type=tf.int64)
                 accuracy = tf.reduce_mean(
                     tf.cast(
@@ -433,12 +442,19 @@ class FewShotPainLearner:
                         tf.float32,
                     )
                 )
-                return loss, task_loss, accuracy, contrastive_loss
+                return loss, task_loss, accuracy, contrastive_loss, triplet_loss
 
-            losses, task_losses, accuracies, contrastive_losses = tf.map_fn(
+            (
+                losses,
+                task_losses,
+                accuracies,
+                contrastive_losses,
+                triplet_losses,
+            ) = tf.map_fn(
                 _per_task_step,
                 (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
                 fn_output_signature=(
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
                     tf.TensorSpec(shape=(), dtype=tf.float32),
                     tf.TensorSpec(shape=(), dtype=tf.float32),
                     tf.TensorSpec(shape=(), dtype=tf.float32),
@@ -451,10 +467,17 @@ class FewShotPainLearner:
             batch_task_loss = tf.reduce_mean(task_losses)
             batch_acc = tf.reduce_mean(accuracies)
             batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
+            batch_triplet_loss = tf.reduce_mean(triplet_losses)
 
         gradients = tape.gradient(batch_loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return batch_loss, batch_task_loss, batch_acc, batch_contrastive_loss
+        return (
+            batch_loss,
+            batch_task_loss,
+            batch_acc,
+            batch_contrastive_loss,
+            batch_triplet_loss,
+        )
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
         """Return regularization losses added by submodules, or zero if absent."""
@@ -544,6 +567,70 @@ class FewShotPainLearner:
             tf.reduce_sum(positive_triplets),
         )
 
+    def _compute_batch_hard_triplet_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        if self.triplet_loss_weight <= 0:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+        pairwise_similarity = tf.matmul(
+            normalized_embeddings, normalized_embeddings, transpose_b=True
+        )
+        pairwise_distance = 1.0 - pairwise_similarity
+
+        labels = tf.reshape(labels, [-1])
+        same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+        different_label = tf.logical_not(same_label)
+        indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
+        positive_mask = tf.logical_and(same_label, indices_not_equal)
+        negative_mask = different_label
+
+        valid_anchor_mask = tf.logical_and(
+            tf.reduce_any(positive_mask, axis=1),
+            tf.reduce_any(negative_mask, axis=1),
+        )
+
+        positive_distances = tf.where(
+            positive_mask,
+            pairwise_distance,
+            tf.zeros_like(pairwise_distance),
+        )
+        hardest_positive_distance = tf.reduce_max(positive_distances, axis=1)
+
+        max_distance = tf.reduce_max(pairwise_distance)
+        negative_distances = tf.where(
+            negative_mask,
+            pairwise_distance,
+            tf.ones_like(pairwise_distance) * (max_distance + 1.0),
+        )
+        hardest_negative_distance = tf.reduce_min(negative_distances, axis=1)
+
+        per_anchor_loss = tf.maximum(
+            hardest_positive_distance
+            - hardest_negative_distance
+            + tf.cast(self.triplet_margin, pairwise_distance.dtype),
+            0.0,
+        )
+        valid_anchor_weights = tf.cast(valid_anchor_mask, pairwise_distance.dtype)
+        return tf.math.divide_no_nan(
+            tf.reduce_sum(per_anchor_loss * valid_anchor_weights),
+            tf.reduce_sum(valid_anchor_weights),
+        )
+
+    def _compute_triplet_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Dispatch configured triplet mining strategy over one episode."""
+        if self.triplet_mining_strategy == "batch_hard":
+            return self._compute_batch_hard_triplet_loss(embeddings, labels)
+        if self.triplet_mining_strategy == "batch_all":
+            return self._compute_batch_all_triplet_loss(embeddings, labels)
+        raise ValueError(
+            "triplet_mining_strategy must be one of: 'batch_hard', 'batch_all'"
+        )
+
     def _forward_task(
         self,
         support_x: tf.Tensor,
@@ -583,7 +670,7 @@ class FewShotPainLearner:
         if self.triplet_loss_weight > 0:
             triplet_loss = tf.cast(
                 self.triplet_loss_weight, task_loss.dtype
-            ) * self._compute_batch_all_triplet_loss(embeddings, labels)
+            ) * self._compute_triplet_loss(embeddings, labels)
             total_aux_loss += triplet_loss
         total_loss = task_loss + total_aux_loss
 
@@ -740,13 +827,14 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Eager fallback for one optimizer update using a batch of tasks."""
         with tf.GradientTape() as tape:
             losses = []
             task_losses = []
             accuracies = []
             contrastive_losses = []
+            triplet_losses = []
             for support_x, support_y, query_x, query_y in zip(
                 tf.unstack(support_x_batch, axis=0),
                 tf.unstack(support_y_batch, axis=0),
@@ -767,6 +855,7 @@ class FewShotPainLearner:
                 loss = task_outputs["loss"]
                 task_loss = task_outputs["task_loss"]
                 contrastive_loss = task_outputs["contrastive_loss"]
+                triplet_loss = task_outputs["triplet_loss"]
                 predictions = tf.argmax(logits, axis=1)
                 accuracy = tf.reduce_mean(
                     tf.cast(
@@ -777,15 +866,23 @@ class FewShotPainLearner:
                 task_losses.append(task_loss)
                 accuracies.append(accuracy)
                 contrastive_losses.append(contrastive_loss)
+                triplet_losses.append(triplet_loss)
 
             batch_loss = tf.reduce_mean(tf.stack(losses))
             batch_task_loss = tf.reduce_mean(tf.stack(task_losses))
             batch_acc = tf.reduce_mean(tf.stack(accuracies))
             batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
+            batch_triplet_loss = tf.reduce_mean(tf.stack(triplet_losses))
 
         gradients = tape.gradient(batch_loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return batch_loss, batch_task_loss, batch_acc, batch_contrastive_loss
+        return (
+            batch_loss,
+            batch_task_loss,
+            batch_acc,
+            batch_contrastive_loss,
+            batch_triplet_loss,
+        )
 
     def _train_batch_step_tensors(
         self,
@@ -793,7 +890,7 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Run compiled train step, with eager fallback if compilation fails."""
         if self._compiled_train_batch_step is not None:
             try:
@@ -830,11 +927,13 @@ class FewShotPainLearner:
         tf.Tensor,
         tf.Tensor,
         tf.Tensor,
+        tf.Tensor,
     ]:
         """Eager fallback for task-batch evaluation without optimizer updates."""
         losses = []
         task_losses = []
         contrastive_losses = []
+        triplet_losses = []
         true_labels = []
         pred_labels = []
         intra_scores = []
@@ -873,6 +972,9 @@ class FewShotPainLearner:
             contrastive_losses.append(
                 tf.reshape(tf.cast(task_outputs["contrastive_loss"], tf.float32), [1])
             )
+            triplet_losses.append(
+                tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
+            )
             true_labels.append(tf.reshape(query_y, [-1]))
             pred_labels.append(tf.reshape(pred, [-1]))
             intra_scores.append(tf.reshape(intra_class_scores, [-1]))
@@ -882,6 +984,7 @@ class FewShotPainLearner:
             tf.concat(losses, axis=0),
             tf.concat(task_losses, axis=0),
             tf.concat(contrastive_losses, axis=0),
+            tf.concat(triplet_losses, axis=0),
             tf.concat(true_labels, axis=0),
             tf.concat(pred_labels, axis=0),
             tf.concat(intra_scores, axis=0),
@@ -942,7 +1045,7 @@ class FewShotPainLearner:
 
     def train_batch_step(
         self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Single optimizer update using a batch of tasks."""
         (
             support_x_batch,
@@ -978,7 +1081,7 @@ class FewShotPainLearner:
 
     def evaluate_batch_step(
         self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Evaluate a batch of tasks without updating weights."""
         batch_loss, metrics = self._evaluate_task_batch_loss_and_metrics(
             task_batch,
@@ -987,6 +1090,7 @@ class FewShotPainLearner:
             tf.constant(batch_loss, dtype=tf.float32),
             tf.constant(metrics["accuracy"], dtype=tf.float32),
             tf.constant(metrics["contrastive_loss"], dtype=tf.float32),
+            tf.constant(metrics["triplet_loss"], dtype=tf.float32),
         )
 
     @staticmethod
@@ -1029,6 +1133,7 @@ class FewShotPainLearner:
         losses = []
         task_losses = []
         contrastive_losses = []
+        triplet_losses = []
         all_true_tensors = []
         all_pred_tensors = []
         all_intra_class_scores = []
@@ -1052,6 +1157,7 @@ class FewShotPainLearner:
                     batch_losses,
                     batch_task_losses,
                     batch_contrastive_losses,
+                    batch_triplet_losses,
                     batch_y_true,
                     batch_y_pred,
                     batch_intra_scores,
@@ -1065,6 +1171,7 @@ class FewShotPainLearner:
                 losses.append(tf.reshape(batch_losses, [-1]))
                 task_losses.append(tf.reshape(batch_task_losses, [-1]))
                 contrastive_losses.append(tf.reshape(batch_contrastive_losses, [-1]))
+                triplet_losses.append(tf.reshape(batch_triplet_losses, [-1]))
                 all_true_tensors.append(tf.reshape(batch_y_true, [-1]))
                 all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(batch_intra_scores, [-1]))
@@ -1128,6 +1235,9 @@ class FewShotPainLearner:
                         tf.cast(task_outputs["contrastive_loss"], tf.float32), [1]
                     )
                 )
+                triplet_losses.append(
+                    tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
+                )
                 all_true_tensors.append(tf.reshape(query_y, [-1]))
                 all_pred_tensors.append(tf.reshape(pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
@@ -1149,6 +1259,9 @@ class FewShotPainLearner:
         metrics["task_loss"] = float(tf.reduce_mean(tf.concat(task_losses, axis=0)))
         metrics["contrastive_loss"] = float(
             tf.reduce_mean(tf.concat(contrastive_losses, axis=0))
+        )
+        metrics["triplet_loss"] = float(
+            tf.reduce_mean(tf.concat(triplet_losses, axis=0))
         )
         return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
 
@@ -1523,7 +1636,7 @@ class FewShotPainLearner:
                     train_sampler,
                     tasks_per_epoch,
                 ):
-                    loss, task_loss, acc, contrastive_loss = (
+                    loss, task_loss, acc, contrastive_loss, triplet_loss = (
                         self._train_batch_step_tensors(
                             support_x_batch=tf.convert_to_tensor(
                                 support_x_np,
@@ -1568,6 +1681,7 @@ class FewShotPainLearner:
                             loss=float(loss),
                             task_loss=float(task_loss),
                             contrastive_loss=float(contrastive_loss),
+                            triplet_loss=float(triplet_loss),
                             accuracy=float(acc),
                         )
                     progress.log_step(
@@ -1584,6 +1698,7 @@ class FewShotPainLearner:
                         extra_metrics={
                             "task_loss": float(task_loss),
                             "contrastive_loss": float(contrastive_loss),
+                            "triplet_loss": float(triplet_loss),
                         },
                         log_every=train_log_every,
                     )
@@ -1597,6 +1712,7 @@ class FewShotPainLearner:
                             f"[Train {processed_tasks}/{tasks_per_epoch} tasks] "
                             f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
                             f"accuracy={float(acc):.4f}, contrastive_loss={float(contrastive_loss):.4f}, "
+                            f"triplet_loss={float(triplet_loss):.4f}, "
                             f"elapsed={self._format_seconds(elapsed)}, "
                             f"eta={self._format_seconds(eta_seconds)}"
                         )
@@ -1662,6 +1778,7 @@ class FewShotPainLearner:
                     validation_task_losses = []
                     validation_accs = []
                     validation_contrastive_losses = []
+                    validation_triplet_losses = []
                     validation_intra_class_similarities = []
                     validation_inter_class_similarities = []
                     for val_task_start in range(0, val_tasks, val_batch_size):
@@ -1683,6 +1800,7 @@ class FewShotPainLearner:
                         validation_contrastive_losses.append(
                             val_metrics["contrastive_loss"]
                         )
+                        validation_triplet_losses.append(val_metrics["triplet_loss"])
                         validation_intra_class_similarities.append(
                             val_metrics["intra_class_similarity"]
                         )
@@ -1696,6 +1814,7 @@ class FewShotPainLearner:
                     mean_val_contrastive_loss = float(
                         np.mean(validation_contrastive_losses)
                     )
+                    mean_val_triplet_loss = float(np.mean(validation_triplet_losses))
                     mean_val_intra_class_similarity = float(
                         np.mean(validation_intra_class_similarities)
                     )
@@ -1719,6 +1838,7 @@ class FewShotPainLearner:
                         loss=mean_val_loss,
                         task_loss=mean_val_task_loss,
                         contrastive_loss=mean_val_contrastive_loss,
+                        triplet_loss=mean_val_triplet_loss,
                         accuracy=mean_val_acc,
                         intra_class_similarity=mean_val_intra_class_similarity,
                         inter_class_similarity=mean_val_inter_class_similarity,
@@ -1736,6 +1856,7 @@ class FewShotPainLearner:
                         extra_metrics={
                             "task_loss": mean_val_task_loss,
                             "contrastive_loss": mean_val_contrastive_loss,
+                            "triplet_loss": mean_val_triplet_loss,
                             "intra_class_similarity": mean_val_intra_class_similarity,
                             "inter_class_similarity": mean_val_inter_class_similarity,
                             "similarity_margin": mean_val_similarity_margin,
@@ -1751,6 +1872,7 @@ class FewShotPainLearner:
                         f"mean_task_loss={mean_val_task_loss:.4f}, "
                         f"mean_accuracy={mean_val_acc:.4f}, "
                         f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
+                        f"triplet_loss={mean_val_triplet_loss:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
                         f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
                         f"similarity_margin={mean_val_similarity_margin:.4f}, "
@@ -1836,6 +1958,9 @@ class FewShotPainLearner:
                     test_subject=test_subject,
                     event_type=f"zero_shot_summary_{size_key}",
                     loss=zero_shot_loss,
+                    task_loss=zero_shot_metrics["task_loss"],
+                    contrastive_loss=zero_shot_metrics["contrastive_loss"],
+                    triplet_loss=zero_shot_metrics["triplet_loss"],
                     accuracy=zero_shot_metrics["accuracy"],
                     precision=zero_shot_metrics["precision"],
                     recall=zero_shot_metrics["recall"],
@@ -1887,6 +2012,9 @@ class FewShotPainLearner:
                     test_subject=test_subject,
                     event_type=f"k_shot_summary_{size_key}",
                     loss=k_shot_loss,
+                    task_loss=k_shot_metrics["task_loss"],
+                    contrastive_loss=k_shot_metrics["contrastive_loss"],
+                    triplet_loss=k_shot_metrics["triplet_loss"],
                     accuracy=k_shot_metrics["accuracy"],
                     precision=k_shot_metrics["precision"],
                     recall=k_shot_metrics["recall"],
@@ -1952,6 +2080,9 @@ class FewShotPainLearner:
                 test_subject=test_subject,
                 event_type="zero_shot_summary",
                 loss=zero_shot_loss,
+                task_loss=zero_shot_metrics["task_loss"],
+                contrastive_loss=zero_shot_metrics["contrastive_loss"],
+                triplet_loss=zero_shot_metrics["triplet_loss"],
                 accuracy=zero_shot_metrics["accuracy"],
                 precision=zero_shot_metrics["precision"],
                 recall=zero_shot_metrics["recall"],
@@ -1971,6 +2102,9 @@ class FewShotPainLearner:
                 test_subject=test_subject,
                 event_type="k_shot_summary",
                 loss=k_shot_loss,
+                task_loss=k_shot_metrics["task_loss"],
+                contrastive_loss=k_shot_metrics["contrastive_loss"],
+                triplet_loss=k_shot_metrics["triplet_loss"],
                 accuracy=k_shot_metrics["accuracy"],
                 precision=k_shot_metrics["precision"],
                 recall=k_shot_metrics["recall"],

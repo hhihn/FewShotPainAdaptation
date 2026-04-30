@@ -121,6 +121,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         supcon_temperature=float(getattr(args, "supcon_temperature", 0.05)),
         triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
         triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
+        triplet_mining_strategy=str(
+            getattr(args, "triplet_mining_strategy", "batch_hard")
+        ),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -196,6 +199,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "supcon_temperature": float(config.supcon_temperature),
             "triplet_loss_weight": float(config.triplet_loss_weight),
             "triplet_margin": float(config.triplet_margin),
+            "triplet_mining_strategy": str(config.triplet_mining_strategy),
             "deterministic_ops": bool(config.deterministic_ops),
             "train_progress_write_every_n_batches": int(
                 config.train_progress_write_every_n_batches
@@ -256,32 +260,38 @@ def main() -> None:
     parser.add_argument(
         "--fusion-method",
         type=str,
-        default="gated",
+        default="mean",
         choices=("mean", "gated", "transformer_ib"),
     )
     parser.add_argument(
         "--classifier-mode",
         type=str,
-        default="soft_knn",
+        default="prototype",
         choices=("prototype", "soft_knn"),
     )
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="subject",
+        default="support",
         choices=("subject", "split", "support", "none"),
     )
-    parser.add_argument("--learning-rate", type=float, default=1e-5)
-    parser.add_argument("--embedding-dim", type=int, default=64)
+    parser.add_argument("--learning-rate", type=float, default=6e-4)
+    parser.add_argument("--embedding-dim", type=int, default=96)
     parser.add_argument("--filters", type=str, default="16,16,32,32,64,64,128")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--use-attention", action="store_true")
-    parser.add_argument("--supcon-loss-weight", type=float, default=0.0)
+    parser.add_argument("--supcon-loss-weight", type=float, default=0.7)
     parser.add_argument("--supcon-temperature", type=float, default=0.05)
     parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
-    parser.add_argument("--triplet-margin", type=float, default=0.2)
-    parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
+    parser.add_argument("--triplet-margin", type=float, default=0.1)
+    parser.add_argument(
+        "--triplet-mining-strategy",
+        type=str,
+        default="batch_hard",
+        choices=("batch_hard", "batch_all"),
+    )
+    parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument(
         "--deterministic-ops",
         action="store_true",

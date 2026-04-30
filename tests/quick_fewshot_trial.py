@@ -42,11 +42,12 @@ def _sample_subject_tasks(sampler, num_tasks: int) -> list[dict[str, np.ndarray]
 def _evaluate_bank(
     learner: FewShotPainLearner, tasks: list[dict[str, np.ndarray]]
 ) -> dict[str, float]:
-    loss, accuracy, contrastive_loss = learner.evaluate_batch_step(tasks)
+    loss, accuracy, contrastive_loss, triplet_loss = learner.evaluate_batch_step(tasks)
     return {
         "loss": float(loss.numpy()),
         "accuracy": float(accuracy.numpy()),
         "contrastive_loss": float(contrastive_loss.numpy()),
+        "triplet_loss": float(triplet_loss.numpy()),
     }
 
 
@@ -144,6 +145,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         supcon_temperature=float(getattr(args, "supcon_temperature", 0.05)),
         triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
         triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
+        triplet_mining_strategy=str(
+            getattr(args, "triplet_mining_strategy", "batch_hard")
+        ),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -206,8 +210,8 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     for update_idx in range(max(1, args.updates)):
         update_start = time.perf_counter()
         task_batch = _cyclic_task_batch(train_tasks, update_idx, args.task_batch_size)
-        loss, task_loss, accuracy, contrastive_loss = learner.train_batch_step(
-            task_batch
+        loss, task_loss, accuracy, contrastive_loss, triplet_loss = (
+            learner.train_batch_step(task_batch)
         )
         elapsed = time.perf_counter() - start_time
         avg_update_time = elapsed / max(1, update_idx + 1)
@@ -219,6 +223,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
                 "task_loss": float(task_loss.numpy()),
                 "accuracy": float(accuracy.numpy()),
                 "contrastive_loss": float(contrastive_loss.numpy()),
+                "triplet_loss": float(triplet_loss.numpy()),
                 "elapsed_seconds": float(time.perf_counter() - update_start),
             }
         )
@@ -292,6 +297,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "supcon_temperature": float(config.supcon_temperature),
         "triplet_loss_weight": float(config.triplet_loss_weight),
         "triplet_margin": float(config.triplet_margin),
+        "triplet_mining_strategy": str(config.triplet_mining_strategy),
         "model_architecture_file": model_architecture_file,
         "before": {
             "train": before_train,
@@ -523,26 +529,32 @@ def main() -> None:
     parser.add_argument(
         "--classifier-mode",
         type=str,
-        default="soft_knn",
+        default="prototype",
         choices=("prototype", "soft_knn"),
     )
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="subject",
+        default="support",
         choices=("subject", "split", "support", "none"),
     )
-    parser.add_argument("--learning-rate", type=float, default=1e-5)
-    parser.add_argument("--embedding-dim", type=int, default=64)
+    parser.add_argument("--learning-rate", type=float, default=6e-4)
+    parser.add_argument("--embedding-dim", type=int, default=96)
     parser.add_argument("--filters", type=str, default="16,16,32,32,64,64,128")
     parser.add_argument("--tcn-attention-key-dim", type=int, default=32)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--use-attention", action="store_true")
-    parser.add_argument("--supcon-loss-weight", type=float, default=0.0)
+    parser.add_argument("--supcon-loss-weight", type=float, default=0.7)
     parser.add_argument("--supcon-temperature", type=float, default=0.05)
     parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
-    parser.add_argument("--triplet-margin", type=float, default=0.2)
-    parser.add_argument("--gaussian-noise-std", type=float, default=0.0)
+    parser.add_argument("--triplet-margin", type=float, default=0.1)
+    parser.add_argument(
+        "--triplet-mining-strategy",
+        type=str,
+        default="batch_hard",
+        choices=("batch_hard", "batch_all"),
+    )
+    parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(
         "--logging-verbosity",

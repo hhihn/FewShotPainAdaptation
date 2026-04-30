@@ -257,6 +257,71 @@ def _compute_batch_all_triplet_loss(
     )
 
 
+def _compute_batch_hard_triplet_loss(
+    embeddings: tf.Tensor,
+    labels: tf.Tensor,
+    margin: float,
+) -> tf.Tensor:
+    """BatchHardTripletLoss using cosine distance d(a,b)=1-cos(a,b)."""
+    normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+    pairwise_similarity = tf.matmul(
+        normalized_embeddings, normalized_embeddings, transpose_b=True
+    )
+    pairwise_distance = 1.0 - pairwise_similarity
+
+    labels = tf.reshape(labels, [-1])
+    same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+    different_label = tf.logical_not(same_label)
+    indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
+    positive_mask = tf.logical_and(same_label, indices_not_equal)
+    negative_mask = different_label
+
+    valid_anchor_mask = tf.logical_and(
+        tf.reduce_any(positive_mask, axis=1),
+        tf.reduce_any(negative_mask, axis=1),
+    )
+    positive_distances = tf.where(
+        positive_mask,
+        pairwise_distance,
+        tf.zeros_like(pairwise_distance),
+    )
+    hardest_positive_distance = tf.reduce_max(positive_distances, axis=1)
+
+    max_distance = tf.reduce_max(pairwise_distance)
+    negative_distances = tf.where(
+        negative_mask,
+        pairwise_distance,
+        tf.ones_like(pairwise_distance) * (max_distance + 1.0),
+    )
+    hardest_negative_distance = tf.reduce_min(negative_distances, axis=1)
+
+    per_anchor_loss = tf.maximum(
+        hardest_positive_distance
+        - hardest_negative_distance
+        + tf.cast(margin, pairwise_distance.dtype),
+        0.0,
+    )
+    valid_anchor_weights = tf.cast(valid_anchor_mask, pairwise_distance.dtype)
+    return tf.math.divide_no_nan(
+        tf.reduce_sum(per_anchor_loss * valid_anchor_weights),
+        tf.reduce_sum(valid_anchor_weights),
+    )
+
+
+def _compute_triplet_loss(
+    embeddings: tf.Tensor,
+    labels: tf.Tensor,
+    margin: float,
+    mining_strategy: str,
+) -> tf.Tensor:
+    """Dispatch fixed-bank diagnostic triplet mining strategy."""
+    if mining_strategy == "batch_hard":
+        return _compute_batch_hard_triplet_loss(embeddings, labels, margin)
+    if mining_strategy == "batch_all":
+        return _compute_batch_all_triplet_loss(embeddings, labels, margin)
+    raise ValueError("mining_strategy must be one of: 'batch_hard', 'batch_all'")
+
+
 def _build_model(
     config: PainDatasetConfig, fusion_method: str
 ) -> MultimodalPrototypicalNetwork:
@@ -696,6 +761,7 @@ def run_fixed_episode_bank_overfit(
     val_mode: str,
     embedding_dim: int | None = None,
     triplet_loss_weight: float | None = None,
+    triplet_mining_strategy: str | None = None,
     supcon_loss_weight: float | None = None,
     enable_window_shift_augmentation: bool | None = None,
     progress_callback: Optional[Callable[[StepMetrics], bool]] = None,
@@ -715,6 +781,8 @@ def run_fixed_episode_bank_overfit(
         config_kwargs["embedding_dim"] = int(embedding_dim)
     if triplet_loss_weight is not None:
         config_kwargs["triplet_loss_weight"] = float(triplet_loss_weight)
+    if triplet_mining_strategy is not None:
+        config_kwargs["triplet_mining_strategy"] = str(triplet_mining_strategy)
     if supcon_loss_weight is not None:
         config_kwargs["supcon_loss_weight"] = float(supcon_loss_weight)
     if enable_window_shift_augmentation is not None:
@@ -762,6 +830,7 @@ def run_fixed_episode_bank_overfit(
         f"gaussian_noise_std={gaussian_noise_std}, "
         f"embedding_dim={config.embedding_dim}, "
         f"triplet_loss_weight={config.triplet_loss_weight}, "
+        f"triplet_mining_strategy={config.triplet_mining_strategy}, "
         f"supcon_loss_weight={config.supcon_loss_weight}, "
         f"enable_window_shift_augmentation={config.enable_window_shift_augmentation}, "
         f"task_subjects={task_subjects}, "
@@ -895,10 +964,11 @@ def run_fixed_episode_bank_overfit(
                     supcon_loss = tf.constant(0.0, dtype=task_loss.dtype)
 
                 if config.triplet_loss_weight > 0:
-                    triplet_loss = _compute_batch_all_triplet_loss(
+                    triplet_loss = _compute_triplet_loss(
                         embeddings=all_embeddings,
                         labels=all_labels,
                         margin=float(config.triplet_margin),
+                        mining_strategy=str(config.triplet_mining_strategy),
                     )
                 else:
                     triplet_loss = tf.constant(0.0, dtype=task_loss.dtype)
@@ -1048,14 +1118,14 @@ def run_fixed_episode_bank_overfit(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Overfit a fixed bank of prototypical episodes with CE-only training."
+        description="Overfit a fixed bank of prototypical episodes with metric losses."
     )
     parser.add_argument("--data-dir", type=str, default="../data")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--fusion-method",
         type=str,
-        default="gated",
+        default="mean",
         choices=("mean", "gated", "transformer_ib"),
         help="Embedding fusion mode to use for the fixed-bank overfit experiment.",
     )
@@ -1078,7 +1148,7 @@ def main() -> None:
     parser.add_argument(
         "--normalize-mode",
         type=str,
-        default="subject",
+        default="support",
         choices=("subject", "support", "none"),
     )
     parser.add_argument(
@@ -1127,8 +1197,14 @@ def main() -> None:
     parser.add_argument(
         "--gaussian-noise-std",
         type=float,
-        default=0.02,
+        default=0.01,
         help="Stddev of additive Gaussian noise used only during training updates.",
+    )
+    parser.add_argument(
+        "--triplet-mining-strategy",
+        type=str,
+        default="batch_hard",
+        choices=("batch_hard", "batch_all"),
     )
     parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument(
@@ -1157,6 +1233,7 @@ def main() -> None:
         num_val_tasks=args.num_val_tasks,
         gaussian_noise_std=args.gaussian_noise_std,
         val_mode=args.val_mode,
+        triplet_mining_strategy=args.triplet_mining_strategy,
     )
     if args.strict and not memorized:
         raise SystemExit(1)
