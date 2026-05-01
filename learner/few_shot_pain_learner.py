@@ -407,7 +407,7 @@ class FewShotPainLearner:
                 tf.TensorSpec(shape=(None,), dtype=tf.float32),
                 tf.TensorSpec(shape=(None,), dtype=tf.float32),
             ),
-            parallel_iterations=16,
+            parallel_iterations=1,
         )
 
         return (
