@@ -14,10 +14,10 @@ class PainDatasetConfig:
     num_sensors: int = 3  # Number of modalities
     num_tcn_blocks: int = 4  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        64,
+        16,
+        32,
         64,
         128,
-        128
     )
     tcn_dilation_rates: Optional[List[int]] = (
         1,

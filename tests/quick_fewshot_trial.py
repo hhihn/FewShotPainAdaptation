@@ -544,7 +544,7 @@ def main() -> None:
     )
     parser.add_argument("--learning-rate", type=float, default=6e-4)
     parser.add_argument("--embedding-dim", type=int, default=64)
-    parser.add_argument("--filters", type=str, default="64,64,128,128")
+    parser.add_argument("--filters", type=str, default="16,32,64,128")
     parser.add_argument("--tcn-attention-heads", type=int, default=8)
     parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
     parser.add_argument("--tcn-attention-dropout", type=float, default=0.1)
