@@ -12,27 +12,31 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 7  # Number of Temporal Conv Blocks in the Architecture
+    num_tcn_blocks: int = 4  # Number of Temporal Conv Blocks in the Architecture
     filters_list: Optional[List[int]] = (
-        16,  # Number of Filters in the Convolutional Layers
-        16,
-        32,
-        32,
         64,
         64,
         128,
+        128
     )
-    tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
+    tcn_dilation_rates: Optional[List[int]] = (
+        1,
+        2,
+        4,
+        8,
+    )  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2  # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2  # Pool size used between TCN blocks
-    tcn_dropout_rate: float = 0.3  # Dropout rate inside the TCN encoder
-    embedding_dim: int = 96  # Encoder embedding dimension
-    tcn_attention_heads: int = 4  # Number of attention-pooling heads inside the TCN
-    tcn_attention_key_dim: int = 128  # Key dimension per TCN attention head
-    tcn_attention_dropout: float = 0.2  # Dropout inside TCN attention pooling
+    tcn_dropout_rate: float = 0.1  # Dropout rate inside the TCN encoder
+    embedding_dim: int = 64  # Temporal Transformer model/encoder embedding dimension
+    tcn_attention_heads: int = 8  # Number of temporal Transformer attention heads
+    tcn_attention_key_dim: int = 8  # Key dimension per head; 8 heads * 8 = d_model 64
+    tcn_attention_dropout: float = 0.1  # Dropout inside temporal Transformer encoder
+    tcn_transformer_layers: int = 4  # Number of temporal Transformer encoder layers
+    tcn_transformer_ffn_dim: int = 256  # FFN hidden dimension in temporal Transformer
     tcn_attention_pool_size: int = 0  # Downsample factor before attention pooling
-    use_attention: bool = False  # If True, enable attention pooling in each TCN encoder
+    use_attention: bool = True  # If True, enable attention pooling in each TCN encoder
     fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
     fusion_transformer_layers: int = 2  # Number of transformer fusion layers
     fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
@@ -199,6 +203,10 @@ class PainDatasetConfig:
             raise ValueError("tcn_attention_key_dim must be > 0")
         if self.tcn_attention_dropout < 0 or self.tcn_attention_dropout >= 1:
             raise ValueError("tcn_attention_dropout must be in [0, 1)")
+        if self.tcn_transformer_layers <= 0:
+            raise ValueError("tcn_transformer_layers must be > 0")
+        if self.tcn_transformer_ffn_dim <= 0:
+            raise ValueError("tcn_transformer_ffn_dim must be > 0")
         if self.tcn_attention_pool_size < 0:
             raise ValueError("tcn_attention_pool_size must be >= 0")
         if self.tcn_dilation_rates is not None:

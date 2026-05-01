@@ -29,6 +29,8 @@ class TemporalConvolutionalNetwork(keras.Model):
         num_attention_heads: int = 4,
         attention_key_dim: int = 32,
         attention_dropout: float = 0.2,
+        transformer_layers: int = 4,
+        transformer_ffn_dim: int = 256,
         strides: int = 2,
         pooling_size: int = 2,
         attention_pool_size: int = 8,
@@ -45,8 +47,11 @@ class TemporalConvolutionalNetwork(keras.Model):
             kernel_size: Kernel size for all convolutions
             dropout_rate: Dropout rate in TCN blocks
             num_attention_heads: Number of attention heads
-            attention_key_dim: Key dimension per attention head
-            attention_dropout: Dropout in attention layer
+            attention_key_dim: Key dimension per attention head. For a Transformer
+                model dimension of 64 with 8 heads, use 8.
+            attention_dropout: Dropout in Transformer encoder layers
+            transformer_layers: Number of Transformer encoder layers
+            transformer_ffn_dim: Feed-forward hidden dimension in each Transformer layer
             strides: Stride used by temporal pooling between TCN blocks
             pooling_size: Pool size used between TCN blocks
             attention_pool_size: Downsampling factor before self-attention.
@@ -64,6 +69,11 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.pooling_size = pooling_size
         self.attention_pool_size = max(1, int(attention_pool_size))
         self.use_attention = use_attention
+        self.num_attention_heads = num_attention_heads
+        self.attention_key_dim = attention_key_dim
+        self.attention_dropout = attention_dropout
+        self.transformer_layers = transformer_layers
+        self.transformer_ffn_dim = transformer_ffn_dim
         self.logger = setup_logger(name="TemporalConvolutionalNetwork")
         # Auto-generate filter list if not provided
         if filters_list is None:
@@ -89,27 +99,21 @@ class TemporalConvolutionalNetwork(keras.Model):
             shape=(self.sequence_length, 1), name=f"tcn_block_{0}_input"
         )
         for i in range(num_blocks):
-            block, new_inputs = self._build_cnn_block(
+            block, new_inputs = self._build_tcn_block(
                 inputs=inputs,
                 filters=filters_list[i],
                 block_idx=i,
-                pooling_size=pooling_size,
-                pooling_stride=2,
+                dilation_rate=dilation_rates[i],
             )
             inputs = new_inputs
             self.tcn_blocks.append(block)
 
         if self.use_attention:
-            # Self-attention layer
-            self.attention = keras.layers.MultiHeadAttention(
-                num_heads=num_attention_heads,
-                key_dim=attention_key_dim,
-                dropout=attention_dropout,
-                name="self_attention",
+            self.transformer_input_projection = keras.layers.Dense(
+                embedding_dim,
+                name="transformer_input_projection",
                 kernel_initializer="he_normal",
             )
-
-            # Optional temporal downsampling before attention to avoid OOM on long sequences.
             self.attention_pool = None
             if self.attention_pool_size > 1:
                 self.attention_pool = keras.layers.AveragePooling1D(
@@ -118,11 +122,66 @@ class TemporalConvolutionalNetwork(keras.Model):
                     padding="valid",
                     name="attention_pool",
                 )
-
-            # Normalization after attention
-            self.attention_norm = keras.layers.LayerNormalization(name="attention_norm")
-
-            # Global pooling
+            self.transformer_attention_layers = []
+            self.transformer_ffn_layers = []
+            self.transformer_attention_norm_layers = []
+            self.transformer_ffn_norm_layers = []
+            self.transformer_attention_dropout_layers = []
+            self.transformer_ffn_dropout_layers = []
+            for layer_idx in range(transformer_layers):
+                self.transformer_attention_layers.append(
+                    keras.layers.MultiHeadAttention(
+                        num_heads=num_attention_heads,
+                        key_dim=attention_key_dim,
+                        dropout=attention_dropout,
+                        name=f"transformer_encoder_{layer_idx}_mha",
+                        kernel_initializer="he_normal",
+                    )
+                )
+                self.transformer_ffn_layers.append(
+                    keras.Sequential(
+                        [
+                            keras.layers.Dense(
+                                transformer_ffn_dim,
+                                activation="relu",
+                                kernel_initializer="he_normal",
+                                name=f"transformer_encoder_{layer_idx}_ffn_dense",
+                            ),
+                            keras.layers.Dropout(
+                                attention_dropout,
+                                name=f"transformer_encoder_{layer_idx}_ffn_dropout",
+                            ),
+                            keras.layers.Dense(
+                                embedding_dim,
+                                kernel_initializer="he_normal",
+                                name=f"transformer_encoder_{layer_idx}_ffn_output",
+                            ),
+                        ],
+                        name=f"transformer_encoder_{layer_idx}_ffn",
+                    )
+                )
+                self.transformer_attention_norm_layers.append(
+                    keras.layers.LayerNormalization(
+                        name=f"transformer_encoder_{layer_idx}_attn_norm"
+                    )
+                )
+                self.transformer_ffn_norm_layers.append(
+                    keras.layers.LayerNormalization(
+                        name=f"transformer_encoder_{layer_idx}_ffn_norm"
+                    )
+                )
+                self.transformer_attention_dropout_layers.append(
+                    keras.layers.Dropout(
+                        attention_dropout,
+                        name=f"transformer_encoder_{layer_idx}_attn_dropout",
+                    )
+                )
+                self.transformer_ffn_dropout_layers.append(
+                    keras.layers.Dropout(
+                        attention_dropout,
+                        name=f"transformer_encoder_{layer_idx}_output_dropout",
+                    )
+                )
             self.global_pooling = keras.layers.GlobalAveragePooling1D(
                 name="global_pooling"
             )
@@ -133,7 +192,7 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
-            1024,
+            256,
             activation="elu",
             name="embedding_dense_hidden",
             kernel_initializer="he_normal",
@@ -141,16 +200,6 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.embedding_dense_hidden_dropout = keras.layers.Dropout(
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
-        )
-        self.embedding_dense_hidden_2 = keras.layers.Dense(
-            512,
-            activation="elu",
-            name="embedding_dense_hidden_2",
-            kernel_initializer="he_normal",
-        )
-        self.embedding_dense_hidden_dropout_2 = keras.layers.Dropout(
-            rate=self.dropout_rate,
-            name="embedding_dense_hidden_dropout_2",
         )
         self.embedding_dense = keras.layers.Dense(
             embedding_dim,
@@ -167,6 +216,10 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
         self.logger.debug(f"Filters: {filters_list}")
         self.logger.debug(f"Dilation rates: {dilation_rates}")
+
+    def build(self, input_shape):
+        """Mark the subclassed model as buildable; child layers build on first call."""
+        super().build(input_shape)
 
     def _build_cnn_block(
         self, inputs, filters: int, pooling_size: int, pooling_stride, block_idx: int
@@ -264,14 +317,32 @@ class TemporalConvolutionalNetwork(keras.Model):
         if self.use_attention:
             if self.attention_pool is not None:
                 x = self.attention_pool(x)
+            x = self.transformer_input_projection(x)
 
-            attention_output = self.attention(x, x, training=training)
-            x = self.attention_norm(x + attention_output)
+            for layer_idx in range(self.transformer_layers):
+                attention_output = self.transformer_attention_layers[layer_idx](
+                    x, x, training=training
+                )
+                x = self.transformer_attention_norm_layers[layer_idx](
+                    x
+                    + self.transformer_attention_dropout_layers[layer_idx](
+                        attention_output, training=training
+                    )
+                )
+                ffn_output = self.transformer_ffn_layers[layer_idx](
+                    x, training=training
+                )
+                x = self.transformer_ffn_norm_layers[layer_idx](
+                    x
+                    + self.transformer_ffn_dropout_layers[layer_idx](
+                        ffn_output, training=training
+                    )
+                )
             if self.logger.isEnabledFor(10):
-                self.logger.debug("After attention: %s", x.shape)
+                self.logger.debug("After Transformer encoder: %s", x.shape)
 
-            # Global pooling
             x = self.global_pooling(x)
+
         else:
             x = self.flatten_layer(x)
 
@@ -281,8 +352,6 @@ class TemporalConvolutionalNetwork(keras.Model):
         # Final embedding
         x = self.embedding_dense_hidden(x)
         x = self.embedding_dense_hidden_dropout(x, training=training)
-        x = self.embedding_dense_hidden_2(x)
-        x = self.embedding_dense_hidden_dropout_2(x, training=training)
         x = self.embedding_dense(x)
 
         return x
@@ -297,7 +366,13 @@ class TemporalConvolutionalNetwork(keras.Model):
             "dilation_rates": self.dilation_rates,
             "kernel_size": self.kernel_size,
             "dropout_rate": self.dropout_rate,
+            "num_attention_heads": self.num_attention_heads,
+            "attention_key_dim": self.attention_key_dim,
+            "attention_dropout": self.attention_dropout,
+            "transformer_layers": self.transformer_layers,
+            "transformer_ffn_dim": self.transformer_ffn_dim,
             "strides": self.strides,
             "pooling_size": self.pooling_size,
             "attention_pool_size": self.attention_pool_size,
+            "use_attention": self.use_attention,
         }

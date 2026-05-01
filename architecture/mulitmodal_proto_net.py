@@ -26,6 +26,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         tcn_attention_heads: int = 4,
         tcn_attention_key_dim: int = 32,
         tcn_attention_dropout: float = 0.2,
+        tcn_transformer_layers: int = 4,
+        tcn_transformer_ffn_dim: int = 256,
         tcn_attention_pool_size: int = 8,
         use_attention: bool = False,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
@@ -57,6 +59,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             tcn_attention_heads: Number of TCN self-attention heads
             tcn_attention_key_dim: Key dimension per TCN attention head
             tcn_attention_dropout: Dropout used by the TCN self-attention layer
+            tcn_transformer_layers: Number of temporal Transformer encoder layers
+            tcn_transformer_ffn_dim: FFN hidden dimension in each temporal Transformer layer
             tcn_attention_pool_size: Downsample factor before TCN self-attention
             use_attention: If True, enable self-attention inside each TCN encoder
             fusion_transformer_heads: Number of attention heads in transformer fusion
@@ -83,6 +87,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.tcn_attention_heads = tcn_attention_heads
         self.tcn_attention_key_dim = tcn_attention_key_dim
         self.tcn_attention_dropout = tcn_attention_dropout
+        self.tcn_transformer_layers = tcn_transformer_layers
+        self.tcn_transformer_ffn_dim = tcn_transformer_ffn_dim
         self.tcn_attention_pool_size = tcn_attention_pool_size
         self.use_attention = bool(use_attention)
         self.fusion_transformer_heads = fusion_transformer_heads
@@ -107,6 +113,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 tcn_attention_heads=tcn_attention_heads,
                 tcn_attention_key_dim=tcn_attention_key_dim,
                 tcn_attention_dropout=tcn_attention_dropout,
+                tcn_transformer_layers=tcn_transformer_layers,
+                tcn_transformer_ffn_dim=tcn_transformer_ffn_dim,
                 tcn_attention_pool_size=tcn_attention_pool_size,
                 use_attention=use_attention,
                 filters_list=filters_list,
@@ -182,6 +190,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         tcn_attention_heads: int,
         tcn_attention_key_dim: int,
         tcn_attention_dropout: float,
+        tcn_transformer_layers: int,
+        tcn_transformer_ffn_dim: int,
         tcn_attention_pool_size: int,
         use_attention: bool,
         filters_list: Optional[List[int]] = None,
@@ -198,6 +208,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             num_attention_heads=tcn_attention_heads,
             attention_key_dim=tcn_attention_key_dim,
             attention_dropout=tcn_attention_dropout,
+            transformer_layers=tcn_transformer_layers,
+            transformer_ffn_dim=tcn_transformer_ffn_dim,
             strides=strides,
             pooling_size=pooling_size,
             attention_pool_size=tcn_attention_pool_size,

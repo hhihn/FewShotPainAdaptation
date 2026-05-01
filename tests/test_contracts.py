@@ -217,7 +217,7 @@ class ContractTests(unittest.TestCase):
         expected = tf.reduce_mean(modality_embeddings * 0.5, axis=1)
         np.testing.assert_allclose(fused.numpy(), expected.numpy(), rtol=1e-6)
 
-    def test_use_attention_adds_efficient_attention_to_each_encoder(self):
+    def test_use_attention_adds_temporal_transformer_to_each_encoder(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=32,
             num_sensors=3,
@@ -237,9 +237,12 @@ class ContractTests(unittest.TestCase):
 
         for encoder in model.modality_encoders.values():
             layer_names = {layer.name for layer in encoder.layers}
-            self.assertIn("efficient_attention_query", layer_names)
-            self.assertIn("efficient_attention_key", layer_names)
-            self.assertIn("efficient_attention_value", layer_names)
+            self.assertIn("transformer_input_projection", layer_names)
+            self.assertIn("transformer_encoder_0_mha", layer_names)
+            self.assertIn("transformer_encoder_0_ffn", layer_names)
+            self.assertIn("transformer_encoder_3_mha", layer_names)
+            self.assertIn("transformer_encoder_3_ffn", layer_names)
+            self.assertIn("global_pooling", layer_names)
             self.assertNotIn("self_attention", layer_names)
 
     def test_loso_split_contracts(self):

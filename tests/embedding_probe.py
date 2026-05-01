@@ -43,7 +43,10 @@ def _build_model(
         tcn_attention_heads=config.tcn_attention_heads,
         tcn_attention_key_dim=config.tcn_attention_key_dim,
         tcn_attention_dropout=config.tcn_attention_dropout,
+        tcn_transformer_layers=config.tcn_transformer_layers,
+        tcn_transformer_ffn_dim=config.tcn_transformer_ffn_dim,
         tcn_attention_pool_size=config.tcn_attention_pool_size,
+        use_attention=config.use_attention,
         fusion_transformer_heads=config.fusion_transformer_heads,
         fusion_transformer_layers=config.fusion_transformer_layers,
         fusion_transformer_ffn_dim=config.fusion_transformer_ffn_dim,
@@ -157,9 +160,11 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--embedding-dim", type=int, default=64)
-    parser.add_argument("--num-tcn-blocks", type=int, default=1)
-    parser.add_argument("--tcn-attention-heads", type=int, default=1)
-    parser.add_argument("--tcn-attention-key-dim", type=int, default=16)
+    parser.add_argument("--num-tcn-blocks", type=int, default=4)
+    parser.add_argument("--tcn-attention-heads", type=int, default=8)
+    parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
+    parser.add_argument("--tcn-transformer-layers", type=int, default=4)
+    parser.add_argument("--tcn-transformer-ffn-dim", type=int, default=256)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     args = parser.parse_args()
 
@@ -173,6 +178,8 @@ def main() -> None:
         num_tcn_blocks=args.num_tcn_blocks,
         tcn_attention_heads=args.tcn_attention_heads,
         tcn_attention_key_dim=args.tcn_attention_key_dim,
+        tcn_transformer_layers=args.tcn_transformer_layers,
+        tcn_transformer_ffn_dim=args.tcn_transformer_ffn_dim,
         tcn_attention_pool_size=args.tcn_attention_pool_size,
         supcon_loss_weight=0.0,
     )

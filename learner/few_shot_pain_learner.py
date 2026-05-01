@@ -138,6 +138,8 @@ class FewShotPainLearner:
             "tcn_attention_heads": self.config.tcn_attention_heads,
             "tcn_attention_key_dim": self.config.tcn_attention_key_dim,
             "tcn_attention_dropout": self.config.tcn_attention_dropout,
+            "tcn_transformer_layers": self.config.tcn_transformer_layers,
+            "tcn_transformer_ffn_dim": self.config.tcn_transformer_ffn_dim,
             "tcn_attention_pool_size": self.config.tcn_attention_pool_size,
             "use_attention": self.config.use_attention,
             "fusion_transformer_heads": self.config.fusion_transformer_heads,
@@ -207,6 +209,8 @@ class FewShotPainLearner:
             tcn_attention_heads=self.config.tcn_attention_heads,
             tcn_attention_key_dim=self.config.tcn_attention_key_dim,
             tcn_attention_dropout=self.config.tcn_attention_dropout,
+            tcn_transformer_layers=self.config.tcn_transformer_layers,
+            tcn_transformer_ffn_dim=self.config.tcn_transformer_ffn_dim,
             tcn_attention_pool_size=self.config.tcn_attention_pool_size,
             use_attention=self.config.use_attention,
             fusion_transformer_heads=self.config.fusion_transformer_heads,
@@ -214,7 +218,7 @@ class FewShotPainLearner:
             fusion_transformer_ffn_dim=self.config.fusion_transformer_ffn_dim,
             fusion_ib_beta=self.config.fusion_ib_beta,
         )
-        self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate)
+        self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate, weight_decay=1e-4)
         self._build_compiled_train_batch_step()
         self._build_compiled_eval_batch_step()
 
