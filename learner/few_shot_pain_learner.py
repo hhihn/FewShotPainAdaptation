@@ -1,8 +1,6 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 import json
 import gc
 import io
@@ -51,6 +49,11 @@ class FewShotPainLearner:
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
+        self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
+        if self.gradient_clip_norm is not None:
+            self.gradient_clip_norm = float(self.gradient_clip_norm)
+        self.enable_numerics_check = bool(getattr(config, "enable_numerics_check", True))
+        self.augmentation_seed_generator = keras.random.SeedGenerator(self.seed + 104729)
         self.support_size = int(self.config.n_way * self.config.k_shot)
         self.query_size = int(self.config.n_way * self.config.q_query)
         self.num_sensors = int(len(self.config.sensor_idx))
@@ -115,6 +118,8 @@ class FewShotPainLearner:
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
+            "gradient_clip_norm": self.gradient_clip_norm,
+            "enable_numerics_check": self.enable_numerics_check,
             "train_batch_size": self.train_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
@@ -173,10 +178,12 @@ class FewShotPainLearner:
         """Apply training-only signal augmentation configured for episodic updates."""
         if self.gaussian_noise_std <= 0:
             return x
-        noise = tf.random.normal(
+        noise = keras.random.normal(
             shape=tf.shape(x),
+            mean=0.0,
             stddev=tf.cast(self.gaussian_noise_std, x.dtype),
             dtype=x.dtype,
+            seed=self.augmentation_seed_generator,
         )
         return x + noise
 
@@ -217,8 +224,15 @@ class FewShotPainLearner:
             fusion_transformer_layers=self.config.fusion_transformer_layers,
             fusion_transformer_ffn_dim=self.config.fusion_transformer_ffn_dim,
             fusion_ib_beta=self.config.fusion_ib_beta,
+            seed=self.seed,
         )
-        self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate, weight_decay=1e-4)
+        optimizer_kwargs = {
+            "learning_rate": self.learning_rate,
+            "weight_decay": 1e-4,
+        }
+        if self.gradient_clip_norm is not None:
+            optimizer_kwargs["clipnorm"] = self.gradient_clip_norm
+        self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
         self._build_compiled_train_batch_step()
         self._build_compiled_eval_batch_step()
 
@@ -473,8 +487,7 @@ class FewShotPainLearner:
             batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
             batch_triplet_loss = tf.reduce_mean(triplet_losses)
 
-        gradients = tape.gradient(batch_loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        batch_loss = self._apply_gradients(batch_loss, tape)
         return (
             batch_loss,
             batch_task_loss,
@@ -488,6 +501,42 @@ class FewShotPainLearner:
         if not self.model.losses:
             return tf.constant(0.0, dtype=dtype)
         return tf.add_n(self.model.losses)
+
+    def _guard_numerics(self, tensor: tf.Tensor, name: str) -> tf.Tensor:
+        """Optionally assert that a tensor contains only finite values."""
+        if not self.enable_numerics_check:
+            return tensor
+        return tf.debugging.check_numerics(tensor, f"Non-finite {name}")
+
+    def _apply_gradients(
+        self, loss: tf.Tensor, tape: tf.GradientTape
+    ) -> tf.Tensor:
+        """Check, clip, and apply gradients for the current model update."""
+        checked_loss = self._guard_numerics(loss, "optimizer loss")
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        grads_and_vars = [
+            (grad, variable)
+            for grad, variable in zip(gradients, self.model.trainable_variables)
+            if grad is not None
+        ]
+        if not grads_and_vars:
+            raise RuntimeError("No gradients were produced for model variables.")
+
+        grads, variables = zip(*grads_and_vars)
+        grads = list(grads)
+
+        if self.enable_numerics_check:
+            grads = [
+                tf.debugging.check_numerics(
+                    grad,
+                    f"Non-finite gradient for {variable.name}",
+                )
+                for grad, variable in zip(grads, variables)
+            ]
+
+        with tf.control_dependencies([checked_loss]):
+            self.optimizer.apply_gradients(zip(grads, variables))
+        return checked_loss
 
     def _compute_supervised_contrastive_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
@@ -708,8 +757,7 @@ class FewShotPainLearner:
             logits = task_outputs["logits"]
             loss = task_outputs["loss"]
 
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        loss = self._apply_gradients(loss, tape)
 
         # Compute accuracy
         predictions = tf.argmax(logits, axis=1)
@@ -767,7 +815,7 @@ class FewShotPainLearner:
         sampler,
         tasks_per_epoch: int,
     ):
-        """Yield `(batch_size, stacked_numpy_batch)` with async CPU prefetch."""
+        """Yield `(batch_size, stacked_task_batch)` using tf.data prefetch."""
         batch_sizes = [
             min(self.train_batch_size, tasks_per_epoch - task_start)
             for task_start in range(0, tasks_per_epoch, self.train_batch_size)
@@ -775,8 +823,7 @@ class FewShotPainLearner:
         if not batch_sizes:
             return
 
-        prefetch_batches = max(1, int(self.train_prefetch_batches))
-        if prefetch_batches <= 1:
+        if len(batch_sizes) == 1:
             for batch_size in batch_sizes:
                 yield (
                     batch_size,
@@ -787,43 +834,53 @@ class FewShotPainLearner:
                 )
             return
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            pending = deque()
-            next_batch_idx = 0
-
-            while next_batch_idx < len(batch_sizes) and len(pending) < prefetch_batches:
-                batch_size = batch_sizes[next_batch_idx]
-                pending.append(
-                    (
+        def generator():
+            for batch_size in batch_sizes:
+                support_x_np, support_y_np, query_x_np, query_y_np = (
+                    self._sample_and_stack_task_batch_numpy(
+                        sampler,
                         batch_size,
-                        executor.submit(
-                            self._sample_and_stack_task_batch_numpy,
-                            sampler,
-                            batch_size,
-                        ),
                     )
                 )
-                next_batch_idx += 1
+                yield (
+                    np.int32(batch_size),
+                    support_x_np,
+                    support_y_np,
+                    query_x_np,
+                    query_y_np,
+                )
 
-            while pending:
-                batch_size, batch_future = pending.popleft()
-                batch_arrays = batch_future.result()
+        output_signature = (
+            tf.TensorSpec(shape=(), dtype=tf.int32),
+            tf.TensorSpec(
+                shape=(None, self.support_size, self.sequence_length, self.num_sensors),
+                dtype=tf.float32,
+            ),
+            tf.TensorSpec(shape=(None, self.support_size), dtype=tf.int32),
+            tf.TensorSpec(
+                shape=(None, self.query_size, self.sequence_length, self.num_sensors),
+                dtype=tf.float32,
+            ),
+            tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
+        )
+        dataset = tf.data.Dataset.from_generator(
+            generator,
+            output_signature=output_signature,
+        ).prefetch(tf.data.AUTOTUNE)
 
-                if next_batch_idx < len(batch_sizes):
-                    next_size = batch_sizes[next_batch_idx]
-                    pending.append(
-                        (
-                            next_size,
-                            executor.submit(
-                                self._sample_and_stack_task_batch_numpy,
-                                sampler,
-                                next_size,
-                            ),
-                        )
-                    )
-                    next_batch_idx += 1
-
-                yield batch_size, batch_arrays
+        for (
+            batch_size,
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
+        ) in dataset:
+            yield int(batch_size.numpy()), (
+                support_x_batch,
+                support_y_batch,
+                query_x_batch,
+                query_y_batch,
+            )
 
     def _train_batch_step_eager_tensors(
         self,
@@ -878,8 +935,7 @@ class FewShotPainLearner:
             batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
             batch_triplet_loss = tf.reduce_mean(tf.stack(triplet_losses))
 
-        gradients = tape.gradient(batch_loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        batch_loss = self._apply_gradients(batch_loss, tape)
         return (
             batch_loss,
             batch_task_loss,
@@ -1948,15 +2004,24 @@ class FewShotPainLearner:
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
                 self.model.set_weights(pre_adaptation_weights)
-                zero_shot_loss, zero_shot_metrics = (
-                    self._evaluate_sampler_loss_and_metrics_at_task_size(
-                        test_sampler,
-                        num_tasks=heldout_eval_tasks,
-                        k_shot=eval_k_shot,
-                        q_query=eval_q_query,
-                        forward_batch_size=self.train_batch_size,
+                try:
+                    zero_shot_loss, zero_shot_metrics = (
+                        self._evaluate_sampler_loss_and_metrics_at_task_size(
+                            test_sampler,
+                            num_tasks=heldout_eval_tasks,
+                            k_shot=eval_k_shot,
+                            q_query=eval_q_query,
+                            forward_batch_size=self.train_batch_size,
+                        )
                     )
-                )
+                except ValueError as exc:
+                    if (eval_k_shot, eval_q_query) == configured_eval_pair:
+                        raise
+                    self.logger.warning(
+                        f"[Fold {fold + 1}/{num_subjects}] "
+                        f"Skipping optional held-out size {size_key}: {exc}"
+                    )
+                    continue
                 csv_writer.write_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,

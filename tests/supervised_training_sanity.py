@@ -111,7 +111,7 @@ def run_sanity_training(
     val_sampler = fold["val_sampler"]
 
     model = _build_model(config=config, fusion_method=fusion_method)
-    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0)
     loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
     history: list[EpochMetrics] = []
@@ -129,9 +129,24 @@ def run_sanity_training(
                     if model.losses
                     else tf.constant(0.0, dtype=task_loss.dtype)
                 )
-                loss = task_loss + aux_loss
+                loss = tf.debugging.check_numerics(
+                    task_loss + aux_loss,
+                    "Non-finite supervised training loss",
+                )
             grads = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            grads = [
+                tf.debugging.check_numerics(
+                    grad, f"Non-finite gradient for {variable.name}"
+                )
+                if grad is not None
+                else grad
+                for grad, variable in zip(grads, model.trainable_variables)
+            ]
+            optimizer.apply_gradients(
+                (grad, variable)
+                for grad, variable in zip(grads, model.trainable_variables)
+                if grad is not None
+            )
             train_losses.append(float(loss))
             train_accs.append(float(_accuracy_from_logits(logits, query_y)))
 

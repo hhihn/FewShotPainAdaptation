@@ -14,6 +14,7 @@ class TransformerInformationBottleneckFusion(keras.layers.Layer):
         ffn_dim: int = 128,
         dropout_rate: float = 0.1,
         ib_beta: float = 1e-3,
+        seed: int = 0,
         name: str = "transformer_ib_fusion",
     ):
         super().__init__(name=name)
@@ -25,6 +26,8 @@ class TransformerInformationBottleneckFusion(keras.layers.Layer):
         self.dropout_rate = dropout_rate
         self.ib_beta = ib_beta
         self.last_kl = tf.constant(0.0, dtype=tf.float32)
+        self.seed = int(seed)
+        self.seed_generator = keras.random.SeedGenerator(self.seed)
 
         self.positional_embedding = self.add_weight(
             name="positional_embedding",
@@ -82,7 +85,11 @@ class TransformerInformationBottleneckFusion(keras.layers.Layer):
         logvar = tf.clip_by_value(self.logvar_head(pooled), -8.0, 4.0)
 
         if training:
-            eps = tf.random.normal(tf.shape(mu))
+            eps = keras.random.normal(
+                shape=tf.shape(mu),
+                dtype=mu.dtype,
+                seed=self.seed_generator,
+            )
             z = mu + tf.exp(0.5 * logvar) * eps
         else:
             z = mu

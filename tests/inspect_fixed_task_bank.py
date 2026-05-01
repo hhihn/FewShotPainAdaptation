@@ -94,7 +94,7 @@ def _train_on_fixed_bank(
     if steps <= 0:
         return
 
-    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0)
     loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
     for step in range(1, steps + 1):
@@ -112,10 +112,23 @@ def _train_on_fixed_bank(
                 if model.losses
                 else tf.constant(0.0, dtype=task_loss.dtype)
             )
-            loss = task_loss + aux_loss
+            loss = tf.debugging.check_numerics(
+                task_loss + aux_loss,
+                "Non-finite fixed-task-bank loss",
+            )
 
         grads = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        grads = [
+            tf.debugging.check_numerics(grad, f"Non-finite gradient for {variable.name}")
+            if grad is not None
+            else grad
+            for grad, variable in zip(grads, model.trainable_variables)
+        ]
+        optimizer.apply_gradients(
+            (grad, variable)
+            for grad, variable in zip(grads, model.trainable_variables)
+            if grad is not None
+        )
 
         if step == 1 or step % log_every == 0 or step == steps:
             preds = tf.argmax(logits, axis=1, output_type=tf.int32)

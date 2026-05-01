@@ -170,12 +170,21 @@ def _task_local_cosine_stats(
 
 
 def _augment_with_gaussian_noise(
-    x: tf.Tensor, noise_std: float, training: bool
+    x: tf.Tensor,
+    noise_std: float,
+    training: bool,
+    seed_generator: keras.random.SeedGenerator,
 ) -> tf.Tensor:
     """Additive Gaussian noise augmentation used only for training updates."""
     if not training or noise_std <= 0:
         return x
-    noise = tf.random.normal(shape=tf.shape(x), stddev=noise_std, dtype=x.dtype)
+    noise = keras.random.normal(
+        shape=tf.shape(x),
+        mean=0.0,
+        stddev=noise_std,
+        dtype=x.dtype,
+        seed=seed_generator,
+    )
     return x + noise
 
 
@@ -913,8 +922,9 @@ def run_fixed_episode_bank_overfit(
             )
 
     model = _build_model(config=config, fusion_method=fusion_method)
-    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0)
     loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    noise_seed_generator = keras.random.SeedGenerator(int(seed) + 104729)
 
     history: list[StepMetrics] = []
     for batch_step in range(1, num_batches + 1):
@@ -929,10 +939,16 @@ def run_fixed_episode_bank_overfit(
             for task in batch_tasks:
                 support_x, support_y, query_x, query_y = _to_tensors(task)
                 support_x_aug = _augment_with_gaussian_noise(
-                    support_x, noise_std=gaussian_noise_std, training=True
+                    support_x,
+                    noise_std=gaussian_noise_std,
+                    training=True,
+                    seed_generator=noise_seed_generator,
                 )
                 query_x_aug = _augment_with_gaussian_noise(
-                    query_x, noise_std=gaussian_noise_std, training=True
+                    query_x,
+                    noise_std=gaussian_noise_std,
+                    training=True,
+                    seed_generator=noise_seed_generator,
                 )
                 episode_outputs = model.forward_episode(
                     support_x=support_x_aug,
@@ -982,10 +998,23 @@ def run_fixed_episode_bank_overfit(
                 )
                 per_task_losses.append(total_loss)
 
-            batch_loss = tf.reduce_mean(tf.stack(per_task_losses))
+            batch_loss = tf.debugging.check_numerics(
+                tf.reduce_mean(tf.stack(per_task_losses)),
+                "Non-finite fixed-episode batch loss",
+            )
 
         grads = tape.gradient(batch_loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        grads = [
+            tf.debugging.check_numerics(grad, f"Non-finite gradient for {variable.name}")
+            if grad is not None
+            else grad
+            for grad, variable in zip(grads, model.trainable_variables)
+        ]
+        optimizer.apply_gradients(
+            (grad, variable)
+            for grad, variable in zip(grads, model.trainable_variables)
+            if grad is not None
+        )
 
         report_due = (
             batch_step == 1 or batch_step % log_every == 0 or batch_step == num_batches

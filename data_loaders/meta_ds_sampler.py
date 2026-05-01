@@ -328,13 +328,15 @@ class SixWayKShotSampler:
             use_base_index=True,
         )
 
-    def as_tf_dataset(self, batch_size: int = 1, prefetch: int = 2) -> tf.data.Dataset:
+    def as_tf_dataset(
+        self, batch_size: int = 1, prefetch: int | None = None
+    ) -> tf.data.Dataset:
         """
         Convert to TensorFlow Dataset.
 
         Args:
             batch_size: Batch size (number of tasks)
-            prefetch: Prefetch buffer size
+            prefetch: Prefetch buffer size; defaults to tf.data.AUTOTUNE
 
         Returns:
             tf.data.Dataset yielding batched tasks
@@ -370,10 +372,11 @@ class SixWayKShotSampler:
         if batch_size > 1:
             dataset = dataset.batch(batch_size)
 
-        return dataset.prefetch(prefetch)
+        prefetch_buffer = tf.data.AUTOTUNE if prefetch is None else prefetch
+        return dataset.prefetch(prefetch_buffer)
 
     def as_multimodal_tf_dataset(
-        self, batch_size: int = 1, prefetch: int = 2
+        self, batch_size: int = 1, prefetch: int | None = None
     ) -> tf.data.Dataset:
         """
         Convert to TensorFlow Dataset with separate modality tensors.
@@ -426,4 +429,5 @@ class SixWayKShotSampler:
         if batch_size > 1:
             dataset = dataset.batch(batch_size)
 
-        return dataset.prefetch(prefetch)
+        prefetch_buffer = tf.data.AUTOTUNE if prefetch is None else prefetch
+        return dataset.prefetch(prefetch_buffer)
