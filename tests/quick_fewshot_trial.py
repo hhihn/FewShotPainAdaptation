@@ -548,7 +548,7 @@ def main() -> None:
     parser.add_argument("--tcn-attention-heads", type=int, default=8)
     parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
     parser.add_argument("--tcn-attention-dropout", type=float, default=0.1)
-    parser.add_argument("--tcn-transformer-layers", type=int, default=4)
+    parser.add_argument("--tcn-transformer-layers", type=int, default=2)
     parser.add_argument("--tcn-transformer-ffn-dim", type=int, default=256)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--use-attention", action="store_true")

@@ -26,7 +26,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         tcn_attention_heads: int = 4,
         tcn_attention_key_dim: int = 32,
         tcn_attention_dropout: float = 0.2,
-        tcn_transformer_layers: int = 4,
+        tcn_transformer_layers: int = 2,
         tcn_transformer_ffn_dim: int = 256,
         tcn_attention_pool_size: int = 8,
         use_attention: bool = False,

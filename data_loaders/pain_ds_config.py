@@ -33,7 +33,7 @@ class PainDatasetConfig:
     tcn_attention_heads: int = 8  # Number of temporal Transformer attention heads
     tcn_attention_key_dim: int = 8  # Key dimension per head; 8 heads * 8 = d_model 64
     tcn_attention_dropout: float = 0.1  # Dropout inside temporal Transformer encoder
-    tcn_transformer_layers: int = 4  # Number of temporal Transformer encoder layers
+    tcn_transformer_layers: int = 2  # Number of temporal Transformer encoder layers
     tcn_transformer_ffn_dim: int = 256  # FFN hidden dimension in temporal Transformer
     tcn_attention_pool_size: int = 0  # Downsample factor before attention pooling
     use_attention: bool = True  # If True, enable attention pooling in each TCN encoder
