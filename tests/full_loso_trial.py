@@ -120,7 +120,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         tcn_transformer_layers=args.tcn_transformer_layers,
         tcn_transformer_ffn_dim=args.tcn_transformer_ffn_dim,
         tcn_attention_pool_size=args.tcn_attention_pool_size,
-        use_attention=True, #bool(getattr(args, "use_attention", True)),
+        use_attention=bool(getattr(args, "use_attention", True)),
         supcon_loss_weight=float(getattr(args, "supcon_loss_weight", 0.0)),
         supcon_temperature=float(getattr(args, "supcon_temperature", 0.05)),
         triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
