@@ -109,11 +109,6 @@ class TemporalConvolutionalNetwork(keras.Model):
             self.tcn_blocks.append(block)
 
         if self.use_attention:
-            self.transformer_input_projection = keras.layers.Dense(
-                embedding_dim,
-                name="transformer_input_projection",
-                kernel_initializer="he_normal",
-            )
             self.attention_pool = None
             if self.attention_pool_size > 1:
                 self.attention_pool = keras.layers.AveragePooling1D(
@@ -122,6 +117,11 @@ class TemporalConvolutionalNetwork(keras.Model):
                     padding="valid",
                     name="attention_pool",
                 )
+            self.transformer_input_projection = keras.layers.Dense(
+                embedding_dim,
+                name="transformer_input_projection",
+                kernel_initializer="he_normal",
+            )
             self.transformer_attention_layers = []
             self.transformer_ffn_layers = []
             self.transformer_attention_norm_layers = []
