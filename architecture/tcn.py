@@ -99,12 +99,11 @@ class TemporalConvolutionalNetwork(keras.Model):
             shape=(self.sequence_length, 1), name=f"tcn_block_{0}_input"
         )
         for i in range(num_blocks):
-            block, new_inputs = self._build_cnn_block(
+            block, new_inputs = self._build_tcn_block(
                 inputs=inputs,
                 filters=filters_list[i],
                 block_idx=i,
-                pooling_size=self.pooling_size,
-                pooling_stride=self.strides
+                dilation_rate=dilation_rates[i],
             )
             inputs = new_inputs
             self.tcn_blocks.append(block)
