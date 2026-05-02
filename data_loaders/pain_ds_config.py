@@ -19,12 +19,7 @@ class PainDatasetConfig:
         64,
         128,
     )
-    tcn_dilation_rates: Optional[List[int]] = (
-        1,
-        2,
-        4,
-        8,
-    )  # Dilation rate per TCN block
+    tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2  # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2  # Pool size used between TCN blocks
@@ -179,6 +174,15 @@ class PainDatasetConfig:
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
+        if self.filters_list is not None:
+            self.filters_list = [int(filters) for filters in self.filters_list]
+            if not self.filters_list:
+                raise ValueError("filters_list must contain at least one filter size")
+            if any(filters <= 0 for filters in self.filters_list):
+                raise ValueError("filters_list values must be > 0")
+            self.num_tcn_blocks = len(self.filters_list)
+        if self.num_tcn_blocks <= 0:
+            raise ValueError("num_tcn_blocks must be > 0")
         if self.supcon_loss_weight < 0:
             raise ValueError("supcon_loss_weight must be non-negative")
         if self.supcon_temperature <= 0:
@@ -219,6 +223,8 @@ class PainDatasetConfig:
                 raise ValueError("tcn_dilation_rates length must match num_tcn_blocks")
             if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
                 raise ValueError("tcn_dilation_rates values must be > 0")
+        else:
+            self.tcn_dilation_rates = [2**idx for idx in range(self.num_tcn_blocks)]
         if self.sampling_rate_hz <= 0:
             raise ValueError("sampling_rate_hz must be > 0")
         if self.window_shift_window_seconds <= 0:
