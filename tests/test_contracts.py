@@ -173,6 +173,32 @@ class ContractTests(unittest.TestCase):
                 tcn_dilation_rates=(1, 2),
             )
 
+    def test_single_tcn_dilation_rate_repeats_for_all_filters(self):
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            filters_list=(8, 16),
+            tcn_dilation_rates=2,
+        )
+        self.assertEqual(config.tcn_dilation_rates, [2, 2])
+
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            filters_list=(8, 16),
+            tcn_dilation_rates="2",
+        )
+        self.assertEqual(config.tcn_dilation_rates, [2, 2])
+
+    def test_string_filters_and_dilations_are_parsed_together(self):
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            filters_list="16,32",
+            tcn_dilation_rates="1,2",
+        )
+
+        self.assertEqual(config.num_tcn_blocks, 2)
+        self.assertEqual(config.filters_list, [16, 32])
+        self.assertEqual(config.tcn_dilation_rates, [1, 2])
+
     def test_batch_hard_triplet_loss_uses_hardest_positive_and_negative(self):
         learner = FewShotPainLearner.__new__(FewShotPainLearner)
         learner.triplet_loss_weight = 1.0

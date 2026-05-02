@@ -1,4 +1,5 @@
 from typing import Tuple, Optional, List
+from numbers import Integral
 from dataclasses import dataclass
 
 
@@ -175,7 +176,16 @@ class PainDatasetConfig:
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
         if self.filters_list is not None:
-            self.filters_list = [int(filters) for filters in self.filters_list]
+            if isinstance(self.filters_list, str):
+                self.filters_list = [
+                    int(item.strip())
+                    for item in self.filters_list.split(",")
+                    if item.strip()
+                ]
+            elif isinstance(self.filters_list, Integral):
+                self.filters_list = [int(self.filters_list)]
+            else:
+                self.filters_list = [int(filters) for filters in self.filters_list]
             if not self.filters_list:
                 raise ValueError("filters_list must contain at least one filter size")
             if any(filters <= 0 for filters in self.filters_list):
@@ -216,9 +226,22 @@ class PainDatasetConfig:
         if self.tcn_attention_pool_size < 0:
             raise ValueError("tcn_attention_pool_size must be >= 0")
         if self.tcn_dilation_rates is not None:
-            self.tcn_dilation_rates = [
-                int(dilation_rate) for dilation_rate in self.tcn_dilation_rates
-            ]
+            if isinstance(self.tcn_dilation_rates, str):
+                self.tcn_dilation_rates = [
+                    int(item.strip())
+                    for item in self.tcn_dilation_rates.split(",")
+                    if item.strip()
+                ]
+            elif isinstance(self.tcn_dilation_rates, Integral):
+                self.tcn_dilation_rates = [
+                    int(self.tcn_dilation_rates)
+                ] * self.num_tcn_blocks
+            else:
+                self.tcn_dilation_rates = [
+                    int(dilation_rate) for dilation_rate in self.tcn_dilation_rates
+                ]
+            if len(self.tcn_dilation_rates) == 1 and self.num_tcn_blocks > 1:
+                self.tcn_dilation_rates = self.tcn_dilation_rates * self.num_tcn_blocks
             if len(self.tcn_dilation_rates) != self.num_tcn_blocks:
                 raise ValueError("tcn_dilation_rates length must match num_tcn_blocks")
             if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
