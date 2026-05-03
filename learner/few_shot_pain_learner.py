@@ -1439,11 +1439,7 @@ class FewShotPainLearner:
         with open(output_path, "w", encoding="utf-8") as fp:
             fp.write("=== MultimodalPrototypicalNetwork Summary ===\n")
             full_summary = io.StringIO()
-            self.model.summary(
-                print_fn=lambda line: full_summary.write(line + "\n"),
-                expand_nested=True,
-                show_trainable=True,
-            )
+            self.model.summary(print_fn=lambda line: full_summary.write(line + "\n"))
             fp.write(full_summary.getvalue())
             fp.write("\n")
 
@@ -1452,50 +1448,11 @@ class FewShotPainLearner:
                 fp.write(f"\n--- Encoder: {modality_name} ---\n")
                 encoder_summary = io.StringIO()
                 encoder.summary(
-                    print_fn=lambda line: encoder_summary.write(line + "\n"),
-                    expand_nested=True,
-                    show_trainable=True,
+                    print_fn=lambda line: encoder_summary.write(line + "\n")
                 )
                 fp.write(encoder_summary.getvalue())
-                self._write_tcn_block_parameter_audit(fp, encoder)
+        print(self.model.summary())
         return output_path
-
-    @staticmethod
-    def _weight_param_count(weight: tf.Variable) -> int:
-        return int(np.prod([int(dim) for dim in weight.shape]))
-
-    @classmethod
-    def _write_tcn_block_parameter_audit(cls, fp, encoder: keras.Model) -> None:
-        """Write explicit per-weight counts for nested TCN blocks."""
-        tcn_blocks = getattr(encoder, "tcn_blocks", [])
-        if not tcn_blocks:
-            return
-
-        fp.write("\nTCN block trainable-weight audit:\n")
-        for block in tcn_blocks:
-            trainable_total = sum(
-                cls._weight_param_count(weight) for weight in block.trainable_weights
-            )
-            non_trainable_total = sum(
-                cls._weight_param_count(weight)
-                for weight in block.non_trainable_weights
-            )
-            fp.write(
-                f"\n{block.name}: "
-                f"trainable={trainable_total:,}, "
-                f"non_trainable={non_trainable_total:,}\n"
-            )
-            for weight in block.weights:
-                shape = tuple(int(dim) for dim in weight.shape)
-                param_count = cls._weight_param_count(weight)
-                trainable_marker = "trainable" if weight.trainable else "frozen"
-                weight_name = getattr(weight, "path", None) or getattr(
-                    weight, "name", "weight"
-                )
-                fp.write(
-                    f"  {weight_name:<48} {str(shape):<18} "
-                    f"{param_count:>8,} {trainable_marker}\n"
-                )
 
     @staticmethod
     def _format_seconds(seconds: float) -> str:
