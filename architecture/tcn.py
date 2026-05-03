@@ -240,7 +240,7 @@ class TemporalConvolutionalNetwork(keras.Model):
             strides=pooling_stride,
             name=f"cnn_block_{block_idx}_maxpool",
         )(x)
-      #  x = keras.layers.Dropout(rate=self.dropout_rate, name=f"cnn_block_{block_idx}_dropout")(x)
+        x = keras.layers.Dropout(rate=self.dropout_rate, name=f"cnn_block_{block_idx}_dropout")(x)
         return keras.Model(inputs=inputs, outputs=x, name=f"cnn_block_{block_idx}"), x
 
     def _build_tcn_block(

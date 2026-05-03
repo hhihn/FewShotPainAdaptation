@@ -1,6 +1,8 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import json
 import gc
 import io
@@ -506,17 +508,10 @@ class FewShotPainLearner:
             return tf.constant(0.0, dtype=dtype)
         return tf.add_n(self.model.losses)
 
-    def _guard_numerics(self, tensor: tf.Tensor, name: str) -> tf.Tensor:
-        """Optionally assert that a tensor contains only finite values."""
-        if not self.enable_numerics_check:
-            return tensor
-        return tf.debugging.check_numerics(tensor, f"Non-finite {name}")
-
     def _apply_gradients(
         self, loss: tf.Tensor, tape: tf.GradientTape
     ) -> tf.Tensor:
-        """Check, clip, and apply gradients for the current model update."""
-        checked_loss = self._guard_numerics(loss, "optimizer loss")
+        """Apply gradients for the current model update."""
         gradients = tape.gradient(loss, self.model.trainable_variables)
         grads_and_vars = [
             (grad, variable)
@@ -527,20 +522,8 @@ class FewShotPainLearner:
             raise RuntimeError("No gradients were produced for model variables.")
 
         grads, variables = zip(*grads_and_vars)
-        grads = list(grads)
-
-        if self.enable_numerics_check:
-            grads = [
-                tf.debugging.check_numerics(
-                    grad,
-                    f"Non-finite gradient for {variable.name}",
-                )
-                for grad, variable in zip(grads, variables)
-            ]
-
-        with tf.control_dependencies([checked_loss]):
-            self.optimizer.apply_gradients(zip(grads, variables))
-        return checked_loss
+        self.optimizer.apply_gradients(zip(grads, variables))
+        return loss
 
     def _compute_supervised_contrastive_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
@@ -819,7 +802,7 @@ class FewShotPainLearner:
         sampler,
         tasks_per_epoch: int,
     ):
-        """Yield `(batch_size, stacked_task_batch)` using tf.data prefetch."""
+        """Yield `(batch_size, stacked_numpy_batch)` with async CPU prefetch."""
         batch_sizes = [
             min(self.train_batch_size, tasks_per_epoch - task_start)
             for task_start in range(0, tasks_per_epoch, self.train_batch_size)
@@ -827,7 +810,8 @@ class FewShotPainLearner:
         if not batch_sizes:
             return
 
-        if len(batch_sizes) == 1:
+        prefetch_batches = max(1, int(self.train_prefetch_batches))
+        if prefetch_batches <= 1:
             for batch_size in batch_sizes:
                 yield (
                     batch_size,
@@ -838,53 +822,43 @@ class FewShotPainLearner:
                 )
             return
 
-        def generator():
-            for batch_size in batch_sizes:
-                support_x_np, support_y_np, query_x_np, query_y_np = (
-                    self._sample_and_stack_task_batch_numpy(
-                        sampler,
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = deque()
+            next_batch_idx = 0
+
+            while next_batch_idx < len(batch_sizes) and len(pending) < prefetch_batches:
+                batch_size = batch_sizes[next_batch_idx]
+                pending.append(
+                    (
                         batch_size,
+                        executor.submit(
+                            self._sample_and_stack_task_batch_numpy,
+                            sampler,
+                            batch_size,
+                        ),
                     )
                 )
-                yield (
-                    np.int32(batch_size),
-                    support_x_np,
-                    support_y_np,
-                    query_x_np,
-                    query_y_np,
-                )
+                next_batch_idx += 1
 
-        output_signature = (
-            tf.TensorSpec(shape=(), dtype=tf.int32),
-            tf.TensorSpec(
-                shape=(None, self.support_size, self.sequence_length, self.num_sensors),
-                dtype=tf.float32,
-            ),
-            tf.TensorSpec(shape=(None, self.support_size), dtype=tf.int32),
-            tf.TensorSpec(
-                shape=(None, self.query_size, self.sequence_length, self.num_sensors),
-                dtype=tf.float32,
-            ),
-            tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
-        )
-        dataset = tf.data.Dataset.from_generator(
-            generator,
-            output_signature=output_signature,
-        ).prefetch(self.config.train_prefetch_batches)
+            while pending:
+                batch_size, batch_future = pending.popleft()
+                batch_arrays = batch_future.result()
 
-        for (
-            batch_size,
-            support_x_batch,
-            support_y_batch,
-            query_x_batch,
-            query_y_batch,
-        ) in dataset:
-            yield int(batch_size.numpy()), (
-                support_x_batch,
-                support_y_batch,
-                query_x_batch,
-                query_y_batch,
-            )
+                if next_batch_idx < len(batch_sizes):
+                    next_size = batch_sizes[next_batch_idx]
+                    pending.append(
+                        (
+                            next_size,
+                            executor.submit(
+                                self._sample_and_stack_task_batch_numpy,
+                                sampler,
+                                next_size,
+                            ),
+                        )
+                    )
+                    next_batch_idx += 1
+
+                yield batch_size, batch_arrays
 
     def _train_batch_step_eager_tensors(
         self,
