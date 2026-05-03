@@ -866,7 +866,7 @@ class FewShotPainLearner:
         dataset = tf.data.Dataset.from_generator(
             generator,
             output_signature=output_signature,
-        ).prefetch(self.train_prefetch_batches)
+        ).prefetch(self.config.train_prefetch_batches)
 
         for (
             batch_size,
