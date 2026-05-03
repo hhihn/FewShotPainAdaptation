@@ -866,7 +866,7 @@ class FewShotPainLearner:
         dataset = tf.data.Dataset.from_generator(
             generator,
             output_signature=output_signature,
-        ).prefetch(tf.data.AUTOTUNE)
+        ).prefetch(self.train_prefetch_batches)
 
         for (
             batch_size,
@@ -2288,6 +2288,18 @@ class FewShotPainLearner:
                 test_loss=zero_shot_loss,
                 test_accuracy=zero_shot_metrics["accuracy"],
             )
+            del (
+                fold_dict,
+                train_sampler,
+                val_sampler,
+                test_sampler,
+                pre_adaptation_weights,
+                sweep_metrics_by_size,
+                fixed_size_metrics,
+                zero_shot_metrics,
+                k_shot_metrics,
+            )
+            gc.collect()
             completed_folds = fold + 1
             should_log_checkpoint_summary = (
                 completed_folds < num_subjects

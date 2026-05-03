@@ -96,7 +96,7 @@ class TemporalConvolutionalNetwork(keras.Model):
         # Build TCN blocks
         self.tcn_blocks = []
         inputs = keras.layers.Input(
-            shape=(self.sequence_length, 1), name=f"tcn_block_{0}_input"
+            shape=(self.sequence_length, 1), name=f"{0}_input"
         )
         for i in range(num_blocks):
             block, new_inputs = self._build_cnn_block(
