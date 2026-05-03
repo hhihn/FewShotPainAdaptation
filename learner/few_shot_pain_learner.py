@@ -190,6 +190,10 @@ class FewShotPainLearner:
     def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
         if clear_session:
+            self._compiled_train_batch_step = None
+            self._compiled_eval_batch_step = None
+            self.model = None
+            self.optimizer = None
             tf.keras.backend.clear_session()
             gc.collect()
 
