@@ -193,7 +193,7 @@ class TemporalConvolutionalNetwork(keras.Model):
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
-            256,
+            1024,
             activation="elu",
             name="embedding_dense_hidden",
             kernel_initializer="he_normal",
@@ -201,6 +201,16 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.embedding_dense_hidden_dropout = keras.layers.Dropout(
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
+        )
+        self.embedding_dense_hidden_2 = keras.layers.Dense(
+            512,
+            activation="elu",
+            name="embedding_dense_hidden_2",
+            kernel_initializer="he_normal",
+        )
+        self.embedding_dense_hidden_dropout_2 = keras.layers.Dropout(
+            rate=self.dropout_rate,
+            name="embedding_dense_hidden_dropout_2",
         )
         self.embedding_dense = keras.layers.Dense(
             embedding_dim,
@@ -354,6 +364,8 @@ class TemporalConvolutionalNetwork(keras.Model):
         # Final embedding
         x = self.embedding_dense_hidden(x)
         x = self.embedding_dense_hidden_dropout(x, training=training)
+        x = self.embedding_dense_hidden_2(x)
+        x = self.embedding_dense_hidden_dropout_2(x, training=training)
         x = self.embedding_dense(x)
 
         return x
