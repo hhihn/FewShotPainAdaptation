@@ -92,7 +92,6 @@ class PainDatasetConfig:
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
     train_prefetch_batches: int = 1  # Number of asynchronously prepared train batches
     gradient_clip_norm: Optional[float] = 1.0  # Per-gradient norm clip for optimizer updates
-    enable_numerics_check: bool = True  # Check train losses/gradients for NaN/Inf
     train_progress_write_every_n_batches: int = (
         10  # Persist train_update CSV rows every N train batches
     )

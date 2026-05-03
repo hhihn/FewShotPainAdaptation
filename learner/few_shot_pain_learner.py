@@ -54,7 +54,6 @@ class FewShotPainLearner:
         self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
         if self.gradient_clip_norm is not None:
             self.gradient_clip_norm = float(self.gradient_clip_norm)
-        self.enable_numerics_check = bool(getattr(config, "enable_numerics_check", True))
         self.augmentation_seed_generator = keras.random.SeedGenerator(self.seed + 104729)
         self.support_size = int(self.config.n_way * self.config.k_shot)
         self.query_size = int(self.config.n_way * self.config.q_query)
@@ -121,7 +120,6 @@ class FewShotPainLearner:
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
             "gradient_clip_norm": self.gradient_clip_norm,
-            "enable_numerics_check": self.enable_numerics_check,
             "train_batch_size": self.train_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,

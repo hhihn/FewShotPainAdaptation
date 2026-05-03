@@ -279,6 +279,7 @@ class ContractTests(unittest.TestCase):
             fusion_method="mean",
             tcn_attention_heads=2,
             tcn_attention_key_dim=4,
+            tcn_transformer_layers=4,
             tcn_attention_pool_size=1,
             use_attention=True,
         )
@@ -412,7 +413,7 @@ class ContractTests(unittest.TestCase):
             train_query_counts = np.bincount(
                 train_task["query_y"], minlength=config.n_way
             )
-            self.assertEqual(train_task["subject"], -1)
+            self.assertIn(train_task["subject"], fold["train_subjects"])
             self.assertTrue(np.all(train_support_counts == config.k_shot))
             self.assertTrue(np.all(train_query_counts == config.q_query))
 
