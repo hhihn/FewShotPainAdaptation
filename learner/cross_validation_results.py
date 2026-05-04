@@ -1,0 +1,403 @@
+import numpy as np
+
+from utils.training_progress_csv import TrainingProgressCSVWriter
+
+
+class CrossValidationResultRecorder:
+    """Own CSV progress writes and LOSO cross-validation result aggregation."""
+
+    def __init__(
+        self,
+        *,
+        heldout_eval_pairs: list[tuple[int, int]],
+        training_progress_output_dir: str,
+        csv_flush_every_events: int,
+        logger,
+    ):
+        self.heldout_eval_pairs = [
+            (int(k_shot), int(q_query)) for k_shot, q_query in heldout_eval_pairs
+        ]
+        self.logger = logger
+        self.csv_writer = TrainingProgressCSVWriter(
+            output_dir=training_progress_output_dir,
+            flush_every_events=max(1, int(csv_flush_every_events)),
+        )
+        self.current_progress_file = None
+        self.cv_results = self._build_initial_results()
+
+    @property
+    def results(self) -> dict:
+        return self.cv_results
+
+    def _build_initial_results(self) -> dict:
+        return {
+            "train_losses": [],
+            "train_accuracies": [],
+            "val_losses": [],
+            "val_accuracies": [],
+            "test_losses": [],
+            "test_accuracies": [],
+            "zero_shot_losses": [],
+            "zero_shot_accuracies": [],
+            "zero_shot_precisions": [],
+            "zero_shot_recalls": [],
+            "zero_shot_f1s": [],
+            "zero_shot_intra_class_similarities": [],
+            "zero_shot_inter_class_similarities": [],
+            "k_shot_losses": [],
+            "k_shot_accuracies": [],
+            "k_shot_precisions": [],
+            "k_shot_recalls": [],
+            "k_shot_f1s": [],
+            "k_shot_intra_class_similarities": [],
+            "k_shot_inter_class_similarities": [],
+            "heldout_eval_task_sizes": [
+                {"k_shot": int(k_shot), "q_query": int(q_query)}
+                for k_shot, q_query in self.heldout_eval_pairs
+            ],
+            "heldout_eval_by_task_size": {
+                self.size_key(k_shot, q_query): self._build_size_bucket(
+                    k_shot,
+                    q_query,
+                )
+                for k_shot, q_query in self.heldout_eval_pairs
+            },
+            "training_progress_files": [],
+            "model_architecture_file": None,
+        }
+
+    @staticmethod
+    def size_key(k_shot: int, q_query: int) -> str:
+        return f"k{int(k_shot)}_q{int(q_query)}"
+
+    @staticmethod
+    def _build_size_bucket(k_shot: int, q_query: int) -> dict:
+        return {
+            "k_shot": int(k_shot),
+            "q_query": int(q_query),
+            "zero_shot_losses": [],
+            "zero_shot_accuracies": [],
+            "zero_shot_precisions": [],
+            "zero_shot_recalls": [],
+            "zero_shot_f1s": [],
+            "zero_shot_intra_class_similarities": [],
+            "zero_shot_inter_class_similarities": [],
+            "k_shot_losses": [],
+            "k_shot_accuracies": [],
+            "k_shot_precisions": [],
+            "k_shot_recalls": [],
+            "k_shot_f1s": [],
+            "k_shot_intra_class_similarities": [],
+            "k_shot_inter_class_similarities": [],
+        }
+
+    @staticmethod
+    def _metric_event_kwargs(
+        metrics: dict,
+        *,
+        include_similarity_margin: bool = False,
+    ) -> dict:
+        event_kwargs = {
+            "task_loss": metrics.get("task_loss"),
+            "contrastive_loss": metrics.get("contrastive_loss"),
+            "triplet_loss": metrics.get("triplet_loss"),
+            "accuracy": metrics.get("accuracy"),
+            "precision": metrics.get("precision"),
+            "recall": metrics.get("recall"),
+            "f1": metrics.get("f1"),
+            "intra_class_similarity": metrics.get("intra_class_similarity"),
+            "inter_class_similarity": metrics.get("inter_class_similarity"),
+        }
+        if include_similarity_margin:
+            event_kwargs["similarity_margin"] = metrics.get("similarity_margin")
+        return event_kwargs
+
+    @staticmethod
+    def _append_eval_result(
+        bucket: dict,
+        *,
+        prefix: str,
+        loss: float,
+        metrics: dict,
+    ) -> None:
+        bucket[f"{prefix}_losses"].append(loss)
+        bucket[f"{prefix}_accuracies"].append(metrics["accuracy"])
+        bucket[f"{prefix}_precisions"].append(metrics["precision"])
+        bucket[f"{prefix}_recalls"].append(metrics["recall"])
+        bucket[f"{prefix}_f1s"].append(metrics["f1"])
+        bucket[f"{prefix}_intra_class_similarities"].append(
+            metrics["intra_class_similarity"]
+        )
+        bucket[f"{prefix}_inter_class_similarities"].append(
+            metrics["inter_class_similarity"]
+        )
+
+    def start_fold(self, *, fold_idx: int, test_subject: int) -> str:
+        self.current_progress_file = self.csv_writer.start_fold(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+        )
+        return self.current_progress_file
+
+    def close_fold(self) -> None:
+        self.csv_writer.close()
+        if self.current_progress_file is not None:
+            self.cv_results["training_progress_files"].append(self.current_progress_file)
+        self.current_progress_file = None
+
+    def set_model_architecture_file(self, architecture_path: str) -> None:
+        self.cv_results["model_architecture_file"] = architecture_path
+
+    def write_train_update(
+        self,
+        *,
+        fold_idx: int,
+        test_subject: int,
+        epoch: int,
+        epoch_total: int,
+        step: int,
+        step_total: int,
+        loss: float,
+        task_loss: float,
+        contrastive_loss: float,
+        triplet_loss: float,
+        accuracy: float,
+    ) -> None:
+        self.csv_writer.write_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type="train_update",
+            epoch=epoch,
+            epoch_total=epoch_total,
+            step=step,
+            step_total=step_total,
+            loss=loss,
+            task_loss=task_loss,
+            contrastive_loss=contrastive_loss,
+            triplet_loss=triplet_loss,
+            accuracy=accuracy,
+        )
+
+    def write_validation_step(
+        self,
+        *,
+        fold_idx: int,
+        test_subject: int,
+        epoch: int,
+        epoch_total: int,
+        step: int,
+        step_total: int,
+        loss: float,
+        metrics: dict,
+    ) -> None:
+        self.csv_writer.write_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type="validation_step",
+            epoch=epoch,
+            epoch_total=epoch_total,
+            step=step,
+            step_total=step_total,
+            loss=loss,
+            **self._metric_event_kwargs(metrics, include_similarity_margin=True),
+        )
+
+    def write_metric_event(
+        self,
+        *,
+        fold_idx: int,
+        test_subject: int,
+        event_type: str,
+        loss: float,
+        metrics: dict,
+    ) -> None:
+        self.csv_writer.write_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type=event_type,
+            loss=loss,
+            **self._metric_event_kwargs(metrics),
+        )
+
+    def write_adaptation_event(
+        self,
+        *,
+        fold_idx: int,
+        test_subject: int,
+        event_type: str,
+        adaptation_losses: list[float],
+    ) -> float:
+        mean_loss = float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
+        self.csv_writer.write_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type=event_type,
+            loss=mean_loss,
+        )
+        return mean_loss
+
+    def record_heldout_size_result(
+        self,
+        *,
+        size_key: str,
+        zero_shot_loss: float,
+        zero_shot_metrics: dict,
+        adaptation_losses: list[float],
+        k_shot_loss: float,
+        k_shot_metrics: dict,
+    ) -> dict:
+        size_results = self.cv_results["heldout_eval_by_task_size"][size_key]
+        self._append_eval_result(
+            size_results,
+            prefix="zero_shot",
+            loss=zero_shot_loss,
+            metrics=zero_shot_metrics,
+        )
+        self._append_eval_result(
+            size_results,
+            prefix="k_shot",
+            loss=k_shot_loss,
+            metrics=k_shot_metrics,
+        )
+        return {
+            "zero_shot_loss": zero_shot_loss,
+            "zero_shot_metrics": zero_shot_metrics,
+            "adaptation_mean_loss": (
+                float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
+            ),
+            "k_shot_loss": k_shot_loss,
+            "k_shot_metrics": k_shot_metrics,
+        }
+
+    def write_legacy_heldout_events(
+        self,
+        *,
+        fold_idx: int,
+        test_subject: int,
+        zero_shot_loss: float,
+        zero_shot_metrics: dict,
+        adaptation_mean_loss: float,
+        k_shot_loss: float,
+        k_shot_metrics: dict,
+        run_adaptation: bool,
+    ) -> None:
+        self.write_metric_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type="zero_shot_summary",
+            loss=zero_shot_loss,
+            metrics=zero_shot_metrics,
+        )
+        if run_adaptation:
+            self.csv_writer.write_event(
+                fold_idx=fold_idx,
+                test_subject=test_subject,
+                event_type="adaptation_phase",
+                loss=adaptation_mean_loss,
+            )
+        self.write_metric_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type="k_shot_summary",
+            loss=k_shot_loss,
+            metrics=k_shot_metrics,
+        )
+
+    def record_fold_result(
+        self,
+        *,
+        fold_idx: int,
+        test_subject: int,
+        fold_results: dict,
+        zero_shot_loss: float,
+        zero_shot_metrics: dict,
+        k_shot_loss: float,
+        k_shot_metrics: dict,
+    ) -> None:
+        self.cv_results["train_losses"].append(np.mean(fold_results["train_losses"]))
+        self.cv_results["train_accuracies"].append(
+            np.mean(fold_results["train_accuracies"])
+        )
+        self.cv_results["val_losses"].append(np.mean(fold_results["val_losses"]))
+        self.cv_results["val_accuracies"].append(np.mean(fold_results["val_accuracies"]))
+        self.cv_results["test_losses"].append(zero_shot_loss)
+        self.cv_results["test_accuracies"].append(zero_shot_metrics["accuracy"])
+        self._append_eval_result(
+            self.cv_results,
+            prefix="zero_shot",
+            loss=zero_shot_loss,
+            metrics=zero_shot_metrics,
+        )
+        self._append_eval_result(
+            self.cv_results,
+            prefix="k_shot",
+            loss=k_shot_loss,
+            metrics=k_shot_metrics,
+        )
+        self.csv_writer.write_event(
+            fold_idx=fold_idx,
+            test_subject=test_subject,
+            event_type="fold_summary",
+            loss=zero_shot_loss,
+            accuracy=zero_shot_metrics["accuracy"],
+        )
+
+    def log_composite_summary(
+        self,
+        *,
+        prefix: str,
+        train_metrics: dict,
+        val_metrics: dict,
+        heldout_metrics: dict,
+        elapsed_seconds: float,
+    ) -> None:
+        composite_accuracy = float(
+            np.mean(
+                [
+                    train_metrics["accuracy"],
+                    val_metrics["accuracy"],
+                    heldout_metrics["accuracy"],
+                ]
+            )
+        )
+        self.logger.info(
+            f"{prefix}: "
+            f"composite={composite_accuracy:.4f}, "
+            f"train_acc={train_metrics['accuracy']:.4f}, "
+            f"val_acc={val_metrics['accuracy']:.4f}, "
+            f"heldout_acc={heldout_metrics['accuracy']:.4f}, "
+            f"train_loss={train_metrics['loss']:.4f}, "
+            f"val_loss={val_metrics['loss']:.4f}, "
+            f"heldout_loss={heldout_metrics['loss']:.4f}, "
+            f"elapsed_seconds={elapsed_seconds:.2f}"
+        )
+
+    def log_cross_validation_aggregate(self, *, title: str) -> None:
+        self.logger.info(f"\n{'=' * 60}")
+        self.logger.info(title)
+        self.logger.info(f"{'=' * 60}")
+        self.logger.info(
+            f"Average Zero-shot Accuracy: {np.mean(self.cv_results['zero_shot_accuracies']):.4f} "
+            f"(±{np.std(self.cv_results['zero_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average K-shot Accuracy: {np.mean(self.cv_results['k_shot_accuracies']):.4f} "
+            f"(±{np.std(self.cv_results['k_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average Zero-shot Loss: {np.mean(self.cv_results['zero_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            f"Average K-shot Loss: {np.mean(self.cv_results['k_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            "Average Zero-shot Similarities: "
+            f"intra_class={np.mean(self.cv_results['zero_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(self.cv_results['zero_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(
+            "Average K-shot Similarities: "
+            f"intra_class={np.mean(self.cv_results['k_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(self.cv_results['k_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(f"{'=' * 60}\n")
