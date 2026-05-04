@@ -37,7 +37,7 @@ class PainDatasetConfig:
     fusion_transformer_layers: int = 2  # Number of transformer fusion layers
     fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
     fusion_ib_beta: float = 1e-3  # Information bottleneck KL weight
-    clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
+    clear_session_per_fold: bool = True  # Legacy cleanup flag; LOSO now reuses one graph
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
     loso_start_index: Optional[int] = None  # 1-based inclusive LOSO fold start

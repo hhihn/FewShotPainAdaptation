@@ -64,6 +64,8 @@ class FewShotPainLearner:
         )
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
+        self._initial_model_weights = None
+        self._initial_optimizer_weights = None
         self.logging_verbosity = int(getattr(config, "logging_verbosity", 1))
         self.logger = setup_logger("few_shot_pain_learner")
         if self.logging_verbosity <= 0:
@@ -187,15 +189,24 @@ class FewShotPainLearner:
         )
         return x + noise
 
+    def _release_model_resources(self, clear_session: bool = True) -> None:
+        """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
+        self._compiled_train_batch_step = None
+        self._compiled_eval_batch_step = None
+        self._initial_model_weights = None
+        self._initial_optimizer_weights = None
+        self.model = None
+        self.optimizer = None
+        if clear_session:
+            tf.keras.backend.clear_session()
+        gc.collect()
+
     def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
         if clear_session:
-            self._compiled_train_batch_step = None
-            self._compiled_eval_batch_step = None
-            self.model = None
-            self.optimizer = None
-            tf.keras.backend.clear_session()
-            gc.collect()
+            self._release_model_resources(clear_session=True)
+        self._initial_model_weights = None
+        self._initial_optimizer_weights = None
 
         # Keep runtime dimensions in sync with dataset-dependent config updates.
         self.sequence_length = int(self.config.sequence_length)
@@ -239,6 +250,105 @@ class FewShotPainLearner:
         self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
         self._build_compiled_train_batch_step()
         self._build_compiled_eval_batch_step()
+
+    def _optimizer_variables(self) -> list[tf.Variable]:
+        """Return optimizer state variables across Keras 2/3 API variants."""
+        variables = self.optimizer.variables
+        if callable(variables):
+            variables = variables()
+        return list(variables)
+
+    def _balanced_task_labels(self, examples_per_class: int) -> tf.Tensor:
+        """Build deterministic labels that satisfy prototype task shape constraints."""
+        return tf.repeat(
+            tf.range(int(self.config.n_way), dtype=tf.int32),
+            repeats=int(examples_per_class),
+        )
+
+    def _build_model_variables_for_reuse(self) -> None:
+        """Materialize all model and optimizer variables before taking reset snapshots."""
+        support_x = tf.zeros(
+            (
+                self.support_size,
+                self.sequence_length,
+                self.num_sensors,
+            ),
+            dtype=tf.float32,
+        )
+        support_y = self._balanced_task_labels(self.config.k_shot)
+        query_x = tf.zeros(
+            (
+                self.query_size,
+                self.sequence_length,
+                self.num_sensors,
+            ),
+            dtype=tf.float32,
+        )
+
+        # A forward pass creates lazily-built subclassed-layer variables without
+        # touching optimizer state.
+        self.model.forward_episode(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+
+        trainable_variables = list(self.model.trainable_variables)
+        if not trainable_variables:
+            raise RuntimeError("Model build produced no trainable variables.")
+
+        if hasattr(self.optimizer, "build"):
+            self.optimizer.build(trainable_variables)
+            return
+
+        # Compatibility fallback for optimizer APIs without explicit build().
+        # Restore model variables afterwards because decoupled weight decay may
+        # update weights even when gradients are zero.
+        model_weights = [
+            np.array(weight, copy=True) for weight in self.model.get_weights()
+        ]
+        zero_gradients = [tf.zeros_like(variable) for variable in trainable_variables]
+        self.optimizer.apply_gradients(zip(zero_gradients, trainable_variables))
+        self.model.set_weights(model_weights)
+        if hasattr(self.optimizer, "iterations"):
+            self.optimizer.iterations.assign(0)
+
+    def _ensure_reusable_fold_state(self) -> None:
+        """Create one reusable model/optimizer graph state and snapshot its initial values."""
+        if (
+            self._initial_model_weights is not None
+            and self._initial_optimizer_weights is not None
+        ):
+            return
+
+        self._build_model_variables_for_reuse()
+        self._initial_model_weights = [
+            np.array(weight, copy=True) for weight in self.model.get_weights()
+        ]
+        self._initial_optimizer_weights = [
+            np.array(variable.numpy(), copy=True)
+            for variable in self._optimizer_variables()
+        ]
+
+    def _reset_reusable_fold_state(self) -> None:
+        """Restore model and optimizer variables without recreating tf.function graphs."""
+        self._ensure_reusable_fold_state()
+        self.model.set_weights(self._initial_model_weights)
+
+        optimizer_variables = self._optimizer_variables()
+        if len(optimizer_variables) != len(self._initial_optimizer_weights):
+            raise RuntimeError(
+                "Optimizer variable count changed after initial fold-state snapshot "
+                f"(current={len(optimizer_variables)}, "
+                f"initial={len(self._initial_optimizer_weights)}). "
+                "The optimizer must be built before LOSO folds can reuse the graph."
+            )
+        for variable, initial_value in zip(
+            optimizer_variables,
+            self._initial_optimizer_weights,
+        ):
+            variable.assign(initial_value)
 
     def _build_compiled_train_batch_step(self) -> None:
         """Build a compiled train-step function bound to current model/optimizer vars."""
@@ -1609,6 +1719,7 @@ class FewShotPainLearner:
             flush_every_events=max(1, int(self.config.csv_flush_every_events)),
         )
         architecture_saved = False
+        self._ensure_reusable_fold_state()
 
         for fold, test_subject in enumerate(fold_subjects):
             fold_start_time = time.perf_counter()
@@ -1619,10 +1730,8 @@ class FewShotPainLearner:
                 fold_idx=fold + 1, test_subject=test_subject
             )
 
-            # Reset model for each fold and free memory from prior graph state.
-            self._rebuild_model(
-                clear_session=self.config.clear_session_per_fold,
-            )
+            # Reset variables for each fold while keeping one model/optimizer graph.
+            self._reset_reusable_fold_state()
 
             # Get fold dictionary with samplers
             fold_dict = self.cv.get_fold(test_subject)
