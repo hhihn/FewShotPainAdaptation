@@ -99,11 +99,17 @@ class ConvolutionalNetwork(keras.Model):
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
         )
+        self.embedding_dense_hidden_bn = keras.layers.LayerNormalization(
+            name="embedding_dense_hidden_bn"
+        )
         self.embedding_dense = keras.layers.Dense(
             embedding_dim,
             activation="elu",
             name="embedding_dense",
             kernel_initializer="he_normal",
+        )
+        self.embedding_dense_bn = keras.layers.LayerNormalization(
+            name="embedding_dense_bn"
         )
 
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
@@ -126,7 +132,7 @@ class ConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"cnn_block_{block_idx}_conv1",
         )(inputs)
-        x = keras.layers.BatchNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
+        x = keras.layers.LayerNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
         x = keras.layers.MaxPool1D(
             pool_size=pooling_size,
             strides=pooling_stride,
@@ -160,8 +166,10 @@ class ConvolutionalNetwork(keras.Model):
 
         # Final embedding
         x = self.embedding_dense_hidden(x)
+        x = self.embedding_dense_hidden_bn(x, training=training)
         x = self.embedding_dense_hidden_dropout(x, training=training)
         x = self.embedding_dense(x)
+        x = self.embedding_dense_bn(x, training=training)
 
         return x
 
