@@ -119,12 +119,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         logger.setLevel(10)
     start_time = time.perf_counter()
     filters_list = _parse_int_tuple(args.filters)
-    tcn_dilation_rates_arg = getattr(args, "tcn_dilation_rates", None)
-    tcn_dilation_rates = (
-        _parse_int_tuple(tcn_dilation_rates_arg)
-        if tcn_dilation_rates_arg is not None
-        else None
-    )
 
     config = PainDatasetConfig(
         seed=args.seed,
@@ -144,7 +138,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         embedding_dim=args.embedding_dim,
         num_tcn_blocks=len(filters_list),
         filters_list=filters_list,
-        tcn_dilation_rates=tcn_dilation_rates,
         tcn_attention_heads=args.tcn_attention_heads,
         tcn_attention_key_dim=args.tcn_attention_key_dim,
         tcn_attention_dropout=args.tcn_attention_dropout,
@@ -301,7 +294,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "normalize_mode": args.normalize_mode,
         "embedding_dim": args.embedding_dim,
         "filters": list(filters_list),
-        "tcn_dilation_rates": list(config.tcn_dilation_rates),
         "use_attention": bool(config.use_attention),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
@@ -553,16 +545,10 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=6e-4)
     parser.add_argument("--embedding-dim", type=int, default=64)
     parser.add_argument("--filters", type=str, default="16,32,64,128")
-    parser.add_argument(
-        "--tcn-dilation-rates",
-        type=str,
-        default=None,
-        help="Comma-separated TCN dilation rates. Defaults to powers of two matching --filters.",
-    )
     parser.add_argument("--tcn-attention-heads", type=int, default=8)
     parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
     parser.add_argument("--tcn-attention-dropout", type=float, default=0.1)
-    parser.add_argument("--tcn-transformer-layers", type=int, default=2)
+    parser.add_argument("--tcn-transformer-layers", type=int, default=4)
     parser.add_argument("--tcn-transformer-ffn-dim", type=int, default=256)
     parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
     parser.add_argument("--use-attention", action="store_true")

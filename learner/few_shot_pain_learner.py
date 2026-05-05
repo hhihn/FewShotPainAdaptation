@@ -14,8 +14,8 @@ from data_loaders.pain_ds_config import PainDatasetConfig
 from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
 from utils.training_progress import TrainingProgressReporter
+from utils.training_progress_csv import TrainingProgressCSVWriter
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
-from learner.cross_validation_results import CrossValidationResultRecorder
 
 
 class FewShotPainLearner:
@@ -45,8 +45,6 @@ class FewShotPainLearner:
         self.deterministic_ops = bool(config.deterministic_ops)
         self.embedding_dim = config.embedding_dim
         self.train_batch_size = max(1, int(config.train_batch_size))
-        self.supcon_loss_weight = float(config.supcon_loss_weight)
-        self.supcon_temperature = float(config.supcon_temperature)
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
@@ -64,8 +62,6 @@ class FewShotPainLearner:
         )
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
-        self._initial_model_weights = None
-        self._initial_optimizer_weights = None
         self.logging_verbosity = int(getattr(config, "logging_verbosity", 1))
         self.logger = setup_logger("few_shot_pain_learner")
         if self.logging_verbosity <= 0:
@@ -116,8 +112,6 @@ class FewShotPainLearner:
             "q_query": self.config.q_query,
             "task_normalize_mode": self.config.task_normalize_mode,
             "classifier_mode": self.config.classifier_mode,
-            "supcon_loss_weight": self.supcon_loss_weight,
-            "supcon_temperature": self.supcon_temperature,
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
@@ -139,20 +133,8 @@ class FewShotPainLearner:
             "csv_flush_every_events": self.config.csv_flush_every_events,
             "embedding_dim": self.embedding_dim,
             "num_tcn_blocks": self.config.num_tcn_blocks,
-            "tcn_dilation_rates": self.config.tcn_dilation_rates,
             "tcn_kernel_size": self.config.tcn_kernel_size,
             "tcn_dropout_rate": self.config.tcn_dropout_rate,
-            "tcn_attention_heads": self.config.tcn_attention_heads,
-            "tcn_attention_key_dim": self.config.tcn_attention_key_dim,
-            "tcn_attention_dropout": self.config.tcn_attention_dropout,
-            "tcn_transformer_layers": self.config.tcn_transformer_layers,
-            "tcn_transformer_ffn_dim": self.config.tcn_transformer_ffn_dim,
-            "tcn_attention_pool_size": self.config.tcn_attention_pool_size,
-            "use_attention": self.config.use_attention,
-            "fusion_transformer_heads": self.config.fusion_transformer_heads,
-            "fusion_transformer_layers": self.config.fusion_transformer_layers,
-            "fusion_transformer_ffn_dim": self.config.fusion_transformer_ffn_dim,
-            "fusion_ib_beta": self.config.fusion_ib_beta,
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "single_loso_fold": self.config.single_loso_fold,
             "single_loso_test_subject": self.config.single_loso_test_subject,
@@ -193,8 +175,6 @@ class FewShotPainLearner:
         """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
-        self._initial_model_weights = None
-        self._initial_optimizer_weights = None
         self.model = None
         self.optimizer = None
         if clear_session:
@@ -205,8 +185,6 @@ class FewShotPainLearner:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
         if clear_session:
             self._release_model_resources(clear_session=True)
-        self._initial_model_weights = None
-        self._initial_optimizer_weights = None
 
         # Keep runtime dimensions in sync with dataset-dependent config updates.
         self.sequence_length = int(self.config.sequence_length)
@@ -222,23 +200,11 @@ class FewShotPainLearner:
             distance_metric=self.distance_metric,
             classifier_mode=self.config.classifier_mode,
             num_tcn_blocks=self.config.num_tcn_blocks,
-            tcn_dilation_rates=self.config.tcn_dilation_rates,
             tcn_kernel_size=self.config.tcn_kernel_size,
             filters_list=self.config.filters_list,
             strides=self.config.strides,
             pooling_size=self.config.pooling_size,
             tcn_dropout_rate=self.config.tcn_dropout_rate,
-            tcn_attention_heads=self.config.tcn_attention_heads,
-            tcn_attention_key_dim=self.config.tcn_attention_key_dim,
-            tcn_attention_dropout=self.config.tcn_attention_dropout,
-            tcn_transformer_layers=self.config.tcn_transformer_layers,
-            tcn_transformer_ffn_dim=self.config.tcn_transformer_ffn_dim,
-            tcn_attention_pool_size=self.config.tcn_attention_pool_size,
-            use_attention=self.config.use_attention,
-            fusion_transformer_heads=self.config.fusion_transformer_heads,
-            fusion_transformer_layers=self.config.fusion_transformer_layers,
-            fusion_transformer_ffn_dim=self.config.fusion_transformer_ffn_dim,
-            fusion_ib_beta=self.config.fusion_ib_beta,
             seed=self.seed,
         )
         optimizer_kwargs = {
@@ -250,105 +216,6 @@ class FewShotPainLearner:
         self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
         self._build_compiled_train_batch_step()
         self._build_compiled_eval_batch_step()
-
-    def _optimizer_variables(self) -> list[tf.Variable]:
-        """Return optimizer state variables across Keras 2/3 API variants."""
-        variables = self.optimizer.variables
-        if callable(variables):
-            variables = variables()
-        return list(variables)
-
-    def _balanced_task_labels(self, examples_per_class: int) -> tf.Tensor:
-        """Build deterministic labels that satisfy prototype task shape constraints."""
-        return tf.repeat(
-            tf.range(int(self.config.n_way), dtype=tf.int32),
-            repeats=int(examples_per_class),
-        )
-
-    def _build_model_variables_for_reuse(self) -> None:
-        """Materialize all model and optimizer variables before taking reset snapshots."""
-        support_x = tf.zeros(
-            (
-                self.support_size,
-                self.sequence_length,
-                self.num_sensors,
-            ),
-            dtype=tf.float32,
-        )
-        support_y = self._balanced_task_labels(self.config.k_shot)
-        query_x = tf.zeros(
-            (
-                self.query_size,
-                self.sequence_length,
-                self.num_sensors,
-            ),
-            dtype=tf.float32,
-        )
-
-        # A forward pass creates lazily-built subclassed-layer variables without
-        # touching optimizer state.
-        self.model.forward_episode(
-            support_x=support_x,
-            support_y=support_y,
-            query_x=query_x,
-            training=False,
-        )
-
-        trainable_variables = list(self.model.trainable_variables)
-        if not trainable_variables:
-            raise RuntimeError("Model build produced no trainable variables.")
-
-        if hasattr(self.optimizer, "build"):
-            self.optimizer.build(trainable_variables)
-            return
-
-        # Compatibility fallback for optimizer APIs without explicit build().
-        # Restore model variables afterwards because decoupled weight decay may
-        # update weights even when gradients are zero.
-        model_weights = [
-            np.array(weight, copy=True) for weight in self.model.get_weights()
-        ]
-        zero_gradients = [tf.zeros_like(variable) for variable in trainable_variables]
-        self.optimizer.apply_gradients(zip(zero_gradients, trainable_variables))
-        self.model.set_weights(model_weights)
-        if hasattr(self.optimizer, "iterations"):
-            self.optimizer.iterations.assign(0)
-
-    def _ensure_reusable_fold_state(self) -> None:
-        """Create one reusable model/optimizer graph state and snapshot its initial values."""
-        if (
-            self._initial_model_weights is not None
-            and self._initial_optimizer_weights is not None
-        ):
-            return
-
-        self._build_model_variables_for_reuse()
-        self._initial_model_weights = [
-            np.array(weight, copy=True) for weight in self.model.get_weights()
-        ]
-        self._initial_optimizer_weights = [
-            np.array(variable.numpy(), copy=True)
-            for variable in self._optimizer_variables()
-        ]
-
-    def _reset_reusable_fold_state(self) -> None:
-        """Restore model and optimizer variables without recreating tf.function graphs."""
-        self._ensure_reusable_fold_state()
-        self.model.set_weights(self._initial_model_weights)
-
-        optimizer_variables = self._optimizer_variables()
-        if len(optimizer_variables) != len(self._initial_optimizer_weights):
-            raise RuntimeError(
-                "Optimizer variable count changed after initial fold-state snapshot "
-                f"(current={len(optimizer_variables)}, "
-                f"initial={len(self._initial_optimizer_weights)}). "
-                "The optimizer must be built before LOSO folds can reuse the graph."
-            )
-        for variable, initial_value in zip(
-            optimizer_variables,
-            self._initial_optimizer_weights,
-        ):
-            variable.assign(initial_value)
 
     def _build_compiled_train_batch_step(self) -> None:
         """Build a compiled train-step function bound to current model/optimizer vars."""
@@ -633,57 +500,13 @@ class FewShotPainLearner:
         self.optimizer.apply_gradients(zip(grads, variables))
         return loss
 
-    def _compute_supervised_contrastive_loss(
-        self, embeddings: tf.Tensor, labels: tf.Tensor
-    ) -> tf.Tensor:
-        """Compute a label-aware contrastive loss over one episode."""
-        loss_dtype = tf.float32
-        if self.supcon_loss_weight <= 0:
-            return tf.constant(0.0, dtype=loss_dtype)
-
-        embeddings = tf.cast(embeddings, loss_dtype)
-        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
-        logits = tf.matmul(
-            normalized_embeddings, normalized_embeddings, transpose_b=True
-        )
-        logits = logits / tf.cast(self.supcon_temperature, logits.dtype)
-
-        batch_size = tf.shape(labels)[0]
-        labels = tf.reshape(labels, (-1, 1))
-        positive_mask = tf.cast(tf.equal(labels, tf.transpose(labels)), logits.dtype)
-        logits_mask = tf.ones_like(positive_mask) - tf.eye(
-            batch_size, dtype=logits.dtype
-        )
-        positive_mask = positive_mask * logits_mask
-
-        logits = logits - tf.reduce_max(logits, axis=1, keepdims=True)
-        exp_logits = tf.exp(logits) * logits_mask
-        log_prob = logits - tf.math.log(
-            tf.reduce_sum(exp_logits, axis=1, keepdims=True)
-            + tf.constant(1e-8, dtype=logits.dtype)
-        )
-
-        positive_counts = tf.reduce_sum(positive_mask, axis=1)
-        mean_log_prob_pos = tf.math.divide_no_nan(
-            tf.reduce_sum(positive_mask * log_prob, axis=1),
-            positive_counts,
-        )
-        valid_anchor_mask = tf.cast(positive_counts > 0, logits.dtype)
-
-        return -tf.math.divide_no_nan(
-            tf.reduce_sum(mean_log_prob_pos * valid_anchor_mask),
-            tf.reduce_sum(valid_anchor_mask),
-        )
-
     def _compute_batch_all_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
         """Compute BatchAllTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
-        loss_dtype = tf.float32
         if self.triplet_loss_weight <= 0:
-            return tf.constant(0.0, dtype=loss_dtype)
+            return tf.constant(0.0, dtype=embeddings.dtype)
 
-        embeddings = tf.cast(embeddings, loss_dtype)
         normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
         pairwise_similarity = tf.matmul(
             normalized_embeddings, normalized_embeddings, transpose_b=True
@@ -717,10 +540,7 @@ class FewShotPainLearner:
             tf.constant(0.0, dtype=triplet_loss.dtype),
         )
 
-        positive_triplets = tf.cast(
-            triplet_loss > tf.constant(1e-16, dtype=triplet_loss.dtype),
-            pairwise_distance.dtype,
-        )
+        positive_triplets = tf.cast(triplet_loss > 1e-16, pairwise_distance.dtype)
         return tf.math.divide_no_nan(
             tf.reduce_sum(triplet_loss),
             tf.reduce_sum(positive_triplets),
@@ -730,11 +550,9 @@ class FewShotPainLearner:
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
         """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
-        loss_dtype = tf.float32
         if self.triplet_loss_weight <= 0:
-            return tf.constant(0.0, dtype=loss_dtype)
+            return tf.constant(0.0, dtype=embeddings.dtype)
 
-        embeddings = tf.cast(embeddings, loss_dtype)
         normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
         pairwise_similarity = tf.matmul(
             normalized_embeddings, normalized_embeddings, transpose_b=True
@@ -810,12 +628,8 @@ class FewShotPainLearner:
             training=training,
         )
         logits = episode_outputs["logits"]
-        loss_dtype = tf.float32
-        task_loss = tf.cast(
-            self.loss_fn(query_y, tf.cast(logits, loss_dtype)),
-            loss_dtype,
-        )
-        model_aux_loss = self._compute_model_aux_loss(dtype=loss_dtype)
+        task_loss = self.loss_fn(query_y, logits)
+        model_aux_loss = self._compute_model_aux_loss(dtype=task_loss.dtype)
 
         embeddings = tf.concat(
             [
@@ -826,16 +640,11 @@ class FewShotPainLearner:
         )
         labels = tf.concat([support_y, query_y], axis=0)
         total_aux_loss = model_aux_loss
-        contrastive_loss = tf.constant(0.0, dtype=loss_dtype)
-        triplet_loss = tf.constant(0.0, dtype=loss_dtype)
-        if self.supcon_loss_weight > 0:
-            contrastive_loss = tf.cast(
-                self.supcon_loss_weight, loss_dtype
-            ) * self._compute_supervised_contrastive_loss(embeddings, labels)
-            total_aux_loss += contrastive_loss
+        contrastive_loss = tf.constant(0.0, dtype=task_loss.dtype)
+        triplet_loss = tf.constant(0.0, dtype=task_loss.dtype)
         if self.triplet_loss_weight > 0:
             triplet_loss = tf.cast(
-                self.triplet_loss_weight, loss_dtype
+                self.triplet_loss_weight, task_loss.dtype
             ) * self._compute_triplet_loss(embeddings, labels)
             total_aux_loss += triplet_loss
         total_loss = task_loss + total_aux_loss
@@ -854,10 +663,6 @@ class FewShotPainLearner:
         if return_similarity_scores:
             outputs["similarity_scores"] = self.model.compute_similarity_scores(
                 episode_outputs["query_embeddings"], episode_outputs["prototypes"]
-            )
-            outputs["similarity_scores"] = tf.cast(
-                outputs["similarity_scores"],
-                loss_dtype,
             )
         return outputs
 
@@ -1573,6 +1378,72 @@ class FewShotPainLearner:
             return f"{minutes}m {secs}s"
         return f"{secs}s"
 
+    def _log_composite_summary(
+        self,
+        *,
+        prefix: str,
+        train_metrics: dict,
+        val_metrics: dict,
+        heldout_metrics: dict,
+        elapsed_seconds: float,
+    ) -> None:
+        composite_accuracy = float(
+            np.mean(
+                [
+                    train_metrics["accuracy"],
+                    val_metrics["accuracy"],
+                    heldout_metrics["accuracy"],
+                ]
+            )
+        )
+        self.logger.info(
+            f"{prefix}: "
+            f"composite={composite_accuracy:.4f}, "
+            f"train_acc={train_metrics['accuracy']:.4f}, "
+            f"val_acc={val_metrics['accuracy']:.4f}, "
+            f"heldout_acc={heldout_metrics['accuracy']:.4f}, "
+            f"train_loss={train_metrics['loss']:.4f}, "
+            f"val_loss={val_metrics['loss']:.4f}, "
+            f"heldout_loss={heldout_metrics['loss']:.4f}, "
+            f"elapsed_seconds={elapsed_seconds:.2f}"
+        )
+
+    def _log_cross_validation_aggregate(
+        self,
+        cv_results: dict,
+        *,
+        title: str,
+    ) -> None:
+        """Log aggregate cross-validation metrics in the same format as final summary."""
+        self.logger.info(f"\n{'=' * 60}")
+        self.logger.info(title)
+        self.logger.info(f"{'=' * 60}")
+        self.logger.info(
+            f"Average Zero-shot Accuracy: {np.mean(cv_results['zero_shot_accuracies']):.4f} "
+            f"(±{np.std(cv_results['zero_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average K-shot Accuracy: {np.mean(cv_results['k_shot_accuracies']):.4f} "
+            f"(±{np.std(cv_results['k_shot_accuracies']):.4f})"
+        )
+        self.logger.info(
+            f"Average Zero-shot Loss: {np.mean(cv_results['zero_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
+        )
+        self.logger.info(
+            "Average Zero-shot Similarities: "
+            f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(
+            "Average K-shot Similarities: "
+            f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
+            f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
+        )
+        self.logger.info(f"{'=' * 60}\n")
+
     def train(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
@@ -1599,13 +1470,55 @@ class FewShotPainLearner:
                 dedup_pairs.append(eval_pair)
         heldout_eval_pairs = dedup_pairs
 
-        result_recorder = CrossValidationResultRecorder(
-            heldout_eval_pairs=heldout_eval_pairs,
-            training_progress_output_dir=training_progress_output_dir,
-            csv_flush_every_events=self.config.csv_flush_every_events,
-            logger=self.logger,
-        )
-        cv_results = result_recorder.results
+        cv_results = {
+            "train_losses": [],
+            "train_accuracies": [],
+            "val_losses": [],
+            "val_accuracies": [],
+            "test_losses": [],
+            "test_accuracies": [],
+            "zero_shot_losses": [],
+            "zero_shot_accuracies": [],
+            "zero_shot_precisions": [],
+            "zero_shot_recalls": [],
+            "zero_shot_f1s": [],
+            "zero_shot_intra_class_similarities": [],
+            "zero_shot_inter_class_similarities": [],
+            "k_shot_losses": [],
+            "k_shot_accuracies": [],
+            "k_shot_precisions": [],
+            "k_shot_recalls": [],
+            "k_shot_f1s": [],
+            "k_shot_intra_class_similarities": [],
+            "k_shot_inter_class_similarities": [],
+            "heldout_eval_task_sizes": [
+                {"k_shot": int(k_shot), "q_query": int(q_query)}
+                for k_shot, q_query in heldout_eval_pairs
+            ],
+            "heldout_eval_by_task_size": {
+                f"k{k_shot}_q{q_query}": {
+                    "k_shot": int(k_shot),
+                    "q_query": int(q_query),
+                    "zero_shot_losses": [],
+                    "zero_shot_accuracies": [],
+                    "zero_shot_precisions": [],
+                    "zero_shot_recalls": [],
+                    "zero_shot_f1s": [],
+                    "zero_shot_intra_class_similarities": [],
+                    "zero_shot_inter_class_similarities": [],
+                    "k_shot_losses": [],
+                    "k_shot_accuracies": [],
+                    "k_shot_precisions": [],
+                    "k_shot_recalls": [],
+                    "k_shot_f1s": [],
+                    "k_shot_intra_class_similarities": [],
+                    "k_shot_inter_class_similarities": [],
+                }
+                for k_shot, q_query in heldout_eval_pairs
+            },
+            "training_progress_files": [],
+            "model_architecture_file": None,
+        }
 
         fold_subjects = self._get_loso_fold_subjects()
         num_subjects = len(fold_subjects)
@@ -1628,20 +1541,25 @@ class FewShotPainLearner:
             train_log_every=train_log_every,
             eval_log_every=eval_log_every,
         )
+        csv_writer = TrainingProgressCSVWriter(
+            output_dir=training_progress_output_dir,
+            flush_every_events=max(1, int(self.config.csv_flush_every_events)),
+        )
         architecture_saved = False
-        self._ensure_reusable_fold_state()
 
         for fold, test_subject in enumerate(fold_subjects):
             fold_start_time = time.perf_counter()
             progress.log_fold_start(
                 fold_idx=fold + 1, total_folds=num_subjects, test_subject=test_subject
             )
-            result_recorder.start_fold(
+            progress_file = csv_writer.start_fold(
                 fold_idx=fold + 1, test_subject=test_subject
             )
 
-            # Reset variables for each fold while keeping one model/optimizer graph.
-            self._reset_reusable_fold_state()
+            # Reset model for each fold and free memory from prior graph state.
+            self._rebuild_model(
+                clear_session=self.config.clear_session_per_fold,
+            )
 
             # Get fold dictionary with samplers
             fold_dict = self.cv.get_fold(test_subject)
@@ -1656,7 +1574,7 @@ class FewShotPainLearner:
                     sample_task=sample_task,
                     output_path=model_architecture_output_path,
                 )
-                result_recorder.set_model_architecture_file(architecture_path)
+                cv_results["model_architecture_file"] = architecture_path
                 architecture_saved = True
                 self.logger.info(f"Saved model architecture to {architecture_path}")
 
@@ -1725,9 +1643,10 @@ class FewShotPainLearner:
                         processed_batches % train_progress_write_every_n_batches == 0
                         or processed_tasks == tasks_per_epoch
                     ):
-                        result_recorder.write_train_update(
+                        csv_writer.write_event(
                             fold_idx=fold + 1,
                             test_subject=test_subject,
+                            event_type="train_update",
                             epoch=epoch + 1,
                             epoch_total=num_epochs,
                             step=processed_tasks,
@@ -1799,7 +1718,7 @@ class FewShotPainLearner:
                             "accuracy": summary_heldout_metrics["accuracy"],
                             "loss": summary_heldout_loss,
                         }
-                        result_recorder.log_composite_summary(
+                        self._log_composite_summary(
                             prefix=(
                                 f"[Fold {fold + 1}/{num_subjects}] "
                                 f"[Epoch {epoch + 1}/{num_epochs}] "
@@ -1881,23 +1800,22 @@ class FewShotPainLearner:
                     )
                     epoch_val_losses.append(mean_val_loss)
                     epoch_val_accs.append(mean_val_acc)
-                    result_recorder.write_validation_step(
+                    csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
+                        event_type="validation_step",
                         epoch=epoch + 1,
                         epoch_total=num_epochs,
                         step=processed_tasks,
                         step_total=tasks_per_epoch,
                         loss=mean_val_loss,
-                        metrics={
-                            "task_loss": mean_val_task_loss,
-                            "contrastive_loss": mean_val_contrastive_loss,
-                            "triplet_loss": mean_val_triplet_loss,
-                            "accuracy": mean_val_acc,
-                            "intra_class_similarity": mean_val_intra_class_similarity,
-                            "inter_class_similarity": mean_val_inter_class_similarity,
-                            "similarity_margin": mean_val_similarity_margin,
-                        },
+                        task_loss=mean_val_task_loss,
+                        contrastive_loss=mean_val_contrastive_loss,
+                        triplet_loss=mean_val_triplet_loss,
+                        accuracy=mean_val_acc,
+                        intra_class_similarity=mean_val_intra_class_similarity,
+                        inter_class_similarity=mean_val_inter_class_similarity,
+                        similarity_margin=mean_val_similarity_margin,
                     )
                     progress.log_step(
                         stage="Validation",
@@ -1973,7 +1891,7 @@ class FewShotPainLearner:
                     self.logging_verbosity >= 1
                     and fold_summary_reference["train"] is not None
                 ):
-                    result_recorder.log_composite_summary(
+                    self._log_composite_summary(
                         prefix=(
                             f"[Fold {fold + 1}/{num_subjects}] "
                             f"[Epoch {epoch + 1}/{num_epochs}] "
@@ -1999,30 +1917,29 @@ class FewShotPainLearner:
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
                 self.model.set_weights(pre_adaptation_weights)
-                try:
-                    zero_shot_loss, zero_shot_metrics = (
-                        self._evaluate_sampler_loss_and_metrics_at_task_size(
-                            test_sampler,
-                            num_tasks=heldout_eval_tasks,
-                            k_shot=eval_k_shot,
-                            q_query=eval_q_query,
-                            forward_batch_size=self.train_batch_size,
-                        )
+                zero_shot_loss, zero_shot_metrics = (
+                    self._evaluate_sampler_loss_and_metrics_at_task_size(
+                        test_sampler,
+                        num_tasks=heldout_eval_tasks,
+                        k_shot=eval_k_shot,
+                        q_query=eval_q_query,
+                        forward_batch_size=self.train_batch_size,
                     )
-                except ValueError as exc:
-                    if (eval_k_shot, eval_q_query) == configured_eval_pair:
-                        raise
-                    self.logger.warning(
-                        f"[Fold {fold + 1}/{num_subjects}] "
-                        f"Skipping optional held-out size {size_key}: {exc}"
-                    )
-                    continue
-                result_recorder.write_metric_event(
+                )
+                csv_writer.write_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,
                     event_type=f"zero_shot_summary_{size_key}",
                     loss=zero_shot_loss,
-                    metrics=zero_shot_metrics,
+                    task_loss=zero_shot_metrics["task_loss"],
+                    contrastive_loss=zero_shot_metrics["contrastive_loss"],
+                    triplet_loss=zero_shot_metrics["triplet_loss"],
+                    accuracy=zero_shot_metrics["accuracy"],
+                    precision=zero_shot_metrics["precision"],
+                    recall=zero_shot_metrics["recall"],
+                    f1=zero_shot_metrics["f1"],
+                    intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
+                    inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
                 )
                 if (eval_k_shot, eval_q_query) == configured_eval_pair:
                     if k_shot_adaptation_steps > 0:
@@ -2040,11 +1957,13 @@ class FewShotPainLearner:
                         k_shot=eval_k_shot,
                         q_query=eval_q_query,
                     )
-                    result_recorder.write_adaptation_event(
+                    csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
                         event_type=f"adaptation_phase_{size_key}",
-                        adaptation_losses=adaptation_losses,
+                        loss=float(np.mean(adaptation_losses))
+                        if adaptation_losses
+                        else 0.0,
                     )
                     k_shot_loss, k_shot_metrics = (
                         self._evaluate_sampler_loss_and_metrics_at_task_size(
@@ -2061,23 +1980,57 @@ class FewShotPainLearner:
                     k_shot_loss = float(zero_shot_loss)
                     k_shot_metrics = dict(zero_shot_metrics)
 
-                result_recorder.write_metric_event(
+                csv_writer.write_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,
                     event_type=f"k_shot_summary_{size_key}",
                     loss=k_shot_loss,
-                    metrics=k_shot_metrics,
+                    task_loss=k_shot_metrics["task_loss"],
+                    contrastive_loss=k_shot_metrics["contrastive_loss"],
+                    triplet_loss=k_shot_metrics["triplet_loss"],
+                    accuracy=k_shot_metrics["accuracy"],
+                    precision=k_shot_metrics["precision"],
+                    recall=k_shot_metrics["recall"],
+                    f1=k_shot_metrics["f1"],
+                    intra_class_similarity=k_shot_metrics["intra_class_similarity"],
+                    inter_class_similarity=k_shot_metrics["inter_class_similarity"],
                 )
 
-                sweep_metrics_by_size[size_key] = (
-                    result_recorder.record_heldout_size_result(
-                        size_key=size_key,
-                        zero_shot_loss=zero_shot_loss,
-                        zero_shot_metrics=zero_shot_metrics,
-                        adaptation_losses=adaptation_losses,
-                        k_shot_loss=k_shot_loss,
-                        k_shot_metrics=k_shot_metrics,
-                    )
+                sweep_metrics_by_size[size_key] = {
+                    "zero_shot_loss": zero_shot_loss,
+                    "zero_shot_metrics": zero_shot_metrics,
+                    "adaptation_mean_loss": (
+                        float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
+                    ),
+                    "k_shot_loss": k_shot_loss,
+                    "k_shot_metrics": k_shot_metrics,
+                }
+                size_results = cv_results["heldout_eval_by_task_size"][size_key]
+                size_results["zero_shot_losses"].append(zero_shot_loss)
+                size_results["zero_shot_accuracies"].append(
+                    zero_shot_metrics["accuracy"]
+                )
+                size_results["zero_shot_precisions"].append(
+                    zero_shot_metrics["precision"]
+                )
+                size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
+                size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
+                size_results["zero_shot_intra_class_similarities"].append(
+                    zero_shot_metrics["intra_class_similarity"]
+                )
+                size_results["zero_shot_inter_class_similarities"].append(
+                    zero_shot_metrics["inter_class_similarity"]
+                )
+                size_results["k_shot_losses"].append(k_shot_loss)
+                size_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
+                size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
+                size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
+                size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
+                size_results["k_shot_intra_class_similarities"].append(
+                    k_shot_metrics["intra_class_similarity"]
+                )
+                size_results["k_shot_inter_class_similarities"].append(
+                    k_shot_metrics["inter_class_similarity"]
                 )
 
                 self.logger.info(
@@ -2094,15 +2047,43 @@ class FewShotPainLearner:
             k_shot_loss = fixed_size_metrics["k_shot_loss"]
             k_shot_metrics = fixed_size_metrics["k_shot_metrics"]
 
-            result_recorder.write_legacy_heldout_events(
+            # Keep legacy fixed-size event names for downstream tooling compatibility.
+            csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
-                zero_shot_loss=zero_shot_loss,
-                zero_shot_metrics=zero_shot_metrics,
-                adaptation_mean_loss=fixed_adaptation_mean_loss,
-                k_shot_loss=k_shot_loss,
-                k_shot_metrics=k_shot_metrics,
-                run_adaptation=run_adaptation,
+                event_type="zero_shot_summary",
+                loss=zero_shot_loss,
+                task_loss=zero_shot_metrics["task_loss"],
+                contrastive_loss=zero_shot_metrics["contrastive_loss"],
+                triplet_loss=zero_shot_metrics["triplet_loss"],
+                accuracy=zero_shot_metrics["accuracy"],
+                precision=zero_shot_metrics["precision"],
+                recall=zero_shot_metrics["recall"],
+                f1=zero_shot_metrics["f1"],
+                intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
+                inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
+            )
+            if run_adaptation:
+                csv_writer.write_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type="adaptation_phase",
+                    loss=fixed_adaptation_mean_loss,
+                )
+            csv_writer.write_event(
+                fold_idx=fold + 1,
+                test_subject=test_subject,
+                event_type="k_shot_summary",
+                loss=k_shot_loss,
+                task_loss=k_shot_metrics["task_loss"],
+                contrastive_loss=k_shot_metrics["contrastive_loss"],
+                triplet_loss=k_shot_metrics["triplet_loss"],
+                accuracy=k_shot_metrics["accuracy"],
+                precision=k_shot_metrics["precision"],
+                recall=k_shot_metrics["recall"],
+                f1=k_shot_metrics["f1"],
+                intra_class_similarity=k_shot_metrics["intra_class_similarity"],
+                inter_class_similarity=k_shot_metrics["inter_class_similarity"],
             )
 
             progress.log_subject_summary(
@@ -2122,16 +2103,45 @@ class FewShotPainLearner:
                 metrics=k_shot_metrics,
             )
 
-            result_recorder.record_fold_result(
+            cv_results["train_losses"].append(np.mean(fold_results["train_losses"]))
+            cv_results["train_accuracies"].append(
+                np.mean(fold_results["train_accuracies"])
+            )
+            cv_results["val_losses"].append(np.mean(fold_results["val_losses"]))
+            cv_results["val_accuracies"].append(np.mean(fold_results["val_accuracies"]))
+            cv_results["test_losses"].append(zero_shot_loss)
+            cv_results["test_accuracies"].append(zero_shot_metrics["accuracy"])
+            cv_results["zero_shot_losses"].append(zero_shot_loss)
+            cv_results["zero_shot_accuracies"].append(zero_shot_metrics["accuracy"])
+            cv_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
+            cv_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
+            cv_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
+            cv_results["zero_shot_intra_class_similarities"].append(
+                zero_shot_metrics["intra_class_similarity"]
+            )
+            cv_results["zero_shot_inter_class_similarities"].append(
+                zero_shot_metrics["inter_class_similarity"]
+            )
+            cv_results["k_shot_losses"].append(k_shot_loss)
+            cv_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
+            cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
+            cv_results["k_shot_recalls"].append(k_shot_metrics["recall"])
+            cv_results["k_shot_f1s"].append(k_shot_metrics["f1"])
+            cv_results["k_shot_intra_class_similarities"].append(
+                k_shot_metrics["intra_class_similarity"]
+            )
+            cv_results["k_shot_inter_class_similarities"].append(
+                k_shot_metrics["inter_class_similarity"]
+            )
+            csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
-                fold_results=fold_results,
-                zero_shot_loss=zero_shot_loss,
-                zero_shot_metrics=zero_shot_metrics,
-                k_shot_loss=k_shot_loss,
-                k_shot_metrics=k_shot_metrics,
+                event_type="fold_summary",
+                loss=zero_shot_loss,
+                accuracy=zero_shot_metrics["accuracy"],
             )
-            result_recorder.close_fold()
+            csv_writer.close()
+            cv_results["training_progress_files"].append(progress_file)
             progress.log_fold_complete(
                 fold_idx=fold + 1,
                 total_folds=num_subjects,
@@ -2139,18 +2149,6 @@ class FewShotPainLearner:
                 test_loss=zero_shot_loss,
                 test_accuracy=zero_shot_metrics["accuracy"],
             )
-            del (
-                fold_dict,
-                train_sampler,
-                val_sampler,
-                test_sampler,
-                pre_adaptation_weights,
-                sweep_metrics_by_size,
-                fixed_size_metrics,
-                zero_shot_metrics,
-                k_shot_metrics,
-            )
-            gc.collect()
             completed_folds = fold + 1
             should_log_checkpoint_summary = (
                 completed_folds < num_subjects
@@ -2158,14 +2156,16 @@ class FewShotPainLearner:
             )
             if should_log_checkpoint_summary:
                 completion_pct = 100.0 * completed_folds / max(1, num_subjects)
-                result_recorder.log_cross_validation_aggregate(
+                self._log_cross_validation_aggregate(
+                    cv_results,
                     title=(
                         "CROSS-VALIDATION RESULTS "
                         f"({completed_folds}/{num_subjects} folds, {completion_pct:.1f}% complete)"
                     ),
                 )
 
-        result_recorder.log_cross_validation_aggregate(
+        self._log_cross_validation_aggregate(
+            cv_results,
             title="CROSS-VALIDATION RESULTS",
         )
 

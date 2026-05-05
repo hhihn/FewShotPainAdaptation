@@ -1,5 +1,4 @@
 from typing import Tuple, Optional, List
-from numbers import Integral
 from dataclasses import dataclass
 
 
@@ -20,24 +19,12 @@ class PainDatasetConfig:
         64,
         128,
     )
-    tcn_dilation_rates: Optional[List[int]] = None  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2  # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2  # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.1  # Dropout rate inside the TCN encoder
     embedding_dim: int = 64  # Temporal Transformer model/encoder embedding dimension
-    tcn_attention_heads: int = 8  # Number of temporal Transformer attention heads
-    tcn_attention_key_dim: int = 8  # Key dimension per head; 8 heads * 8 = d_model 64
-    tcn_attention_dropout: float = 0.1  # Dropout inside temporal Transformer encoder
-    tcn_transformer_layers: int = 2  # Number of temporal Transformer encoder layers
-    tcn_transformer_ffn_dim: int = 256  # FFN hidden dimension in temporal Transformer
-    tcn_attention_pool_size: int = 0  # Downsample factor before attention pooling
-    use_attention: bool = True  # If True, enable attention pooling in each TCN encoder
-    fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
-    fusion_transformer_layers: int = 2  # Number of transformer fusion layers
-    fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
-    fusion_ib_beta: float = 1e-3  # Information bottleneck KL weight
-    clear_session_per_fold: bool = True  # Legacy cleanup flag; LOSO now reuses one graph
+    clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
     loso_start_index: Optional[int] = None  # 1-based inclusive LOSO fold start
@@ -70,8 +57,6 @@ class PainDatasetConfig:
         "single_subject"  # single_subject, cross_subject, or mixed
     )
     classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
-    supcon_loss_weight: float = 0.7  # Weight for supervised contrastive embedding loss
-    supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
     triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
     triplet_margin: float = 0.1  # Margin used by triplet loss
     triplet_mining_strategy: str = "batch_hard"  # batch_hard or batch_all
@@ -90,8 +75,9 @@ class PainDatasetConfig:
         20  # Log composite train/val/heldout summary every N train batches
     )
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
-    train_prefetch_batches: int = 1  # Number of asynchronously prepared train batches
+    train_prefetch_batches: int = 2  # Number of asynchronously prepared train batches
     gradient_clip_norm: Optional[float] = 1.0  # Per-gradient norm clip for optimizer updates
+    enable_numerics_check: bool = True  # Check train losses/gradients for NaN/Inf
     train_progress_write_every_n_batches: int = (
         10  # Persist train_update CSV rows every N train batches
     )
@@ -174,28 +160,6 @@ class PainDatasetConfig:
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
-        if self.filters_list is not None:
-            if isinstance(self.filters_list, str):
-                self.filters_list = [
-                    int(item.strip())
-                    for item in self.filters_list.split(",")
-                    if item.strip()
-                ]
-            elif isinstance(self.filters_list, Integral):
-                self.filters_list = [int(self.filters_list)]
-            else:
-                self.filters_list = [int(filters) for filters in self.filters_list]
-            if not self.filters_list:
-                raise ValueError("filters_list must contain at least one filter size")
-            if any(filters <= 0 for filters in self.filters_list):
-                raise ValueError("filters_list values must be > 0")
-            self.num_tcn_blocks = len(self.filters_list)
-        if self.num_tcn_blocks <= 0:
-            raise ValueError("num_tcn_blocks must be > 0")
-        if self.supcon_loss_weight < 0:
-            raise ValueError("supcon_loss_weight must be non-negative")
-        if self.supcon_temperature <= 0:
-            raise ValueError("supcon_temperature must be > 0")
         if self.triplet_loss_weight < 0:
             raise ValueError("triplet_loss_weight must be non-negative")
         if self.triplet_margin < 0:
@@ -212,41 +176,6 @@ class PainDatasetConfig:
             raise ValueError("pooling_size must be > 0")
         if self.tcn_dropout_rate < 0 or self.tcn_dropout_rate >= 1:
             raise ValueError("tcn_dropout_rate must be in [0, 1)")
-        if self.tcn_attention_heads <= 0:
-            raise ValueError("tcn_attention_heads must be > 0")
-        if self.tcn_attention_key_dim <= 0:
-            raise ValueError("tcn_attention_key_dim must be > 0")
-        if self.tcn_attention_dropout < 0 or self.tcn_attention_dropout >= 1:
-            raise ValueError("tcn_attention_dropout must be in [0, 1)")
-        if self.tcn_transformer_layers <= 0:
-            raise ValueError("tcn_transformer_layers must be > 0")
-        if self.tcn_transformer_ffn_dim <= 0:
-            raise ValueError("tcn_transformer_ffn_dim must be > 0")
-        if self.tcn_attention_pool_size < 0:
-            raise ValueError("tcn_attention_pool_size must be >= 0")
-        if self.tcn_dilation_rates is not None:
-            if isinstance(self.tcn_dilation_rates, str):
-                self.tcn_dilation_rates = [
-                    int(item.strip())
-                    for item in self.tcn_dilation_rates.split(",")
-                    if item.strip()
-                ]
-            elif isinstance(self.tcn_dilation_rates, Integral):
-                self.tcn_dilation_rates = [
-                    int(self.tcn_dilation_rates)
-                ] * self.num_tcn_blocks
-            else:
-                self.tcn_dilation_rates = [
-                    int(dilation_rate) for dilation_rate in self.tcn_dilation_rates
-                ]
-            if len(self.tcn_dilation_rates) == 1 and self.num_tcn_blocks > 1:
-                self.tcn_dilation_rates = self.tcn_dilation_rates * self.num_tcn_blocks
-            if len(self.tcn_dilation_rates) != self.num_tcn_blocks:
-                raise ValueError("tcn_dilation_rates length must match num_tcn_blocks")
-            if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
-                raise ValueError("tcn_dilation_rates values must be > 0")
-        else:
-            self.tcn_dilation_rates = [2**idx for idx in range(self.num_tcn_blocks)]
         if self.sampling_rate_hz <= 0:
             raise ValueError("sampling_rate_hz must be > 0")
         if self.window_shift_window_seconds <= 0:
