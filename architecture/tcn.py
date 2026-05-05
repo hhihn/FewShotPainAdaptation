@@ -158,11 +158,6 @@ class TemporalConvolutionalNetwork(keras.Model):
             name="embedding_dense",
             kernel_initializer="he_normal",
         )
-        self.embedding_dense_dropout = keras.layers.Dropout(
-            rate=self.dropout_rate,
-            name="embedding_dense_dropout",
-        )
-        self.embedding_norm = keras.layers.LayerNormalization(name="embedding_norm")
 
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
         self.logger.debug(f"Filters: {filters_list}")
