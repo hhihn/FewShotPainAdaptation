@@ -160,10 +160,6 @@ class PainDatasetConfig:
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
-        if self.supcon_loss_weight < 0:
-            raise ValueError("supcon_loss_weight must be non-negative")
-        if self.supcon_temperature <= 0:
-            raise ValueError("supcon_temperature must be > 0")
         if self.triplet_loss_weight < 0:
             raise ValueError("triplet_loss_weight must be non-negative")
         if self.triplet_margin < 0:
