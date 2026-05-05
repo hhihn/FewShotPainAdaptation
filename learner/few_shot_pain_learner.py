@@ -171,11 +171,20 @@ class FewShotPainLearner:
         )
         return x + noise
 
+    def _release_model_resources(self, clear_session: bool = True) -> None:
+        """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
+        self._compiled_train_batch_step = None
+        self._compiled_eval_batch_step = None
+        self.model = None
+        self.optimizer = None
+        if clear_session:
+            tf.keras.backend.clear_session()
+        gc.collect()
+
     def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
         if clear_session:
-            tf.keras.backend.clear_session()
-            gc.collect()
+            self._release_model_resources(clear_session=True)
 
         # Keep runtime dimensions in sync with dataset-dependent config updates.
         self.sequence_length = int(self.config.sequence_length)
