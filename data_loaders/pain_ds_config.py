@@ -24,7 +24,7 @@ class PainDatasetConfig:
     pooling_size: int = 2  # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.1  # Dropout rate inside the TCN encoder
     embedding_dim: int = 64  # Temporal Transformer model/encoder embedding dimension
-    clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
+    clear_session_per_fold: bool = True  # Legacy flag; LOSO folds now reuse one graph
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
     loso_start_index: Optional[int] = None  # 1-based inclusive LOSO fold start
