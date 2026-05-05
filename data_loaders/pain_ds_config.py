@@ -19,28 +19,11 @@ class PainDatasetConfig:
         64,
         128,
     )
-    tcn_dilation_rates: Optional[List[int]] = (
-        1,
-        2,
-        4,
-        8,
-    )  # Dilation rate per TCN block
     tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
     strides: int = 2  # Stride used by temporal pooling between TCN blocks
     pooling_size: int = 2  # Pool size used between TCN blocks
     tcn_dropout_rate: float = 0.1  # Dropout rate inside the TCN encoder
     embedding_dim: int = 64  # Temporal Transformer model/encoder embedding dimension
-    tcn_attention_heads: int = 8  # Number of temporal Transformer attention heads
-    tcn_attention_key_dim: int = 8  # Key dimension per head; 8 heads * 8 = d_model 64
-    tcn_attention_dropout: float = 0.1  # Dropout inside temporal Transformer encoder
-    tcn_transformer_layers: int = 4  # Number of temporal Transformer encoder layers
-    tcn_transformer_ffn_dim: int = 256  # FFN hidden dimension in temporal Transformer
-    tcn_attention_pool_size: int = 0  # Downsample factor before attention pooling
-    use_attention: bool = True  # If True, enable attention pooling in each TCN encoder
-    fusion_transformer_heads: int = 4  # Heads for transformer-based fusion
-    fusion_transformer_layers: int = 2  # Number of transformer fusion layers
-    fusion_transformer_ffn_dim: int = 128  # FFN hidden dimension in fusion transformer
-    fusion_ib_beta: float = 1e-3  # Information bottleneck KL weight
     clear_session_per_fold: bool = True  # Free TF graph memory between LOSO folds
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
@@ -74,8 +57,6 @@ class PainDatasetConfig:
         "single_subject"  # single_subject, cross_subject, or mixed
     )
     classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
-    supcon_loss_weight: float = 0.7  # Weight for supervised contrastive embedding loss
-    supcon_temperature: float = 0.05  # Temperature for supervised contrastive loss
     triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
     triplet_margin: float = 0.1  # Margin used by triplet loss
     triplet_mining_strategy: str = "batch_hard"  # batch_hard or batch_all
@@ -199,26 +180,6 @@ class PainDatasetConfig:
             raise ValueError("pooling_size must be > 0")
         if self.tcn_dropout_rate < 0 or self.tcn_dropout_rate >= 1:
             raise ValueError("tcn_dropout_rate must be in [0, 1)")
-        if self.tcn_attention_heads <= 0:
-            raise ValueError("tcn_attention_heads must be > 0")
-        if self.tcn_attention_key_dim <= 0:
-            raise ValueError("tcn_attention_key_dim must be > 0")
-        if self.tcn_attention_dropout < 0 or self.tcn_attention_dropout >= 1:
-            raise ValueError("tcn_attention_dropout must be in [0, 1)")
-        if self.tcn_transformer_layers <= 0:
-            raise ValueError("tcn_transformer_layers must be > 0")
-        if self.tcn_transformer_ffn_dim <= 0:
-            raise ValueError("tcn_transformer_ffn_dim must be > 0")
-        if self.tcn_attention_pool_size < 0:
-            raise ValueError("tcn_attention_pool_size must be >= 0")
-        if self.tcn_dilation_rates is not None:
-            self.tcn_dilation_rates = [
-                int(dilation_rate) for dilation_rate in self.tcn_dilation_rates
-            ]
-            if len(self.tcn_dilation_rates) != self.num_tcn_blocks:
-                raise ValueError("tcn_dilation_rates length must match num_tcn_blocks")
-            if any(dilation_rate <= 0 for dilation_rate in self.tcn_dilation_rates):
-                raise ValueError("tcn_dilation_rates values must be > 0")
         if self.sampling_rate_hz <= 0:
             raise ValueError("sampling_rate_hz must be > 0")
         if self.window_shift_window_seconds <= 0:

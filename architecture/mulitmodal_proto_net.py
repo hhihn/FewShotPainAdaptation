@@ -3,8 +3,7 @@ from tensorflow import keras
 from typing import Tuple, Optional, List
 from utils.logger import setup_logger
 
-from architecture.tcn import TemporalConvolutionalNetwork
-from architecture.fusion_transformer_ib import TransformerInformationBottleneckFusion
+from architecture.cnn import ConvolutionalNetwork
 
 
 class MultimodalPrototypicalNetwork(keras.Model):
@@ -23,19 +22,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         pooling_size: int = 2,
         filters_list: Optional[List[int]] = None,
         tcn_dropout_rate: float = 0.3,
-        tcn_attention_heads: int = 4,
-        tcn_attention_key_dim: int = 32,
-        tcn_attention_dropout: float = 0.2,
-        tcn_attention_pool_size: int = 8,
-        use_attention: bool = False,
         modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
         fusion_method: str = "mean",
         distance_metric: str = "cosine",
         classifier_mode: str = "prototype",
-        fusion_transformer_heads: int = 4,
-        fusion_transformer_layers: int = 2,
-        fusion_transformer_ffn_dim: int = 128,
-        fusion_ib_beta: float = 1e-3,
         seed: int = 0,
     ):
         """
@@ -47,7 +37,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             modality_names: Names of modalities (EDA, ECG, EMG)
             filters_list: List of filters in each convolution layer
             strides: Strides of convolution layers
-            fusion_method: 'mean', 'gated', or 'transformer_ib'
+            fusion_method: 'mean', 'gated'
             distance_metric: 'euclidean' or 'cosine'
             num_tcn_blocks: number of Temporal Convolutional Network blocks
             tcn_dilation_rates: Dilation rate per TCN block
@@ -55,15 +45,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
             strides: Stride used by temporal pooling between TCN blocks
             pooling_size: Pool size used between TCN blocks
             tcn_dropout_rate: Dropout rate inside each TCN encoder
-            tcn_attention_heads: Number of TCN self-attention heads
-            tcn_attention_key_dim: Key dimension per TCN attention head
-            tcn_attention_dropout: Dropout used by the TCN self-attention layer
-            tcn_attention_pool_size: Downsample factor before TCN self-attention
-            use_attention: If True, enable self-attention inside each TCN encoder
-            fusion_transformer_heads: Number of attention heads in transformer fusion
-            fusion_transformer_layers: Number of transformer blocks in fusion
-            fusion_transformer_ffn_dim: FFN hidden size in transformer fusion
-            fusion_ib_beta: KL regularization weight for information bottleneck
         """
         super().__init__()
         self.sequence_length = sequence_length
@@ -81,15 +62,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.pooling_size = pooling_size
         self.filters_list = filters_list
         self.tcn_dropout_rate = tcn_dropout_rate
-        self.tcn_attention_heads = tcn_attention_heads
-        self.tcn_attention_key_dim = tcn_attention_key_dim
-        self.tcn_attention_dropout = tcn_attention_dropout
-        self.tcn_attention_pool_size = tcn_attention_pool_size
-        self.use_attention = bool(use_attention)
-        self.fusion_transformer_heads = fusion_transformer_heads
-        self.fusion_transformer_layers = fusion_transformer_layers
-        self.fusion_transformer_ffn_dim = fusion_transformer_ffn_dim
-        self.fusion_ib_beta = fusion_ib_beta
         self.seed = int(seed)
         self.logit_scale = 10.0 if distance_metric == "cosine" else 1.0
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
@@ -106,11 +78,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 strides=strides,
                 pooling_size=pooling_size,
                 tcn_dropout_rate=tcn_dropout_rate,
-                tcn_attention_heads=tcn_attention_heads,
-                tcn_attention_key_dim=tcn_attention_key_dim,
-                tcn_attention_dropout=tcn_attention_dropout,
-                tcn_attention_pool_size=tcn_attention_pool_size,
-                use_attention=use_attention,
                 filters_list=filters_list,
             )
 
@@ -132,22 +99,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 )
                 for modality_name in modality_names
             }
-        elif fusion_method == "transformer_ib":
-            self.fused_embedding_dim = embedding_dim
-            self.fusion_layer = TransformerInformationBottleneckFusion(
-                embedding_dim=embedding_dim,
-                num_modalities=len(modality_names),
-                num_heads=fusion_transformer_heads,
-                num_layers=fusion_transformer_layers,
-                ffn_dim=fusion_transformer_ffn_dim,
-                ib_beta=fusion_ib_beta,
-                seed=self.seed + 8191,
-            )
-            self.gating_norm_layers = None
-            self.gating_softmax_layer = None
-            self.gating_layer = None
-            self.logger.debug("Build Fusion Model:")
-            self.logger.debug(self.fusion_layer)
         else:
             raise ValueError(f"Unknown fusion method: {fusion_method}")
 
@@ -182,15 +133,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         strides: int,
         pooling_size: int,
         tcn_dropout_rate: float,
-        tcn_attention_heads: int,
-        tcn_attention_key_dim: int,
-        tcn_attention_dropout: float,
-        tcn_attention_pool_size: int,
-        use_attention: bool,
         filters_list: Optional[List[int]] = None,
     ) -> keras.models.Model:
         """Build 1D CNN encoder for a single modality."""
-        model = TemporalConvolutionalNetwork(
+        model = ConvolutionalNetwork(
             name=f"tcn_{modality_name}",
             sequence_length=sequence_length,
             embedding_dim=embedding_dim,
@@ -198,13 +144,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             dilation_rates=tcn_dilation_rates,
             kernel_size=tcn_kernel_size,
             dropout_rate=tcn_dropout_rate,
-            num_attention_heads=tcn_attention_heads,
-            attention_key_dim=tcn_attention_key_dim,
-            attention_dropout=tcn_attention_dropout,
             strides=strides,
             pooling_size=pooling_size,
-            attention_pool_size=tcn_attention_pool_size,
-            use_attention=use_attention,
             filters_list=filters_list,
         )
 
@@ -239,7 +180,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 gated_embeddings.append(embedding * gate)
 
             fused = tf.reduce_mean(tf.stack(gated_embeddings, axis=1), axis=1)
-        else:  # self.fusion_method == "transformer_ib":
+        else:
             fused = self.fusion_layer(fused, training=training)
 
         return fused

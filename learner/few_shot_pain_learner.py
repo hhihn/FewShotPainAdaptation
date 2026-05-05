@@ -45,8 +45,6 @@ class FewShotPainLearner:
         self.deterministic_ops = bool(config.deterministic_ops)
         self.embedding_dim = config.embedding_dim
         self.train_batch_size = max(1, int(config.train_batch_size))
-        self.supcon_loss_weight = float(config.supcon_loss_weight)
-        self.supcon_temperature = float(config.supcon_temperature)
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
@@ -114,8 +112,6 @@ class FewShotPainLearner:
             "q_query": self.config.q_query,
             "task_normalize_mode": self.config.task_normalize_mode,
             "classifier_mode": self.config.classifier_mode,
-            "supcon_loss_weight": self.supcon_loss_weight,
-            "supcon_temperature": self.supcon_temperature,
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
@@ -515,46 +511,6 @@ class FewShotPainLearner:
         self.optimizer.apply_gradients(zip(grads, variables))
         return loss
 
-    def _compute_supervised_contrastive_loss(
-        self, embeddings: tf.Tensor, labels: tf.Tensor
-    ) -> tf.Tensor:
-        """Compute a label-aware contrastive loss over one episode."""
-        if self.supcon_loss_weight <= 0:
-            return tf.constant(0.0, dtype=embeddings.dtype)
-
-        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
-        logits = tf.matmul(
-            normalized_embeddings, normalized_embeddings, transpose_b=True
-        )
-        logits = logits / tf.cast(self.supcon_temperature, logits.dtype)
-
-        batch_size = tf.shape(labels)[0]
-        labels = tf.reshape(labels, (-1, 1))
-        positive_mask = tf.cast(tf.equal(labels, tf.transpose(labels)), logits.dtype)
-        logits_mask = tf.ones_like(positive_mask) - tf.eye(
-            batch_size, dtype=logits.dtype
-        )
-        positive_mask = positive_mask * logits_mask
-
-        logits = logits - tf.reduce_max(logits, axis=1, keepdims=True)
-        exp_logits = tf.exp(logits) * logits_mask
-        log_prob = logits - tf.math.log(
-            tf.reduce_sum(exp_logits, axis=1, keepdims=True)
-            + tf.constant(1e-8, dtype=logits.dtype)
-        )
-
-        positive_counts = tf.reduce_sum(positive_mask, axis=1)
-        mean_log_prob_pos = tf.math.divide_no_nan(
-            tf.reduce_sum(positive_mask * log_prob, axis=1),
-            positive_counts,
-        )
-        valid_anchor_mask = tf.cast(positive_counts > 0, logits.dtype)
-
-        return -tf.math.divide_no_nan(
-            tf.reduce_sum(mean_log_prob_pos * valid_anchor_mask),
-            tf.reduce_sum(valid_anchor_mask),
-        )
-
     def _compute_batch_all_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
@@ -697,11 +653,6 @@ class FewShotPainLearner:
         total_aux_loss = model_aux_loss
         contrastive_loss = tf.constant(0.0, dtype=task_loss.dtype)
         triplet_loss = tf.constant(0.0, dtype=task_loss.dtype)
-        if self.supcon_loss_weight > 0:
-            contrastive_loss = tf.cast(
-                self.supcon_loss_weight, task_loss.dtype
-            ) * self._compute_supervised_contrastive_loss(embeddings, labels)
-            total_aux_loss += contrastive_loss
         if self.triplet_loss_weight > 0:
             triplet_loss = tf.cast(
                 self.triplet_loss_weight, task_loss.dtype
