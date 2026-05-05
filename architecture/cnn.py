@@ -86,8 +86,7 @@ class ConvolutionalNetwork(keras.Model):
             inputs = new_inputs
             self.blocks.append(block)
 
-        self.avg_pool = keras.layers.GlobalAveragePooling1D(name="global_avg_pool")
-        self.max_pool = keras.layers.GlobalMaxPooling1D(name="global_max_pool")
+        self.flatten_layer = keras.layers.Flatten()
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
@@ -164,9 +163,7 @@ class ConvolutionalNetwork(keras.Model):
         if self.logger.isEnabledFor(10):
             self.logger.debug("After blocks: %s", x.shape)
 
-        x_avg = self.avg_pool(x)
-        x_max = self.max_pool(x)
-        x = keras.layers.concatenate([x_avg, x_max], axis=-1)
+        x = self.flatten_layer(x)
 
         if self.logger.isEnabledFor(10):
             self.logger.debug("After global pool: %s", x.shape)
