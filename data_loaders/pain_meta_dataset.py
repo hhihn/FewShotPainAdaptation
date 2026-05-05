@@ -180,7 +180,7 @@ class PainMetaDataset:
         "data". Single-array archives without that key are also accepted.
         """
         resolved_path = cls._resolve_array_path(path)
-        loaded = np.load(resolved_path, allow_pickle=True)
+        loaded = np.load(resolved_path, allow_pickle=False)
         if isinstance(loaded, np.lib.npyio.NpzFile):
             with loaded:
                 if "data" in loaded.files:
@@ -237,8 +237,14 @@ class PainMetaDataset:
     @classmethod
     def _collect_biovid_files(cls, modality_dir: Path, file_kind: str) -> Dict[str, Path]:
         paths = sorted(
-            list(modality_dir.glob(f"*_{file_kind}.npy"))
-            + list(modality_dir.glob(f"*_{file_kind}.npz"))
+            [
+                path
+                for path in (
+                    list(modality_dir.glob(f"*_{file_kind}.npy"))
+                    + list(modality_dir.glob(f"*_{file_kind}.npz"))
+                )
+                if not path.name.startswith(".")
+            ]
         )
         grouped_paths: Dict[str, List[Path]] = {}
         for path in paths:
