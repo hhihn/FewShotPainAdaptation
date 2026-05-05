@@ -86,15 +86,15 @@ class TemporalConvolutionalNetwork(keras.Model):
         # Build TCN blocks
         self.tcn_blocks = []
         inputs = keras.layers.Input(
-            shape=(self.sequence_length, 1), name=f"tcn_block_{0}_input"
+            shape=(self.sequence_length, 1), name=f"{0}_input"
         )
         for i in range(num_blocks):
             block, new_inputs = self._build_cnn_block(
                 inputs=inputs,
                 filters=filters_list[i],
                 block_idx=i,
-                pooling_size=pooling_size,
-                pooling_stride=2,
+                pooling_stride=self.strides,
+                pooling_size=self.pooling_size,
             )
             inputs = new_inputs
             self.tcn_blocks.append(block)
@@ -162,6 +162,10 @@ class TemporalConvolutionalNetwork(keras.Model):
         self.logger.debug(f"Initialized TCN with {num_blocks} blocks")
         self.logger.debug(f"Filters: {filters_list}")
         self.logger.debug(f"Dilation rates: {dilation_rates}")
+
+    def build(self, input_shape):
+        """Mark the subclassed model as buildable; child layers build on first call."""
+        super().build(input_shape)
 
     def _build_cnn_block(
         self, inputs, filters: int, pooling_size: int, pooling_stride, block_idx: int

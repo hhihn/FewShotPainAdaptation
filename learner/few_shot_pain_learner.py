@@ -51,6 +51,10 @@ class FewShotPainLearner:
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
+        self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
+        if self.gradient_clip_norm is not None:
+            self.gradient_clip_norm = float(self.gradient_clip_norm)
+        self.augmentation_seed_generator = keras.random.SeedGenerator(self.seed + 104729)
         self.support_size = int(self.config.n_way * self.config.k_shot)
         self.query_size = int(self.config.n_way * self.config.q_query)
         self.num_sensors = int(len(self.config.sensor_idx))
@@ -115,6 +119,7 @@ class FewShotPainLearner:
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
+            "gradient_clip_norm": self.gradient_clip_norm,
             "train_batch_size": self.train_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
@@ -171,10 +176,12 @@ class FewShotPainLearner:
         """Apply training-only signal augmentation configured for episodic updates."""
         if self.gaussian_noise_std <= 0:
             return x
-        noise = tf.random.normal(
+        noise = keras.random.normal(
             shape=tf.shape(x),
+            mean=0.0,
             stddev=tf.cast(self.gaussian_noise_std, x.dtype),
             dtype=x.dtype,
+            seed=self.augmentation_seed_generator,
         )
         return x + noise
 
@@ -213,8 +220,15 @@ class FewShotPainLearner:
             fusion_transformer_layers=self.config.fusion_transformer_layers,
             fusion_transformer_ffn_dim=self.config.fusion_transformer_ffn_dim,
             fusion_ib_beta=self.config.fusion_ib_beta,
+            seed=self.seed,
         )
-        self.optimizer = keras.optimizers.AdamW(learning_rate=self.learning_rate)
+        optimizer_kwargs = {
+            "learning_rate": self.learning_rate,
+            "weight_decay": 1e-4,
+        }
+        if self.gradient_clip_norm is not None:
+            optimizer_kwargs["clipnorm"] = self.gradient_clip_norm
+        self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
         self._build_compiled_train_batch_step()
         self._build_compiled_eval_batch_step()
 
@@ -389,7 +403,7 @@ class FewShotPainLearner:
                 tf.TensorSpec(shape=(None,), dtype=tf.float32),
                 tf.TensorSpec(shape=(None,), dtype=tf.float32),
             ),
-            parallel_iterations=16,
+            parallel_iterations=1,
         )
 
         return (
@@ -469,8 +483,7 @@ class FewShotPainLearner:
             batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
             batch_triplet_loss = tf.reduce_mean(triplet_losses)
 
-        gradients = tape.gradient(batch_loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        batch_loss = self._apply_gradients(batch_loss, tape)
         return (
             batch_loss,
             batch_task_loss,
@@ -483,7 +496,24 @@ class FewShotPainLearner:
         """Return regularization losses added by submodules, or zero if absent."""
         if not self.model.losses:
             return tf.constant(0.0, dtype=dtype)
-        return tf.add_n(self.model.losses)
+        return tf.add_n([tf.cast(loss, dtype) for loss in self.model.losses])
+
+    def _apply_gradients(
+        self, loss: tf.Tensor, tape: tf.GradientTape
+    ) -> tf.Tensor:
+        """Apply gradients for the current model update."""
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        grads_and_vars = [
+            (grad, variable)
+            for grad, variable in zip(gradients, self.model.trainable_variables)
+            if grad is not None
+        ]
+        if not grads_and_vars:
+            raise RuntimeError("No gradients were produced for model variables.")
+
+        grads, variables = zip(*grads_and_vars)
+        self.optimizer.apply_gradients(zip(grads, variables))
+        return loss
 
     def _compute_supervised_contrastive_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
@@ -509,7 +539,8 @@ class FewShotPainLearner:
         logits = logits - tf.reduce_max(logits, axis=1, keepdims=True)
         exp_logits = tf.exp(logits) * logits_mask
         log_prob = logits - tf.math.log(
-            tf.reduce_sum(exp_logits, axis=1, keepdims=True) + 1e-8
+            tf.reduce_sum(exp_logits, axis=1, keepdims=True)
+            + tf.constant(1e-8, dtype=logits.dtype)
         )
 
         positive_counts = tf.reduce_sum(positive_mask, axis=1)
@@ -535,7 +566,7 @@ class FewShotPainLearner:
         pairwise_similarity = tf.matmul(
             normalized_embeddings, normalized_embeddings, transpose_b=True
         )
-        pairwise_distance = 1.0 - pairwise_similarity
+        pairwise_distance = tf.ones_like(pairwise_similarity) - pairwise_similarity
 
         labels = tf.reshape(labels, [-1])
         same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
@@ -559,7 +590,10 @@ class FewShotPainLearner:
             triplet_loss,
             tf.zeros_like(triplet_loss),
         )
-        triplet_loss = tf.maximum(triplet_loss, 0.0)
+        triplet_loss = tf.maximum(
+            triplet_loss,
+            tf.constant(0.0, dtype=triplet_loss.dtype),
+        )
 
         positive_triplets = tf.cast(triplet_loss > 1e-16, pairwise_distance.dtype)
         return tf.math.divide_no_nan(
@@ -578,7 +612,7 @@ class FewShotPainLearner:
         pairwise_similarity = tf.matmul(
             normalized_embeddings, normalized_embeddings, transpose_b=True
         )
-        pairwise_distance = 1.0 - pairwise_similarity
+        pairwise_distance = tf.ones_like(pairwise_similarity) - pairwise_similarity
 
         labels = tf.reshape(labels, [-1])
         same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
@@ -603,7 +637,8 @@ class FewShotPainLearner:
         negative_distances = tf.where(
             negative_mask,
             pairwise_distance,
-            tf.ones_like(pairwise_distance) * (max_distance + 1.0),
+            tf.ones_like(pairwise_distance)
+            * (max_distance + tf.constant(1.0, dtype=pairwise_distance.dtype)),
         )
         hardest_negative_distance = tf.reduce_min(negative_distances, axis=1)
 
@@ -611,7 +646,7 @@ class FewShotPainLearner:
             hardest_positive_distance
             - hardest_negative_distance
             + tf.cast(self.triplet_margin, pairwise_distance.dtype),
-            0.0,
+            tf.constant(0.0, dtype=pairwise_distance.dtype),
         )
         valid_anchor_weights = tf.cast(valid_anchor_mask, pairwise_distance.dtype)
         return tf.math.divide_no_nan(
@@ -704,8 +739,7 @@ class FewShotPainLearner:
             logits = task_outputs["logits"]
             loss = task_outputs["loss"]
 
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        loss = self._apply_gradients(loss, tape)
 
         # Compute accuracy
         predictions = tf.argmax(logits, axis=1)
@@ -874,8 +908,7 @@ class FewShotPainLearner:
             batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
             batch_triplet_loss = tf.reduce_mean(tf.stack(triplet_losses))
 
-        gradients = tape.gradient(batch_loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        batch_loss = self._apply_gradients(batch_loss, tape)
         return (
             batch_loss,
             batch_task_loss,

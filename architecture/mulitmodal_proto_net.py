@@ -36,6 +36,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         fusion_transformer_layers: int = 2,
         fusion_transformer_ffn_dim: int = 128,
         fusion_ib_beta: float = 1e-3,
+        seed: int = 0,
     ):
         """
         Args:
@@ -89,6 +90,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.fusion_transformer_layers = fusion_transformer_layers
         self.fusion_transformer_ffn_dim = fusion_transformer_ffn_dim
         self.fusion_ib_beta = fusion_ib_beta
+        self.seed = int(seed)
         self.logit_scale = 10.0 if distance_metric == "cosine" else 1.0
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
         # Create separate encoder for each modality
@@ -139,6 +141,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 num_layers=fusion_transformer_layers,
                 ffn_dim=fusion_transformer_ffn_dim,
                 ib_beta=fusion_ib_beta,
+                seed=self.seed + 8191,
             )
             self.gating_norm_layers = None
             self.gating_softmax_layer = None
