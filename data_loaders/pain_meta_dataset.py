@@ -180,7 +180,7 @@ class PainMetaDataset:
         "data". Single-array archives without that key are also accepted.
         """
         resolved_path = cls._resolve_array_path(path)
-        loaded = np.load(resolved_path, allow_pickle=False)
+        loaded = np.load(resolved_path, allow_pickle=True)
         if isinstance(loaded, np.lib.npyio.NpzFile):
             with loaded:
                 if "data" in loaded.files:
