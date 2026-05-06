@@ -459,7 +459,7 @@ class FewShotPainLearner:
                     tf.TensorSpec(shape=(), dtype=tf.float32),
                     tf.TensorSpec(shape=(), dtype=tf.float32),
                 ),
-                parallel_iterations=16,
+                parallel_iterations=1,
             )
 
             batch_loss = tf.reduce_mean(losses)
