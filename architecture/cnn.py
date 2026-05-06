@@ -99,7 +99,7 @@ class ConvolutionalNetwork(keras.Model):
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
         )
-        self.embedding_dense_hidden_bn = keras.layers.LayerNormalization(
+        self.embedding_dense_hidden_bn = keras.layers.BatchNormalization(
             name="embedding_dense_hidden_bn"
         )
         self.embedding_dense = keras.layers.Dense(
@@ -108,7 +108,7 @@ class ConvolutionalNetwork(keras.Model):
             name="embedding_dense",
             kernel_initializer="he_normal",
         )
-        self.embedding_dense_bn = keras.layers.LayerNormalization(
+        self.embedding_dense_bn = keras.layers.BatchNormalization(
             name="embedding_dense_bn"
         )
 
@@ -132,7 +132,7 @@ class ConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"cnn_block_{block_idx}_conv1",
         )(inputs)
-        x = keras.layers.LayerNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
+        x = keras.layers.BatchNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
         x = keras.layers.MaxPool1D(
             pool_size=pooling_size,
             strides=pooling_stride,
