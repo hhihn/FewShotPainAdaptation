@@ -90,7 +90,7 @@ class ConvolutionalNetwork(keras.Model):
 
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
-            512,
+            1024,
             activation="elu",
             name="embedding_dense_hidden",
             kernel_initializer="he_normal",
@@ -100,6 +100,19 @@ class ConvolutionalNetwork(keras.Model):
             name="embedding_dense_hidden_dropout",
         )
         self.embedding_dense_hidden_bn = keras.layers.BatchNormalization(
+            name="embedding_dense_hidden_bn"
+        )
+        self.embedding_dense_hidden2 = keras.layers.Dense(
+            512,
+            activation="elu",
+            name="embedding_dense_hidden",
+            kernel_initializer="he_normal",
+        )
+        self.embedding_dense_hidden_dropout2 = keras.layers.Dropout(
+            rate=self.dropout_rate,
+            name="embedding_dense_hidden_dropout",
+        )
+        self.embedding_dense_hidden_bn2 = keras.layers.BatchNormalization(
             name="embedding_dense_hidden_bn"
         )
         self.embedding_dense = keras.layers.Dense(
@@ -168,6 +181,9 @@ class ConvolutionalNetwork(keras.Model):
         x = self.embedding_dense_hidden(x)
         x = self.embedding_dense_hidden_bn(x, training=training)
         x = self.embedding_dense_hidden_dropout(x, training=training)
+        x = self.embedding_dense_hidden2(x)
+        x = self.embedding_dense_hidden_bn2(x, training=training)
+        x = self.embedding_dense_hidden_dropout2(x, training=training)
         x = self.embedding_dense(x)
         x = self.embedding_dense_bn(x, training=training)
 
