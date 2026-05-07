@@ -55,7 +55,9 @@ class FewShotPainLearner:
         self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
         if self.gradient_clip_norm is not None:
             self.gradient_clip_norm = float(self.gradient_clip_norm)
-        self.augmentation_seed_generator = keras.random.SeedGenerator(self.seed + 104729)
+        self.augmentation_seed_generator = keras.random.SeedGenerator(
+            self.seed + 104729
+        )
         self.support_size = int(self.config.n_way * self.config.k_shot)
         self.query_size = int(self.config.n_way * self.config.q_query)
         self.num_sensors = int(len(self.config.sensor_idx))
@@ -487,9 +489,7 @@ class FewShotPainLearner:
             return tf.constant(0.0, dtype=dtype)
         return tf.add_n([tf.cast(loss, dtype) for loss in self.model.losses])
 
-    def _apply_gradients(
-        self, loss: tf.Tensor, tape: tf.GradientTape
-    ) -> tf.Tensor:
+    def _apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
         """Apply gradients for the current model update."""
         gradients = tape.gradient(loss, self.model.trainable_variables)
         grads_and_vars = [
@@ -706,10 +706,10 @@ class FewShotPainLearner:
         contrastive_losses = tf.zeros_like(task_losses)
         if self.triplet_loss_weight > 0:
             triplet_losses = tf.map_fn(
-                lambda inputs: tf.cast(
-                    self.triplet_loss_weight, task_losses.dtype
-                )
-                * self._compute_triplet_loss(inputs[0], inputs[1]),
+                lambda inputs: (
+                    tf.cast(self.triplet_loss_weight, task_losses.dtype)
+                    * self._compute_triplet_loss(inputs[0], inputs[1])
+                ),
                 (embeddings_batch, labels_batch),
                 fn_output_signature=tf.TensorSpec(shape=(), dtype=task_losses.dtype),
                 parallel_iterations=1,
@@ -964,9 +964,7 @@ class FewShotPainLearner:
                 contrastive_losses.append(
                     tf.reshape(chunk_outputs["contrastive_losses"], [-1])
                 )
-                triplet_losses.append(
-                    tf.reshape(chunk_outputs["triplet_losses"], [-1])
-                )
+                triplet_losses.append(tf.reshape(chunk_outputs["triplet_losses"], [-1]))
 
             batch_loss = tf.reduce_mean(tf.concat(losses, axis=0))
             batch_task_loss = tf.reduce_mean(tf.concat(task_losses, axis=0))
@@ -1118,9 +1116,7 @@ class FewShotPainLearner:
                     [tf.shape(query_y_chunk)[0], 1],
                 )
                 task_indices = tf.tile(
-                    tf.range(tf.shape(query_y_chunk)[0], dtype=tf.int32)[
-                        :, tf.newaxis
-                    ],
+                    tf.range(tf.shape(query_y_chunk)[0], dtype=tf.int32)[:, tf.newaxis],
                     [1, query_size],
                 )
                 intra_class_scores = tf.gather_nd(

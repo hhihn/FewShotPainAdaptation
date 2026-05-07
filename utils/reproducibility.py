@@ -24,10 +24,7 @@ def set_global_reproducibility(
             if logger is not None:
                 logger.warning(f"Could not enable TensorFlow op determinism: {exc}")
 
-    if (
-        previous_hash_seed not in {None, str(seed)}
-        and logger is not None
-    ):
+    if previous_hash_seed not in {None, str(seed)} and logger is not None:
         logger.warning(
             "PYTHONHASHSEED changed after interpreter startup; "
             "restart the Python process with the desired value for full hash determinism."

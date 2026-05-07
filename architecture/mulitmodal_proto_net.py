@@ -525,9 +525,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             query_x, [num_tasks * query_size, sequence_length, num_sensors]
         )
         all_x = tf.concat([support_flat, query_flat], axis=0)
-        all_modality_embeddings = self._encode_modality_stack(
-            all_x, training=training
-        )
+        all_modality_embeddings = self._encode_modality_stack(all_x, training=training)
         num_modalities = tf.shape(all_modality_embeddings)[1]
         modality_embedding_dim = tf.shape(all_modality_embeddings)[2]
         support_count = num_tasks * support_size

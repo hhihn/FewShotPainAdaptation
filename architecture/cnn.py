@@ -1,5 +1,4 @@
 from typing import List, Any
-import tensorflow as tf
 from keras import Model
 from tensorflow import keras
 
@@ -72,9 +71,7 @@ class ConvolutionalNetwork(keras.Model):
 
         # Build TCN blocks
         self.blocks = []
-        inputs = keras.layers.Input(
-            shape=(self.sequence_length, 1), name=f"{0}_input"
-        )
+        inputs = keras.layers.Input(shape=(self.sequence_length, 1), name=f"{0}_input")
         for i in range(num_blocks):
             block, new_inputs = self._build_cnn_block(
                 inputs=inputs,
@@ -151,7 +148,9 @@ class ConvolutionalNetwork(keras.Model):
             strides=pooling_stride,
             name=f"cnn_block_{block_idx}_maxpool",
         )(x)
-        x = keras.layers.Dropout(rate=self.dropout_rate, name=f"cnn_block_{block_idx}_dropout")(x)
+        x = keras.layers.Dropout(
+            rate=self.dropout_rate, name=f"cnn_block_{block_idx}_dropout"
+        )(x)
         return keras.Model(inputs=inputs, outputs=x, name=f"cnn_block_{block_idx}"), x
 
     def call(self, x, training=False):

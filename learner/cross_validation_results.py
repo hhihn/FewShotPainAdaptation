@@ -142,7 +142,9 @@ class CrossValidationResultRecorder:
     def close_fold(self) -> None:
         self.csv_writer.close()
         if self.current_progress_file is not None:
-            self.cv_results["training_progress_files"].append(self.current_progress_file)
+            self.cv_results["training_progress_files"].append(
+                self.current_progress_file
+            )
         self.current_progress_file = None
 
     def set_model_architecture_file(self, architecture_path: str) -> None:
@@ -319,7 +321,9 @@ class CrossValidationResultRecorder:
             np.mean(fold_results["train_accuracies"])
         )
         self.cv_results["val_losses"].append(np.mean(fold_results["val_losses"]))
-        self.cv_results["val_accuracies"].append(np.mean(fold_results["val_accuracies"]))
+        self.cv_results["val_accuracies"].append(
+            np.mean(fold_results["val_accuracies"])
+        )
         self.cv_results["test_losses"].append(zero_shot_loss)
         self.cv_results["test_accuracies"].append(zero_shot_metrics["accuracy"])
         self._append_eval_result(

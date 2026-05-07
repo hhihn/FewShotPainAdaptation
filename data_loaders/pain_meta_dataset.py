@@ -149,7 +149,9 @@ class PainMetaDataset:
         self.logger.info(f"X.shape: {self.X.shape}")
         self.y_onehot = self._load_numpy_array(self.data_dir / self.config.labels_path)
         self.logger.info(f"y_onehot.shape: {self.y_onehot.shape}")
-        self.subjects = self._load_numpy_array(self.data_dir / self.config.subjects_path)
+        self.subjects = self._load_numpy_array(
+            self.data_dir / self.config.subjects_path
+        )
         self.logger.info(f"subjects.shape: {self.subjects}")
         self.y = np.argmax(self.y_onehot, axis=1)
         self.sample_split_codes = np.full(len(self.y), -1, dtype=np.int8)
@@ -235,7 +237,9 @@ class PainMetaDataset:
         return sorted(paths, key=lambda path: (path.suffix != ".npz", path.name))[0]
 
     @classmethod
-    def _collect_biovid_files(cls, modality_dir: Path, file_kind: str) -> Dict[str, Path]:
+    def _collect_biovid_files(
+        cls, modality_dir: Path, file_kind: str
+    ) -> Dict[str, Path]:
         paths = sorted(
             [
                 path
