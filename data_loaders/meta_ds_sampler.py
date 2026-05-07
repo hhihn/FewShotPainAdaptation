@@ -24,6 +24,9 @@ class SixWayKShotSampler:
     - TensorFlow Dataset integration
     """
 
+    VALIDATION_FALLBACK_K_SHOT = 10
+    VALIDATION_FALLBACK_Q_QUERY = 10
+
     def __init__(
         self,
         dataset: PainMetaDataset,
@@ -84,6 +87,8 @@ class SixWayKShotSampler:
                 )
             self.tasks_per_epoch = self.config.heldout_eval_tasks
         self.active_subjects_array = np.asarray(self.active_subjects, dtype=np.int32)
+        if self.mode == "val":
+            self._apply_validation_task_size_fallback()
 
         self.logger.info(
             "Initialized sampler: "
@@ -118,10 +123,56 @@ class SixWayKShotSampler:
         for _ in range(self.tasks_per_epoch):
             yield self._sample_task()
 
+    def _min_available_samples_per_class(
+        self,
+        subjects: List[int],
+        *,
+        use_base_index: bool,
+    ) -> int:
+        """Return the smallest per-class sample pool for selected subjects."""
+        split_index = self.dataset._get_sampling_index_for_split(
+            self.data_split,
+            use_base_index=use_base_index,
+        )
+        selected_subjects = [int(subject) for subject in subjects]
+        return min(
+            int(
+                sum(
+                    len(split_index[subject][class_id])
+                    for subject in selected_subjects
+                )
+            )
+            for class_id in range(self.config.n_way)
+        )
+
+    def _apply_validation_task_size_fallback(self) -> None:
+        """Use a fixed validation size when configured k+q exceeds raw val samples."""
+        available_count = self._min_available_samples_per_class(
+            self.active_subjects,
+            use_base_index=True,
+        )
+        requested_total = int(self.k_shot) + int(self.q_query)
+        if requested_total <= available_count:
+            return
+
+        original_k = int(self.k_shot)
+        original_q = int(self.q_query)
+        self.k_shot = self.VALIDATION_FALLBACK_K_SHOT
+        self.q_query = self.VALIDATION_FALLBACK_Q_QUERY
+        self.logger.info(
+            "Validation task size k=%s, q=%s exceeds %s raw samples per class; "
+            "using k=%s, q=%s for validation.",
+            original_k,
+            original_q,
+            available_count,
+            self.k_shot,
+            self.q_query,
+        )
+
     def _sample_task(self) -> Dict[str, np.ndarray]:
         """Sample a single task."""
         normalize_mode = self.config.task_normalize_mode
-        use_base_index = self.mode == "test"
+        use_base_index = self.mode in {"val", "test"}
         active_subjects = self.active_subjects_array
         if active_subjects.size == 0:
             raise ValueError(f"No active subjects configured for mode={self.mode}")
@@ -244,10 +295,10 @@ class SixWayKShotSampler:
                 self.q_query,
                 normalize_mode=normalize_mode,
                 rng=self.rng,
-                allow_partial_query=self.mode == "test",
+                allow_partial_query=self.mode in {"val", "test"},
                 split_normalization_stats=self.split_normalization_stats,
                 split=self.data_split,
-                use_base_index=self.mode == "test",
+                use_base_index=self.mode in {"val", "test"},
             )
             self._maybe_report_task_size_mismatch(task=task, requested_subject=subject)
             return task

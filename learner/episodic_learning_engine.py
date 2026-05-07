@@ -1,0 +1,1049 @@
+import gc
+
+import tensorflow as tf
+from tensorflow import keras
+
+from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
+
+
+class EpisodicLearningEngine:
+    """TensorFlow model lifecycle and episodic train/eval tensor execution."""
+
+    def __init__(self, learner):
+        self.learner = learner
+        self._compiled_train_batch_step = None
+        self._compiled_eval_batch_step = None
+        self._initial_model_weights = None
+        self._initial_optimizer_variables = None
+
+    def __getattr__(self, name):
+        return getattr(self.learner, name)
+
+    @property
+    def model(self):
+        return self.learner.model
+
+    @model.setter
+    def model(self, value):
+        self.learner.model = value
+
+    @property
+    def optimizer(self):
+        return self.learner.optimizer
+
+    @optimizer.setter
+    def optimizer(self, value):
+        self.learner.optimizer = value
+
+    def augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
+        """Apply training-only signal augmentation configured for episodic updates."""
+        if self.gaussian_noise_std <= 0:
+            return x
+        noise = keras.random.normal(
+            shape=tf.shape(x),
+            mean=0.0,
+            stddev=tf.cast(self.gaussian_noise_std, x.dtype),
+            dtype=x.dtype,
+            seed=self.augmentation_seed_generator,
+        )
+        return x + noise
+
+    def release_model_resources(self, clear_session: bool = True) -> None:
+        """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
+        self._compiled_train_batch_step = None
+        self._compiled_eval_batch_step = None
+        self.learner._compiled_train_batch_step = None
+        self.learner._compiled_eval_batch_step = None
+        self._initial_model_weights = None
+        self._initial_optimizer_variables = None
+        self.model = None
+        self.optimizer = None
+        if clear_session:
+            tf.keras.backend.clear_session()
+        gc.collect()
+
+    def rebuild_model(self, clear_session: bool = True) -> None:
+        """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
+        if clear_session:
+            self.release_model_resources(clear_session=True)
+
+        self.learner.sequence_length = int(self.config.sequence_length)
+        self.learner.num_sensors = int(self.config.num_sensors)
+
+        self.model = MultimodalPrototypicalNetwork(
+            sequence_length=self.config.sequence_length,
+            num_sensors=self.num_sensors,
+            num_classes=self.config.n_way,
+            embedding_dim=self.embedding_dim,
+            modality_names=self.config.modality_names,
+            fusion_method=self.fusion_method,
+            distance_metric=self.distance_metric,
+            classifier_mode=self.config.classifier_mode,
+            num_tcn_blocks=self.config.num_tcn_blocks,
+            tcn_kernel_size=self.config.tcn_kernel_size,
+            filters_list=self.config.filters_list,
+            strides=self.config.strides,
+            pooling_size=self.config.pooling_size,
+            tcn_dropout_rate=self.config.tcn_dropout_rate,
+            seed=self.seed,
+        )
+        optimizer_kwargs = {
+            "learning_rate": self.learning_rate,
+            "weight_decay": 1e-4,
+        }
+        if self.gradient_clip_norm is not None:
+            optimizer_kwargs["clipnorm"] = self.gradient_clip_norm
+        self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
+        self.initialize_model_and_optimizer_variables()
+        self.build_compiled_train_batch_step()
+        self.build_compiled_eval_batch_step()
+        self.capture_initial_model_state()
+
+    def make_dummy_episode_tensors(
+        self,
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Create one configured episode to build model and optimizer variables."""
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)
+        support_y = tf.repeat(class_ids, repeats=int(self.config.k_shot))
+        query_y = tf.repeat(class_ids, repeats=int(self.config.q_query))
+        support_x = tf.zeros(
+            (
+                self.support_size,
+                self.sequence_length,
+                self.num_sensors,
+            ),
+            dtype=tf.float32,
+        )
+        query_x = tf.zeros(
+            (
+                self.query_size,
+                self.sequence_length,
+                self.num_sensors,
+            ),
+            dtype=tf.float32,
+        )
+        return support_x, support_y, query_x, query_y
+
+    def initialize_model_and_optimizer_variables(self) -> None:
+        """Build model weights and optimizer slot variables without training."""
+        support_x, support_y, query_x, _ = self.make_dummy_episode_tensors()
+        self.model.forward_episode(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+        if hasattr(self.optimizer, "build"):
+            self.optimizer.build(self.model.trainable_variables)
+
+    @staticmethod
+    def snapshot_variables(variables: list[tf.Variable]) -> list[tf.Tensor]:
+        """Return immutable tensor snapshots for a variable list."""
+        return [tf.identity(variable) for variable in variables]
+
+    @staticmethod
+    def restore_variable_snapshot(
+        variables: list[tf.Variable],
+        snapshot: list[tf.Tensor],
+        *,
+        label: str,
+    ) -> None:
+        """Assign a previously captured snapshot back into matching variables."""
+        if len(variables) != len(snapshot):
+            raise RuntimeError(
+                f"Cannot restore {label}: variable count changed from "
+                f"{len(snapshot)} to {len(variables)}."
+            )
+        for variable, value in zip(variables, snapshot):
+            variable.assign(value)
+
+    def capture_initial_model_state(self) -> None:
+        """Capture the post-build untrained model and optimizer state."""
+        self._initial_model_weights = self.snapshot_variables(self.model.weights)
+        self._initial_optimizer_variables = self.snapshot_variables(
+            self.optimizer.variables
+        )
+
+    def reset_model_state_for_new_fold(self) -> None:
+        """Restore fold-start weights and optimizer state without retracing functions."""
+        if (
+            self._initial_model_weights is None
+            or self._initial_optimizer_variables is None
+        ):
+            self.initialize_model_and_optimizer_variables()
+            self.capture_initial_model_state()
+
+        self.restore_variable_snapshot(
+            self.model.weights,
+            self._initial_model_weights,
+            label="model weights",
+        )
+        self.restore_variable_snapshot(
+            self.optimizer.variables,
+            self._initial_optimizer_variables,
+            label="optimizer variables",
+        )
+
+    def build_compiled_train_batch_step(self) -> None:
+        """Build a compiled train-step function bound to current model/optimizer vars."""
+        self._compiled_train_batch_step = tf.function(
+            self._train_batch_step_compiled_impl,
+            reduce_retracing=True,
+            input_signature=[
+                tf.TensorSpec(
+                    shape=(
+                        None,
+                        self.support_size,
+                        self.sequence_length,
+                        self.num_sensors,
+                    ),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, self.support_size), dtype=tf.int32),
+                tf.TensorSpec(
+                    shape=(
+                        None,
+                        self.query_size,
+                        self.sequence_length,
+                        self.num_sensors,
+                    ),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
+            ],
+        )
+        self.learner._compiled_train_batch_step = self._compiled_train_batch_step
+
+    def build_compiled_eval_batch_step(self) -> None:
+        """Build a compiled evaluation function for batches of episodic tasks."""
+        self._compiled_eval_batch_step = tf.function(
+            self._eval_task_batch_step_compiled_impl,
+            reduce_retracing=True,
+            input_signature=[
+                tf.TensorSpec(
+                    shape=(None, None, self.sequence_length, self.num_sensors),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, None), dtype=tf.int32),
+                tf.TensorSpec(
+                    shape=(None, None, self.sequence_length, self.num_sensors),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, None), dtype=tf.int32),
+            ],
+        )
+        self.learner._compiled_eval_batch_step = self._compiled_eval_batch_step
+
+    def compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
+        """Return regularization losses added by submodules, or zero if absent."""
+        if not self.model.losses:
+            return tf.constant(0.0, dtype=dtype)
+        return tf.add_n([tf.cast(loss, dtype) for loss in self.model.losses])
+
+    def apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
+        """Apply gradients for the current model update."""
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        grads_and_vars = [
+            (grad, variable)
+            for grad, variable in zip(gradients, self.model.trainable_variables)
+            if grad is not None
+        ]
+        if not grads_and_vars:
+            raise RuntimeError("No gradients were produced for model variables.")
+
+        grads, variables = zip(*grads_and_vars)
+        self.optimizer.apply_gradients(zip(grads, variables))
+        return loss
+
+    def compute_batch_all_triplet_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute BatchAllTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        if self.triplet_loss_weight <= 0:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+        pairwise_similarity = tf.matmul(
+            normalized_embeddings, normalized_embeddings, transpose_b=True
+        )
+        pairwise_distance = tf.ones_like(pairwise_similarity) - pairwise_similarity
+
+        labels = tf.reshape(labels, [-1])
+        same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+        different_label = tf.logical_not(same_label)
+        indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
+        positive_mask = tf.logical_and(same_label, indices_not_equal)
+
+        anchor_positive_dist = tf.expand_dims(pairwise_distance, 2)
+        anchor_negative_dist = tf.expand_dims(pairwise_distance, 1)
+        triplet_loss = (
+            anchor_positive_dist
+            - anchor_negative_dist
+            + tf.cast(self.triplet_margin, pairwise_distance.dtype)
+        )
+
+        mask_ap = tf.expand_dims(positive_mask, 2)
+        mask_an = tf.expand_dims(different_label, 1)
+        triplet_mask = tf.logical_and(mask_ap, mask_an)
+        triplet_loss = tf.where(
+            triplet_mask,
+            triplet_loss,
+            tf.zeros_like(triplet_loss),
+        )
+        triplet_loss = tf.maximum(
+            triplet_loss,
+            tf.constant(0.0, dtype=triplet_loss.dtype),
+        )
+
+        positive_triplets = tf.cast(triplet_loss > 1e-16, pairwise_distance.dtype)
+        return tf.math.divide_no_nan(
+            tf.reduce_sum(triplet_loss),
+            tf.reduce_sum(positive_triplets),
+        )
+
+    def compute_batch_hard_triplet_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        if self.triplet_loss_weight <= 0:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+        pairwise_similarity = tf.matmul(
+            normalized_embeddings, normalized_embeddings, transpose_b=True
+        )
+        pairwise_distance = tf.ones_like(pairwise_similarity) - pairwise_similarity
+
+        labels = tf.reshape(labels, [-1])
+        same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+        different_label = tf.logical_not(same_label)
+        indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
+        positive_mask = tf.logical_and(same_label, indices_not_equal)
+        negative_mask = different_label
+
+        valid_anchor_mask = tf.logical_and(
+            tf.reduce_any(positive_mask, axis=1),
+            tf.reduce_any(negative_mask, axis=1),
+        )
+
+        positive_distances = tf.where(
+            positive_mask,
+            pairwise_distance,
+            tf.zeros_like(pairwise_distance),
+        )
+        hardest_positive_distance = tf.reduce_max(positive_distances, axis=1)
+
+        max_distance = tf.reduce_max(pairwise_distance)
+        negative_distances = tf.where(
+            negative_mask,
+            pairwise_distance,
+            tf.ones_like(pairwise_distance)
+            * (max_distance + tf.constant(1.0, dtype=pairwise_distance.dtype)),
+        )
+        hardest_negative_distance = tf.reduce_min(negative_distances, axis=1)
+
+        per_anchor_loss = tf.maximum(
+            hardest_positive_distance
+            - hardest_negative_distance
+            + tf.cast(self.triplet_margin, pairwise_distance.dtype),
+            tf.constant(0.0, dtype=pairwise_distance.dtype),
+        )
+        valid_anchor_weights = tf.cast(valid_anchor_mask, pairwise_distance.dtype)
+        return tf.math.divide_no_nan(
+            tf.reduce_sum(per_anchor_loss * valid_anchor_weights),
+            tf.reduce_sum(valid_anchor_weights),
+        )
+
+    def compute_triplet_loss(self, embeddings: tf.Tensor, labels: tf.Tensor) -> tf.Tensor:
+        """Dispatch configured triplet mining strategy over one episode."""
+        if self.triplet_mining_strategy == "batch_hard":
+            return self.compute_batch_hard_triplet_loss(embeddings, labels)
+        if self.triplet_mining_strategy == "batch_all":
+            return self.compute_batch_all_triplet_loss(embeddings, labels)
+        raise ValueError(
+            "triplet_mining_strategy must be one of: 'batch_hard', 'batch_all'"
+        )
+
+    def compute_task_batch_objective(
+        self,
+        episode_outputs: dict[str, tf.Tensor],
+        support_y_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> dict[str, tf.Tensor]:
+        """Compute per-task objective tensors for normalized batched episode outputs."""
+        logits = episode_outputs["logits"]
+        per_query_loss = keras.losses.sparse_categorical_crossentropy(
+            query_y_batch,
+            logits,
+            from_logits=True,
+        )
+        task_losses = tf.reduce_mean(per_query_loss, axis=1)
+        model_aux_loss = self.compute_model_aux_loss(dtype=task_losses.dtype)
+
+        embeddings_batch = tf.concat(
+            [
+                episode_outputs["support_embeddings"],
+                episode_outputs["query_embeddings"],
+            ],
+            axis=1,
+        )
+        labels_batch = tf.concat([support_y_batch, query_y_batch], axis=1)
+        contrastive_losses = tf.zeros_like(task_losses)
+        if self.triplet_loss_weight > 0:
+            triplet_losses = tf.map_fn(
+                lambda inputs: (
+                    tf.cast(self.triplet_loss_weight, task_losses.dtype)
+                    * self.compute_triplet_loss(inputs[0], inputs[1])
+                ),
+                (embeddings_batch, labels_batch),
+                fn_output_signature=tf.TensorSpec(shape=(), dtype=task_losses.dtype),
+                parallel_iterations=1,
+            )
+        else:
+            triplet_losses = tf.zeros_like(task_losses)
+
+        return {
+            "losses": task_losses + model_aux_loss + triplet_losses,
+            "task_losses": task_losses,
+            "contrastive_losses": contrastive_losses,
+            "triplet_losses": triplet_losses,
+            "model_aux_loss": model_aux_loss,
+        }
+
+    def forward_task(
+        self,
+        support_x: tf.Tensor,
+        support_y: tf.Tensor,
+        query_x: tf.Tensor,
+        query_y: tf.Tensor,
+        training: bool,
+        return_similarity_scores: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run one task and compute classification plus optional embedding losses."""
+        episode_outputs = self.model.forward_episode(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=training,
+        )
+        logits = episode_outputs["logits"]
+        objective = self.compute_task_batch_objective(
+            {
+                "logits": logits[tf.newaxis, ...],
+                "support_embeddings": episode_outputs["support_embeddings"][
+                    tf.newaxis, ...
+                ],
+                "query_embeddings": episode_outputs["query_embeddings"][
+                    tf.newaxis, ...
+                ],
+            },
+            support_y[tf.newaxis, ...],
+            query_y[tf.newaxis, ...],
+        )
+
+        outputs = {
+            "logits": logits,
+            "loss": objective["losses"][0],
+            "task_loss": objective["task_losses"][0],
+            "contrastive_loss": objective["contrastive_losses"][0],
+            "triplet_loss": objective["triplet_losses"][0],
+            "model_aux_loss": objective["model_aux_loss"],
+            "support_embeddings": episode_outputs["support_embeddings"],
+            "query_embeddings": episode_outputs["query_embeddings"],
+            "prototypes": episode_outputs["prototypes"],
+        }
+        if return_similarity_scores:
+            outputs["similarity_scores"] = self.model.compute_similarity_scores(
+                episode_outputs["query_embeddings"], episode_outputs["prototypes"]
+            )
+        return outputs
+
+    def forward_task_batch(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+        training: bool,
+        return_similarity_scores: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run multiple tasks with batched embedding and per-task losses."""
+        episode_outputs = self.model.forward_episode_batch(
+            support_x=support_x_batch,
+            support_y=support_y_batch,
+            query_x=query_x_batch,
+            training=training,
+        )
+        logits = episode_outputs["logits"]
+        objective = self.compute_task_batch_objective(
+            episode_outputs,
+            support_y_batch,
+            query_y_batch,
+        )
+        outputs = {
+            "logits": logits,
+            "losses": objective["losses"],
+            "task_losses": objective["task_losses"],
+            "contrastive_losses": objective["contrastive_losses"],
+            "triplet_losses": objective["triplet_losses"],
+            "model_aux_loss": objective["model_aux_loss"],
+            "support_embeddings": episode_outputs["support_embeddings"],
+            "query_embeddings": episode_outputs["query_embeddings"],
+            "prototypes": episode_outputs["prototypes"],
+        }
+        if return_similarity_scores:
+            outputs["similarity_scores"] = episode_outputs["similarity_scores"]
+        return outputs
+
+    def train_step(self, support_x, support_y, query_x, query_y):
+        """Single training step on one task."""
+        with tf.GradientTape() as tape:
+            task_outputs = self.forward_task(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                query_y=query_y,
+                training=True,
+            )
+            logits = task_outputs["logits"]
+            loss = task_outputs["loss"]
+
+        loss = self.apply_gradients(loss, tape)
+
+        predictions = tf.argmax(logits, axis=1)
+        accuracy = tf.reduce_mean(
+            tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
+        )
+
+        return loss, accuracy
+
+    def evaluate_task(self, support_x, support_y, query_x, query_y):
+        """Evaluate on one task without updating weights."""
+        task_outputs = self.forward_task(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            query_y=query_y,
+            training=False,
+        )
+        logits = task_outputs["logits"]
+        loss = task_outputs["loss"]
+
+        predictions = tf.argmax(logits, axis=1)
+        accuracy = tf.reduce_mean(
+            tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
+        )
+
+        return loss, accuracy
+
+    def _eval_task_batch_step_compiled_impl(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Compiled evaluation over a batch of tasks without optimizer updates."""
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+
+        def _per_task_eval(inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]):
+            support_x, support_y, query_x, query_y = inputs
+            task_outputs = self.forward_task(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                query_y=query_y,
+                training=False,
+                return_similarity_scores=True,
+            )
+            logits = task_outputs["logits"]
+            similarity_scores = task_outputs["similarity_scores"]
+            loss = tf.cast(task_outputs["loss"], tf.float32)
+            task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
+            contrastive_loss = tf.cast(task_outputs["contrastive_loss"], tf.float32)
+            triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+
+            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+            intra_class_scores = tf.gather_nd(
+                similarity_scores,
+                tf.stack([row_indices, query_y], axis=1),
+            )
+            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
+
+            return (
+                loss,
+                task_loss,
+                contrastive_loss,
+                triplet_loss,
+                query_y,
+                pred,
+                intra_class_scores,
+                inter_class_scores,
+            )
+
+        return tf.map_fn(
+            _per_task_eval,
+            (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
+            fn_output_signature=(
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(), dtype=tf.float32),
+                tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+            ),
+            parallel_iterations=1,
+        )
+
+    def _train_batch_step_compiled_impl(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Compiled optimizer update over one batch of episodic tasks."""
+        with tf.GradientTape() as tape:
+
+            def _per_task_step(
+                inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor],
+            ):
+                support_x, support_y, query_x, query_y = inputs
+                support_x = self.augment_training_inputs(support_x)
+                query_x = self.augment_training_inputs(query_x)
+
+                task_outputs = self.forward_task(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    query_y=query_y,
+                    training=True,
+                )
+                logits = task_outputs["logits"]
+                loss = tf.cast(task_outputs["loss"], tf.float32)
+                task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
+                contrastive_loss = tf.cast(
+                    task_outputs["contrastive_loss"],
+                    tf.float32,
+                )
+                triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
+                predictions = tf.argmax(logits, axis=1, output_type=tf.int64)
+                accuracy = tf.reduce_mean(
+                    tf.cast(
+                        tf.equal(predictions, tf.cast(query_y, tf.int64)),
+                        tf.float32,
+                    )
+                )
+                return loss, task_loss, accuracy, contrastive_loss, triplet_loss
+
+            (
+                losses,
+                task_losses,
+                accuracies,
+                contrastive_losses,
+                triplet_losses,
+            ) = tf.map_fn(
+                _per_task_step,
+                (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
+                fn_output_signature=(
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.float32),
+                ),
+                parallel_iterations=1,
+            )
+
+            batch_loss = tf.reduce_mean(losses)
+            batch_task_loss = tf.reduce_mean(task_losses)
+            batch_acc = tf.reduce_mean(accuracies)
+            batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
+            batch_triplet_loss = tf.reduce_mean(triplet_losses)
+
+        batch_loss = self.apply_gradients(batch_loss, tape)
+        return (
+            batch_loss,
+            batch_task_loss,
+            batch_acc,
+            batch_contrastive_loss,
+            batch_triplet_loss,
+        )
+
+    @staticmethod
+    def mean_concat(tensor_parts: list[tf.Tensor]) -> tf.Tensor:
+        """Mean over rank-1 tensors collected from task chunks."""
+        return tf.reduce_mean(tf.concat(tensor_parts, axis=0))
+
+    def augment_training_task_chunk(
+        self,
+        support_x_chunk: tf.Tensor,
+        query_x_chunk: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Apply train augmentation while preserving legacy single-task shapes."""
+        task_count = int(tf.shape(support_x_chunk)[0].numpy())
+        if task_count == 1:
+            return (
+                self.augment_training_inputs(support_x_chunk[0])[tf.newaxis, ...],
+                self.augment_training_inputs(query_x_chunk[0])[tf.newaxis, ...],
+            )
+        return (
+            self.augment_training_inputs(support_x_chunk),
+            self.augment_training_inputs(query_x_chunk),
+        )
+
+    def forward_task_chunk(
+        self,
+        support_x_chunk: tf.Tensor,
+        support_y_chunk: tf.Tensor,
+        query_x_chunk: tf.Tensor,
+        query_y_chunk: tf.Tensor,
+        *,
+        training: bool,
+        return_similarity_scores: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Forward one eager task chunk and normalize outputs to task-major tensors."""
+        task_count = int(tf.shape(support_x_chunk)[0].numpy())
+        if task_count == 1:
+            task_outputs = self.forward_task(
+                support_x=support_x_chunk[0],
+                support_y=support_y_chunk[0],
+                query_x=query_x_chunk[0],
+                query_y=query_y_chunk[0],
+                training=training,
+                return_similarity_scores=return_similarity_scores,
+            )
+            outputs = {
+                "logits": task_outputs["logits"][tf.newaxis, ...],
+                "losses": tf.reshape(task_outputs["loss"], [1]),
+                "task_losses": tf.reshape(task_outputs["task_loss"], [1]),
+                "contrastive_losses": tf.reshape(
+                    task_outputs["contrastive_loss"], [1]
+                ),
+                "triplet_losses": tf.reshape(task_outputs["triplet_loss"], [1]),
+                "model_aux_loss": task_outputs["model_aux_loss"],
+                "support_embeddings": task_outputs["support_embeddings"][
+                    tf.newaxis, ...
+                ],
+                "query_embeddings": task_outputs["query_embeddings"][tf.newaxis, ...],
+                "prototypes": task_outputs["prototypes"][tf.newaxis, ...],
+            }
+            if return_similarity_scores:
+                outputs["similarity_scores"] = task_outputs["similarity_scores"][
+                    tf.newaxis, ...
+                ]
+            return outputs
+
+        return self.forward_task_batch(
+            support_x_batch=support_x_chunk,
+            support_y_batch=support_y_chunk,
+            query_x_batch=query_x_chunk,
+            query_y_batch=query_y_chunk,
+            training=training,
+            return_similarity_scores=return_similarity_scores,
+        )
+
+    @staticmethod
+    def train_metric_tensors_from_chunk_outputs(
+        chunk_outputs: dict[str, tf.Tensor],
+        query_y_chunk: tf.Tensor,
+    ):
+        """Return per-task train losses and accuracies for one normalized chunk."""
+        logits = chunk_outputs["logits"]
+        predictions = tf.argmax(logits, axis=2, output_type=tf.int32)
+        accuracies = tf.reduce_mean(
+            tf.cast(tf.equal(predictions, query_y_chunk), tf.float32),
+            axis=1,
+        )
+        return (
+            tf.reshape(tf.cast(chunk_outputs["losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["task_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(accuracies, tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["contrastive_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["triplet_losses"], tf.float32), [-1]),
+        )
+
+    def split_batched_similarity_scores(
+        self,
+        similarity_scores: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Split batched query-to-prototype scores into intra/inter-class groups."""
+        query_y_batch = tf.cast(query_y_batch, tf.int32)
+        task_count = tf.shape(query_y_batch)[0]
+        query_size = tf.shape(query_y_batch)[1]
+        row_indices = tf.tile(
+            tf.range(query_size, dtype=tf.int32)[tf.newaxis, :],
+            [task_count, 1],
+        )
+        task_indices = tf.tile(
+            tf.range(task_count, dtype=tf.int32)[:, tf.newaxis],
+            [1, query_size],
+        )
+        intra_class_scores = tf.gather_nd(
+            similarity_scores,
+            tf.stack([task_indices, row_indices, query_y_batch], axis=2),
+        )
+
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)
+        inter_class_mask = tf.not_equal(
+            class_ids[tf.newaxis, tf.newaxis, :],
+            query_y_batch[:, :, tf.newaxis],
+        )
+        return intra_class_scores, tf.boolean_mask(similarity_scores, inter_class_mask)
+
+    def eval_metric_tensors_from_chunk_outputs(
+        self,
+        chunk_outputs: dict[str, tf.Tensor],
+        query_y_chunk: tf.Tensor,
+    ):
+        """Return flattened eval losses, labels, predictions, and similarity groups."""
+        logits = chunk_outputs["logits"]
+        pred = tf.argmax(logits, axis=2, output_type=tf.int32)
+        intra_scores, inter_scores = self.split_batched_similarity_scores(
+            chunk_outputs["similarity_scores"],
+            query_y_chunk,
+        )
+        return (
+            tf.reshape(tf.cast(chunk_outputs["losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["task_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["contrastive_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["triplet_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(query_y_chunk, tf.int32), [-1]),
+            tf.reshape(pred, [-1]),
+            tf.reshape(intra_scores, [-1]),
+            tf.reshape(inter_scores, [-1]),
+        )
+
+    def train_batch_step_eager_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Eager fallback for one optimizer update using a batch of tasks."""
+        with tf.GradientTape() as tape:
+            losses = []
+            task_losses = []
+            accuracies = []
+            contrastive_losses = []
+            triplet_losses = []
+            for (
+                support_x_chunk,
+                support_y_chunk,
+                query_x_chunk,
+                query_y_chunk,
+            ) in self.task_pipeline.iter_task_tensor_chunks(
+                support_x_batch,
+                support_y_batch,
+                query_x_batch,
+                query_y_batch,
+            ):
+                support_x_chunk, query_x_chunk = self.augment_training_task_chunk(
+                    support_x_chunk,
+                    query_x_chunk,
+                )
+                chunk_outputs = self.forward_task_chunk(
+                    support_x_chunk=support_x_chunk,
+                    support_y_chunk=support_y_chunk,
+                    query_x_chunk=query_x_chunk,
+                    query_y_chunk=query_y_chunk,
+                    training=True,
+                )
+                (
+                    chunk_losses,
+                    chunk_task_losses,
+                    chunk_accuracies,
+                    chunk_contrastive_losses,
+                    chunk_triplet_losses,
+                ) = self.train_metric_tensors_from_chunk_outputs(
+                    chunk_outputs,
+                    query_y_chunk,
+                )
+                losses.append(chunk_losses)
+                task_losses.append(chunk_task_losses)
+                accuracies.append(chunk_accuracies)
+                contrastive_losses.append(chunk_contrastive_losses)
+                triplet_losses.append(chunk_triplet_losses)
+
+            batch_loss = self.mean_concat(losses)
+            batch_task_loss = self.mean_concat(task_losses)
+            batch_acc = self.mean_concat(accuracies)
+            batch_contrastive_loss = self.mean_concat(contrastive_losses)
+            batch_triplet_loss = self.mean_concat(triplet_losses)
+
+        batch_loss = self.apply_gradients(batch_loss, tape)
+        return (
+            batch_loss,
+            batch_task_loss,
+            batch_acc,
+            batch_contrastive_loss,
+            batch_triplet_loss,
+        )
+
+    def train_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Run compiled train step, with eager fallback if compilation fails."""
+        if self.embedding_batch_size > 1:
+            return self.train_batch_step_eager_tensors(
+                support_x_batch=support_x_batch,
+                support_y_batch=support_y_batch,
+                query_x_batch=query_x_batch,
+                query_y_batch=query_y_batch,
+            )
+        if self._compiled_train_batch_step is not None:
+            try:
+                return self._compiled_train_batch_step(
+                    support_x_batch,
+                    support_y_batch,
+                    query_x_batch,
+                    query_y_batch,
+                )
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                self.logger.warning(
+                    "Compiled train step failed once; falling back to eager for this batch. "
+                    f"error={exc!r}"
+                )
+                self._compiled_train_batch_step = None
+                self.learner._compiled_train_batch_step = None
+        return self.train_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
+        )
+
+    def eval_task_batch_step_eager_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Eager fallback for task-batch evaluation without optimizer updates."""
+        losses = []
+        task_losses = []
+        contrastive_losses = []
+        triplet_losses = []
+        true_labels = []
+        pred_labels = []
+        intra_scores = []
+        inter_scores = []
+
+        for (
+            support_x_chunk,
+            support_y_chunk,
+            query_x_chunk,
+            query_y_chunk,
+        ) in self.task_pipeline.iter_task_tensor_chunks(
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
+        ):
+            task_outputs = self.forward_task_chunk(
+                support_x_chunk=support_x_chunk,
+                support_y_chunk=support_y_chunk,
+                query_x_chunk=query_x_chunk,
+                query_y_chunk=query_y_chunk,
+                training=False,
+                return_similarity_scores=True,
+            )
+            (
+                chunk_losses,
+                chunk_task_losses,
+                chunk_contrastive_losses,
+                chunk_triplet_losses,
+                chunk_true_labels,
+                chunk_pred_labels,
+                chunk_intra_scores,
+                chunk_inter_scores,
+            ) = self.eval_metric_tensors_from_chunk_outputs(
+                task_outputs,
+                query_y_chunk,
+            )
+            losses.append(chunk_losses)
+            task_losses.append(chunk_task_losses)
+            contrastive_losses.append(chunk_contrastive_losses)
+            triplet_losses.append(chunk_triplet_losses)
+            true_labels.append(chunk_true_labels)
+            pred_labels.append(chunk_pred_labels)
+            intra_scores.append(chunk_intra_scores)
+            inter_scores.append(chunk_inter_scores)
+
+        return (
+            tf.concat(losses, axis=0),
+            tf.concat(task_losses, axis=0),
+            tf.concat(contrastive_losses, axis=0),
+            tf.concat(triplet_losses, axis=0),
+            tf.concat(true_labels, axis=0),
+            tf.concat(pred_labels, axis=0),
+            tf.concat(intra_scores, axis=0),
+            tf.concat(inter_scores, axis=0),
+        )
+
+    def eval_task_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Run compiled task-batch eval, with eager fallback if compilation fails."""
+        if self.embedding_batch_size > 1:
+            return self.eval_task_batch_step_eager_tensors(
+                support_x_batch=support_x_batch,
+                support_y_batch=support_y_batch,
+                query_x_batch=query_x_batch,
+                query_y_batch=query_y_batch,
+            )
+        if self._compiled_eval_batch_step is not None:
+            try:
+                (
+                    losses,
+                    task_losses,
+                    contrastive_losses,
+                    triplet_losses,
+                    y_true_batch,
+                    y_pred_batch,
+                    intra_class_scores_batch,
+                    inter_class_scores_batch,
+                ) = self._compiled_eval_batch_step(
+                    support_x_batch,
+                    support_y_batch,
+                    query_x_batch,
+                    query_y_batch,
+                )
+                return (
+                    tf.reshape(losses, [-1]),
+                    tf.reshape(task_losses, [-1]),
+                    tf.reshape(contrastive_losses, [-1]),
+                    tf.reshape(triplet_losses, [-1]),
+                    tf.reshape(y_true_batch, [-1]),
+                    tf.reshape(y_pred_batch, [-1]),
+                    tf.reshape(intra_class_scores_batch, [-1]),
+                    tf.reshape(inter_class_scores_batch, [-1]),
+                )
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                self.logger.warning(
+                    "Compiled eval step failed once; falling back to eager for eval batches. "
+                    f"error={exc!r}"
+                )
+                self._compiled_eval_batch_step = None
+                self.learner._compiled_eval_batch_step = None
+        return self.eval_task_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
+        )

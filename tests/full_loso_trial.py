@@ -248,8 +248,8 @@ def main() -> None:
         choices=("real", "mock"),
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--k-shot", type=int, default=10)
-    parser.add_argument("--q-query", type=int, default=10)
+    parser.add_argument("--k-shot", type=int, default=30)
+    parser.add_argument("--q-query", type=int, default=30)
     parser.add_argument("--task-class-ids", type=str, default="0,4")
     parser.add_argument(
         "--task-construction-mode",

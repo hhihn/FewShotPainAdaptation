@@ -1,12 +1,7 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 import json
-import gc
-import io
-import os
 import time
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
@@ -15,7 +10,12 @@ from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
 from utils.training_progress import TrainingProgressReporter
 from utils.training_progress_csv import TrainingProgressCSVWriter
-from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
+from learner.episodic_learning_engine import EpisodicLearningEngine
+from learner.episode_evaluation_service import EpisodeEvaluationService
+from learner.heldout_adaptation_service import HeldoutAdaptationService
+from learner.loso_training_runner import LosoTrainingRunner
+from learner.model_architecture_writer import ModelArchitectureWriter
+from learner.task_batch_pipeline import TaskBatchPipeline
 
 
 class FewShotPainLearner:
@@ -91,6 +91,26 @@ class FewShotPainLearner:
             seed=self.seed,
         )
 
+        self.task_pipeline = TaskBatchPipeline(
+            train_batch_size=self.train_batch_size,
+            embedding_batch_size=self.embedding_batch_size,
+            train_prefetch_batches=self.train_prefetch_batches,
+        )
+        self.engine = EpisodicLearningEngine(self)
+        self.evaluator = EpisodeEvaluationService(
+            config=self.config,
+            engine=self.engine,
+            task_pipeline=self.task_pipeline,
+        )
+        self.adaptation_service = HeldoutAdaptationService(
+            engine=self.engine,
+            evaluator=self.evaluator,
+        )
+        self.architecture_writer = ModelArchitectureWriter(
+            model_getter=lambda: self.model,
+        )
+        self.training_runner = LosoTrainingRunner(self)
+
         # Initialize model
         self._rebuild_model(clear_session=False)
         self.loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
@@ -150,6 +170,11 @@ class FewShotPainLearner:
             "modality_names": list(self.config.modality_names),
         }
         self.logger.info(f"Run config: {json.dumps(run_config, sort_keys=True)}")
+        if self.config.clear_session_per_fold:
+            self.logger.info(
+                "clear_session_per_fold=True is a legacy compatibility setting; "
+                "LOSO fold resets restore initial model state without clearing Keras sessions."
+            )
 
         self.logger.info(
             f"Initialized FewShotPainLearner with {len(self.cv.subjects)} subjects"
@@ -166,110 +191,27 @@ class FewShotPainLearner:
 
     def _augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
         """Apply training-only signal augmentation configured for episodic updates."""
-        if self.gaussian_noise_std <= 0:
-            return x
-        noise = keras.random.normal(
-            shape=tf.shape(x),
-            mean=0.0,
-            stddev=tf.cast(self.gaussian_noise_std, x.dtype),
-            dtype=x.dtype,
-            seed=self.augmentation_seed_generator,
-        )
-        return x + noise
+        return self.engine.augment_training_inputs(x)
 
     def _release_model_resources(self, clear_session: bool = True) -> None:
         """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
-        self._compiled_train_batch_step = None
-        self._compiled_eval_batch_step = None
-        self.model = None
-        self.optimizer = None
-        if clear_session:
-            tf.keras.backend.clear_session()
-        gc.collect()
+        self.engine.release_model_resources(clear_session=clear_session)
 
     def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
-        if clear_session:
-            self._release_model_resources(clear_session=True)
+        self.engine.rebuild_model(clear_session=clear_session)
 
-        # Keep runtime dimensions in sync with dataset-dependent config updates.
-        self.sequence_length = int(self.config.sequence_length)
-        self.num_sensors = int(self.config.num_sensors)
-
-        self.model = MultimodalPrototypicalNetwork(
-            sequence_length=self.config.sequence_length,
-            num_sensors=self.num_sensors,
-            num_classes=self.config.n_way,
-            embedding_dim=self.embedding_dim,
-            modality_names=self.config.modality_names,
-            fusion_method=self.fusion_method,
-            distance_metric=self.distance_metric,
-            classifier_mode=self.config.classifier_mode,
-            num_tcn_blocks=self.config.num_tcn_blocks,
-            tcn_kernel_size=self.config.tcn_kernel_size,
-            filters_list=self.config.filters_list,
-            strides=self.config.strides,
-            pooling_size=self.config.pooling_size,
-            tcn_dropout_rate=self.config.tcn_dropout_rate,
-            seed=self.seed,
-        )
-        optimizer_kwargs = {
-            "learning_rate": self.learning_rate,
-            "weight_decay": 1e-4,
-        }
-        if self.gradient_clip_norm is not None:
-            optimizer_kwargs["clipnorm"] = self.gradient_clip_norm
-        self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
-        self._build_compiled_train_batch_step()
-        self._build_compiled_eval_batch_step()
+    def _reset_model_state_for_new_fold(self) -> None:
+        """Restore initial model/optimizer state while reusing compiled functions."""
+        self.engine.reset_model_state_for_new_fold()
 
     def _build_compiled_train_batch_step(self) -> None:
         """Build a compiled train-step function bound to current model/optimizer vars."""
-        self._compiled_train_batch_step = tf.function(
-            self._train_batch_step_compiled_impl,
-            reduce_retracing=True,
-            input_signature=[
-                tf.TensorSpec(
-                    shape=(
-                        None,
-                        self.support_size,
-                        self.sequence_length,
-                        self.num_sensors,
-                    ),
-                    dtype=tf.float32,
-                ),
-                tf.TensorSpec(shape=(None, self.support_size), dtype=tf.int32),
-                tf.TensorSpec(
-                    shape=(
-                        None,
-                        self.query_size,
-                        self.sequence_length,
-                        self.num_sensors,
-                    ),
-                    dtype=tf.float32,
-                ),
-                tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
-            ],
-        )
+        self.engine.build_compiled_train_batch_step()
 
     def _build_compiled_eval_batch_step(self) -> None:
         """Build a compiled evaluation function for batches of episodic tasks."""
-        self._compiled_eval_batch_step = tf.function(
-            self._eval_task_batch_step_compiled_impl,
-            reduce_retracing=True,
-            input_signature=[
-                tf.TensorSpec(
-                    shape=(None, None, self.sequence_length, self.num_sensors),
-                    dtype=tf.float32,
-                ),
-                tf.TensorSpec(shape=(None, None), dtype=tf.int32),
-                tf.TensorSpec(
-                    shape=(None, None, self.sequence_length, self.num_sensors),
-                    dtype=tf.float32,
-                ),
-                tf.TensorSpec(shape=(None, None), dtype=tf.int32),
-            ],
-        )
+        self.engine.build_compiled_eval_batch_step()
 
     def _get_loso_fold_subjects(self) -> list[int]:
         """Return held-out subjects selected by single-fold and LOSO index config."""
@@ -485,135 +427,29 @@ class FewShotPainLearner:
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
         """Return regularization losses added by submodules, or zero if absent."""
-        if not self.model.losses:
-            return tf.constant(0.0, dtype=dtype)
-        return tf.add_n([tf.cast(loss, dtype) for loss in self.model.losses])
+        return self.engine.compute_model_aux_loss(dtype)
 
     def _apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
         """Apply gradients for the current model update."""
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        grads_and_vars = [
-            (grad, variable)
-            for grad, variable in zip(gradients, self.model.trainable_variables)
-            if grad is not None
-        ]
-        if not grads_and_vars:
-            raise RuntimeError("No gradients were produced for model variables.")
-
-        grads, variables = zip(*grads_and_vars)
-        self.optimizer.apply_gradients(zip(grads, variables))
-        return loss
+        return self.engine.apply_gradients(loss, tape)
 
     def _compute_batch_all_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
         """Compute BatchAllTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
-        if self.triplet_loss_weight <= 0:
-            return tf.constant(0.0, dtype=embeddings.dtype)
-
-        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
-        pairwise_similarity = tf.matmul(
-            normalized_embeddings, normalized_embeddings, transpose_b=True
-        )
-        pairwise_distance = tf.ones_like(pairwise_similarity) - pairwise_similarity
-
-        labels = tf.reshape(labels, [-1])
-        same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
-        different_label = tf.logical_not(same_label)
-        indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
-        positive_mask = tf.logical_and(same_label, indices_not_equal)
-
-        anchor_positive_dist = tf.expand_dims(pairwise_distance, 2)
-        anchor_negative_dist = tf.expand_dims(pairwise_distance, 1)
-        triplet_loss = (
-            anchor_positive_dist
-            - anchor_negative_dist
-            + tf.cast(self.triplet_margin, pairwise_distance.dtype)
-        )
-
-        mask_ap = tf.expand_dims(positive_mask, 2)
-        mask_an = tf.expand_dims(different_label, 1)
-        triplet_mask = tf.logical_and(mask_ap, mask_an)
-        triplet_loss = tf.where(
-            triplet_mask,
-            triplet_loss,
-            tf.zeros_like(triplet_loss),
-        )
-        triplet_loss = tf.maximum(
-            triplet_loss,
-            tf.constant(0.0, dtype=triplet_loss.dtype),
-        )
-
-        positive_triplets = tf.cast(triplet_loss > 1e-16, pairwise_distance.dtype)
-        return tf.math.divide_no_nan(
-            tf.reduce_sum(triplet_loss),
-            tf.reduce_sum(positive_triplets),
-        )
+        return self.engine.compute_batch_all_triplet_loss(embeddings, labels)
 
     def _compute_batch_hard_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
         """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
-        if self.triplet_loss_weight <= 0:
-            return tf.constant(0.0, dtype=embeddings.dtype)
-
-        normalized_embeddings = tf.nn.l2_normalize(embeddings, axis=1)
-        pairwise_similarity = tf.matmul(
-            normalized_embeddings, normalized_embeddings, transpose_b=True
-        )
-        pairwise_distance = tf.ones_like(pairwise_similarity) - pairwise_similarity
-
-        labels = tf.reshape(labels, [-1])
-        same_label = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
-        different_label = tf.logical_not(same_label)
-        indices_not_equal = tf.logical_not(tf.eye(tf.shape(labels)[0], dtype=tf.bool))
-        positive_mask = tf.logical_and(same_label, indices_not_equal)
-        negative_mask = different_label
-
-        valid_anchor_mask = tf.logical_and(
-            tf.reduce_any(positive_mask, axis=1),
-            tf.reduce_any(negative_mask, axis=1),
-        )
-
-        positive_distances = tf.where(
-            positive_mask,
-            pairwise_distance,
-            tf.zeros_like(pairwise_distance),
-        )
-        hardest_positive_distance = tf.reduce_max(positive_distances, axis=1)
-
-        max_distance = tf.reduce_max(pairwise_distance)
-        negative_distances = tf.where(
-            negative_mask,
-            pairwise_distance,
-            tf.ones_like(pairwise_distance)
-            * (max_distance + tf.constant(1.0, dtype=pairwise_distance.dtype)),
-        )
-        hardest_negative_distance = tf.reduce_min(negative_distances, axis=1)
-
-        per_anchor_loss = tf.maximum(
-            hardest_positive_distance
-            - hardest_negative_distance
-            + tf.cast(self.triplet_margin, pairwise_distance.dtype),
-            tf.constant(0.0, dtype=pairwise_distance.dtype),
-        )
-        valid_anchor_weights = tf.cast(valid_anchor_mask, pairwise_distance.dtype)
-        return tf.math.divide_no_nan(
-            tf.reduce_sum(per_anchor_loss * valid_anchor_weights),
-            tf.reduce_sum(valid_anchor_weights),
-        )
+        return self.engine.compute_batch_hard_triplet_loss(embeddings, labels)
 
     def _compute_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
         """Dispatch configured triplet mining strategy over one episode."""
-        if self.triplet_mining_strategy == "batch_hard":
-            return self._compute_batch_hard_triplet_loss(embeddings, labels)
-        if self.triplet_mining_strategy == "batch_all":
-            return self._compute_batch_all_triplet_loss(embeddings, labels)
-        raise ValueError(
-            "triplet_mining_strategy must be one of: 'batch_hard', 'batch_all'"
-        )
+        return self.engine.compute_triplet_loss(embeddings, labels)
 
     def _compute_task_batch_objective(
         self,
@@ -622,44 +458,11 @@ class FewShotPainLearner:
         query_y_batch: tf.Tensor,
     ) -> dict[str, tf.Tensor]:
         """Compute per-task objective tensors for normalized batched episode outputs."""
-        logits = episode_outputs["logits"]
-        per_query_loss = keras.losses.sparse_categorical_crossentropy(
+        return self.engine.compute_task_batch_objective(
+            episode_outputs,
+            support_y_batch,
             query_y_batch,
-            logits,
-            from_logits=True,
         )
-        task_losses = tf.reduce_mean(per_query_loss, axis=1)
-        model_aux_loss = self._compute_model_aux_loss(dtype=task_losses.dtype)
-
-        embeddings_batch = tf.concat(
-            [
-                episode_outputs["support_embeddings"],
-                episode_outputs["query_embeddings"],
-            ],
-            axis=1,
-        )
-        labels_batch = tf.concat([support_y_batch, query_y_batch], axis=1)
-        contrastive_losses = tf.zeros_like(task_losses)
-        if self.triplet_loss_weight > 0:
-            triplet_losses = tf.map_fn(
-                lambda inputs: (
-                    tf.cast(self.triplet_loss_weight, task_losses.dtype)
-                    * self._compute_triplet_loss(inputs[0], inputs[1])
-                ),
-                (embeddings_batch, labels_batch),
-                fn_output_signature=tf.TensorSpec(shape=(), dtype=task_losses.dtype),
-                parallel_iterations=1,
-            )
-        else:
-            triplet_losses = tf.zeros_like(task_losses)
-
-        return {
-            "losses": task_losses + model_aux_loss + triplet_losses,
-            "task_losses": task_losses,
-            "contrastive_losses": contrastive_losses,
-            "triplet_losses": triplet_losses,
-            "model_aux_loss": model_aux_loss,
-        }
 
     def _forward_task(
         self,
@@ -671,43 +474,14 @@ class FewShotPainLearner:
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
         """Run one task and compute classification plus optional embedding losses."""
-        episode_outputs = self.model.forward_episode(
+        return self.engine.forward_task(
             support_x=support_x,
             support_y=support_y,
             query_x=query_x,
+            query_y=query_y,
             training=training,
+            return_similarity_scores=return_similarity_scores,
         )
-        logits = episode_outputs["logits"]
-        objective = self._compute_task_batch_objective(
-            {
-                "logits": logits[tf.newaxis, ...],
-                "support_embeddings": episode_outputs["support_embeddings"][
-                    tf.newaxis, ...
-                ],
-                "query_embeddings": episode_outputs["query_embeddings"][
-                    tf.newaxis, ...
-                ],
-            },
-            support_y[tf.newaxis, ...],
-            query_y[tf.newaxis, ...],
-        )
-
-        outputs = {
-            "logits": logits,
-            "loss": objective["losses"][0],
-            "task_loss": objective["task_losses"][0],
-            "contrastive_loss": objective["contrastive_losses"][0],
-            "triplet_loss": objective["triplet_losses"][0],
-            "model_aux_loss": objective["model_aux_loss"],
-            "support_embeddings": episode_outputs["support_embeddings"],
-            "query_embeddings": episode_outputs["query_embeddings"],
-            "prototypes": episode_outputs["prototypes"],
-        }
-        if return_similarity_scores:
-            outputs["similarity_scores"] = self.model.compute_similarity_scores(
-                episode_outputs["query_embeddings"], episode_outputs["prototypes"]
-            )
-        return outputs
 
     def _forward_task_batch(
         self,
@@ -719,89 +493,32 @@ class FewShotPainLearner:
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
         """Run multiple tasks with batched embedding and per-task losses."""
-        episode_outputs = self.model.forward_episode_batch(
-            support_x=support_x_batch,
-            support_y=support_y_batch,
-            query_x=query_x_batch,
+        return self.engine.forward_task_batch(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
             training=training,
+            return_similarity_scores=return_similarity_scores,
         )
-        logits = episode_outputs["logits"]
-        objective = self._compute_task_batch_objective(
-            episode_outputs,
-            support_y_batch,
-            query_y_batch,
-        )
-        outputs = {
-            "logits": logits,
-            "losses": objective["losses"],
-            "task_losses": objective["task_losses"],
-            "contrastive_losses": objective["contrastive_losses"],
-            "triplet_losses": objective["triplet_losses"],
-            "model_aux_loss": objective["model_aux_loss"],
-            "support_embeddings": episode_outputs["support_embeddings"],
-            "query_embeddings": episode_outputs["query_embeddings"],
-            "prototypes": episode_outputs["prototypes"],
-        }
-        if return_similarity_scores:
-            outputs["similarity_scores"] = episode_outputs["similarity_scores"]
-        return outputs
 
     def train_step(self, support_x, support_y, query_x, query_y):
         """Single training step on one task."""
-        with tf.GradientTape() as tape:
-            task_outputs = self._forward_task(
-                support_x=support_x,
-                support_y=support_y,
-                query_x=query_x,
-                query_y=query_y,
-                training=True,
-            )
-            logits = task_outputs["logits"]
-            loss = task_outputs["loss"]
-
-        loss = self._apply_gradients(loss, tape)
-
-        # Compute accuracy
-        predictions = tf.argmax(logits, axis=1)
-        accuracy = tf.reduce_mean(
-            tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
-        )
-
-        return loss, accuracy
+        return self.engine.train_step(support_x, support_y, query_x, query_y)
 
     @staticmethod
     def _stack_task_batch_numpy(
         task_batch: list[dict],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Pack a Python task list into dense NumPy arrays once per update."""
-        support_x_np = np.stack(
-            [task_dict["support_X"] for task_dict in task_batch], axis=0
-        )
-        support_y_np = np.stack(
-            [task_dict["support_y"] for task_dict in task_batch], axis=0
-        )
-        query_x_np = np.stack(
-            [task_dict["query_X"] for task_dict in task_batch], axis=0
-        )
-        query_y_np = np.stack(
-            [task_dict["query_y"] for task_dict in task_batch], axis=0
-        )
-        return support_x_np, support_y_np, query_x_np, query_y_np
+        return TaskBatchPipeline.stack_task_batch_numpy(task_batch)
 
     @staticmethod
     def _stack_task_batch(
         task_batch: list[dict],
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Pack a Python task list into dense batch tensors once per update."""
-        support_x_np, support_y_np, query_x_np, query_y_np = (
-            FewShotPainLearner._stack_task_batch_numpy(task_batch)
-        )
-        return (
-            tf.convert_to_tensor(support_x_np, dtype=tf.float32),
-            tf.convert_to_tensor(support_y_np, dtype=tf.int32),
-            tf.convert_to_tensor(query_x_np, dtype=tf.float32),
-            tf.convert_to_tensor(query_y_np, dtype=tf.int32),
-        )
+        return TaskBatchPipeline.stack_task_batch(task_batch)
 
     @staticmethod
     def _sample_and_stack_task_batch_numpy(
@@ -809,8 +526,10 @@ class FewShotPainLearner:
         batch_size: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Sample one task batch and pack it into dense NumPy arrays."""
-        task_batch = [sampler.get_task() for _ in range(max(1, int(batch_size)))]
-        return FewShotPainLearner._stack_task_batch_numpy(task_batch)
+        return TaskBatchPipeline.sample_and_stack_task_batch_numpy(
+            sampler,
+            batch_size,
+        )
 
     def _iter_prefetched_task_batches(
         self,
@@ -818,62 +537,10 @@ class FewShotPainLearner:
         tasks_per_epoch: int,
     ):
         """Yield `(batch_size, stacked_numpy_batch)` with async CPU prefetch."""
-        batch_sizes = [
-            min(self.train_batch_size, tasks_per_epoch - task_start)
-            for task_start in range(0, tasks_per_epoch, self.train_batch_size)
-        ]
-        if not batch_sizes:
-            return
-
-        prefetch_batches = max(1, int(self.train_prefetch_batches))
-        if prefetch_batches <= 1:
-            for batch_size in batch_sizes:
-                yield (
-                    batch_size,
-                    self._sample_and_stack_task_batch_numpy(
-                        sampler,
-                        batch_size,
-                    ),
-                )
-            return
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            pending = deque()
-            next_batch_idx = 0
-
-            while next_batch_idx < len(batch_sizes) and len(pending) < prefetch_batches:
-                batch_size = batch_sizes[next_batch_idx]
-                pending.append(
-                    (
-                        batch_size,
-                        executor.submit(
-                            self._sample_and_stack_task_batch_numpy,
-                            sampler,
-                            batch_size,
-                        ),
-                    )
-                )
-                next_batch_idx += 1
-
-            while pending:
-                batch_size, batch_future = pending.popleft()
-                batch_arrays = batch_future.result()
-
-                if next_batch_idx < len(batch_sizes):
-                    next_size = batch_sizes[next_batch_idx]
-                    pending.append(
-                        (
-                            next_size,
-                            executor.submit(
-                                self._sample_and_stack_task_batch_numpy,
-                                sampler,
-                                next_size,
-                            ),
-                        )
-                    )
-                    next_batch_idx += 1
-
-                yield batch_size, batch_arrays
+        yield from self.task_pipeline.iter_prefetched_task_batches(
+            sampler,
+            tasks_per_epoch,
+        )
 
     def _iter_task_tensor_chunks(
         self,
@@ -883,18 +550,12 @@ class FewShotPainLearner:
         query_y_batch: tf.Tensor,
     ):
         """Yield task tensor chunks sized by embedding_batch_size in eager mode."""
-        total_tasks = int(tf.shape(support_x_batch)[0].numpy())
-        if total_tasks <= 0:
-            raise ValueError("task tensor batch must contain at least one task")
-        chunk_size = min(max(1, int(self.embedding_batch_size)), total_tasks)
-        for task_start in range(0, total_tasks, chunk_size):
-            task_end = min(total_tasks, task_start + chunk_size)
-            yield (
-                support_x_batch[task_start:task_end],
-                support_y_batch[task_start:task_end],
-                query_x_batch[task_start:task_end],
-                query_y_batch[task_start:task_end],
-            )
+        yield from self.task_pipeline.iter_task_tensor_chunks(
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
+        )
 
     def _augment_training_task_chunk(
         self,
@@ -1125,28 +786,7 @@ class FewShotPainLearner:
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Run compiled train step, with eager fallback if compilation fails."""
-        if self.embedding_batch_size > 1:
-            return self._train_batch_step_eager_tensors(
-                support_x_batch=support_x_batch,
-                support_y_batch=support_y_batch,
-                query_x_batch=query_x_batch,
-                query_y_batch=query_y_batch,
-            )
-        if self._compiled_train_batch_step is not None:
-            try:
-                return self._compiled_train_batch_step(
-                    support_x_batch,
-                    support_y_batch,
-                    query_x_batch,
-                    query_y_batch,
-                )
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                self.logger.warning(
-                    "Compiled train step failed once; falling back to eager for this batch. "
-                    f"error={exc!r}"
-                )
-                self._compiled_train_batch_step = None
-        return self._train_batch_step_eager_tensors(
+        return self.engine.train_batch_step_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
             query_x_batch=query_x_batch,
@@ -1248,28 +888,7 @@ class FewShotPainLearner:
         tf.Tensor,
     ]:
         """Run compiled task-batch eval, with eager fallback if compilation fails."""
-        if self.embedding_batch_size > 1:
-            return self._eval_task_batch_step_eager_tensors(
-                support_x_batch=support_x_batch,
-                support_y_batch=support_y_batch,
-                query_x_batch=query_x_batch,
-                query_y_batch=query_y_batch,
-            )
-        if self._compiled_eval_batch_step is not None:
-            try:
-                return self._compiled_eval_batch_step(
-                    support_x_batch,
-                    support_y_batch,
-                    query_x_batch,
-                    query_y_batch,
-                )
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                self.logger.warning(
-                    "Compiled eval step failed once; falling back to eager for eval batches. "
-                    f"error={exc!r}"
-                )
-                self._compiled_eval_batch_step = None
-        return self._eval_task_batch_step_eager_tensors(
+        return self.engine.eval_task_batch_step_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
             query_x_batch=query_x_batch,
@@ -1279,17 +898,7 @@ class FewShotPainLearner:
     @staticmethod
     def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
         """Return True when support/query tensors share identical shapes across tasks."""
-        if not task_batch:
-            return False
-        keys = ("support_X", "support_y", "query_X", "query_y")
-        reference_shapes = {
-            key: tuple(np.asarray(task_batch[0][key]).shape) for key in keys
-        }
-        for task_dict in task_batch[1:]:
-            for key in keys:
-                if tuple(np.asarray(task_dict[key]).shape) != reference_shapes[key]:
-                    return False
-        return True
+        return TaskBatchPipeline.task_batch_has_uniform_shapes(task_batch)
 
     def train_batch_step(
         self, task_batch: list[dict]
@@ -1301,7 +910,7 @@ class FewShotPainLearner:
             query_x_batch,
             query_y_batch,
         ) = self._stack_task_batch(task_batch)
-        return self._train_batch_step_tensors(
+        return self.engine.train_batch_step_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
             query_x_batch=query_x_batch,
@@ -1310,22 +919,7 @@ class FewShotPainLearner:
 
     def evaluate_task(self, support_x, support_y, query_x, query_y):
         """Evaluate on one task without updating weights."""
-        task_outputs = self._forward_task(
-            support_x=support_x,
-            support_y=support_y,
-            query_x=query_x,
-            query_y=query_y,
-            training=False,
-        )
-        logits = task_outputs["logits"]
-        loss = task_outputs["loss"]
-
-        predictions = tf.argmax(logits, axis=1)
-        accuracy = tf.reduce_mean(
-            tf.cast(tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32)
-        )
-
-        return loss, accuracy
+        return self.engine.evaluate_task(support_x, support_y, query_x, query_y)
 
     def evaluate_batch_step(
         self, task_batch: list[dict]
@@ -1346,27 +940,20 @@ class FewShotPainLearner:
         similarity_scores: np.ndarray, y_true: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         """Split query-to-prototype similarities into intra/inter-class groups."""
-        row_indices = np.arange(len(y_true))
-        intra_class_scores = similarity_scores[row_indices, y_true]
-
-        inter_class_mask = np.ones_like(similarity_scores, dtype=bool)
-        inter_class_mask[row_indices, y_true] = False
-        inter_class_scores = similarity_scores[inter_class_mask]
-
-        return intra_class_scores, inter_class_scores
+        return EpisodeEvaluationService.split_similarity_scores(
+            similarity_scores,
+            y_true,
+        )
 
     @staticmethod
     def _compute_similarity_metrics(
         intra_class_scores: np.ndarray, inter_class_scores: np.ndarray
     ) -> dict:
         """Aggregate similarity statistics using the existing metric dict shape."""
-        intra_mean = float(np.mean(intra_class_scores))
-        inter_mean = float(np.mean(inter_class_scores))
-        return {
-            "intra_class_similarity": intra_mean,
-            "inter_class_similarity": inter_mean,
-            "similarity_margin": intra_mean - inter_mean,
-        }
+        return EpisodeEvaluationService.compute_similarity_metrics(
+            intra_class_scores,
+            inter_class_scores,
+        )
 
     def _evaluate_task_batch_loss_and_metrics(
         self,
@@ -1375,176 +962,14 @@ class FewShotPainLearner:
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate classification/similarity metrics."""
-        if not task_batch:
-            raise ValueError("task_batch must contain at least one task")
-
-        losses = []
-        task_losses = []
-        contrastive_losses = []
-        triplet_losses = []
-        all_true_tensors = []
-        all_pred_tensors = []
-        all_intra_class_scores = []
-        all_inter_class_scores = []
-        use_batched_forward = (
-            forward_batch_size is not None and int(forward_batch_size) > 1
+        return self.evaluator.evaluate_task_batch_loss_and_metrics(
+            task_batch,
+            forward_batch_size=forward_batch_size,
         )
-
-        if use_batched_forward and self._task_batch_has_uniform_shapes(task_batch):
-            (
-                support_x_batch,
-                support_y_batch,
-                query_x_batch,
-                query_y_batch,
-            ) = self._stack_task_batch(task_batch)
-            eval_batch_size = max(1, int(forward_batch_size))
-            total_tasks = len(task_batch)
-            for task_start in range(0, total_tasks, eval_batch_size):
-                task_end = min(total_tasks, task_start + eval_batch_size)
-                (
-                    batch_losses,
-                    batch_task_losses,
-                    batch_contrastive_losses,
-                    batch_triplet_losses,
-                    batch_y_true,
-                    batch_y_pred,
-                    batch_intra_scores,
-                    batch_inter_scores,
-                ) = self._eval_task_batch_step_tensors(
-                    support_x_batch=support_x_batch[task_start:task_end],
-                    support_y_batch=support_y_batch[task_start:task_end],
-                    query_x_batch=query_x_batch[task_start:task_end],
-                    query_y_batch=query_y_batch[task_start:task_end],
-                )
-                losses.append(tf.reshape(batch_losses, [-1]))
-                task_losses.append(tf.reshape(batch_task_losses, [-1]))
-                contrastive_losses.append(tf.reshape(batch_contrastive_losses, [-1]))
-                triplet_losses.append(tf.reshape(batch_triplet_losses, [-1]))
-                all_true_tensors.append(tf.reshape(batch_y_true, [-1]))
-                all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
-                all_intra_class_scores.append(tf.reshape(batch_intra_scores, [-1]))
-                all_inter_class_scores.append(tf.reshape(batch_inter_scores, [-1]))
-        else:
-            class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
-            if self._task_batch_has_uniform_shapes(task_batch):
-                (
-                    support_x_batch,
-                    support_y_batch,
-                    query_x_batch,
-                    query_y_batch,
-                ) = self._stack_task_batch(task_batch)
-                task_iter = zip(
-                    tf.unstack(support_x_batch, axis=0),
-                    tf.unstack(support_y_batch, axis=0),
-                    tf.unstack(query_x_batch, axis=0),
-                    tf.unstack(query_y_batch, axis=0),
-                )
-            else:
-                task_iter = (
-                    (
-                        tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32),
-                        tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32),
-                        tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32),
-                        tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32),
-                    )
-                    for task_dict in task_batch
-                )
-
-            for support_x, support_y, query_x, query_y in task_iter:
-                task_outputs = self._forward_task(
-                    support_x,
-                    support_y,
-                    query_x,
-                    query_y,
-                    training=False,
-                    return_similarity_scores=True,
-                )
-                logits = task_outputs["logits"]
-                similarity_scores = task_outputs["similarity_scores"]
-                pred = tf.argmax(logits, axis=1, output_type=tf.int32)
-                row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
-                intra_class_scores = tf.gather_nd(
-                    similarity_scores,
-                    tf.stack([row_indices, query_y], axis=1),
-                )
-                inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-                inter_class_scores = tf.boolean_mask(
-                    similarity_scores, inter_class_mask
-                )
-
-                losses.append(
-                    tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1])
-                )
-                task_losses.append(
-                    tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
-                )
-                contrastive_losses.append(
-                    tf.reshape(
-                        tf.cast(task_outputs["contrastive_loss"], tf.float32), [1]
-                    )
-                )
-                triplet_losses.append(
-                    tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
-                )
-                all_true_tensors.append(tf.reshape(query_y, [-1]))
-                all_pred_tensors.append(tf.reshape(pred, [-1]))
-                all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
-                all_inter_class_scores.append(tf.reshape(inter_class_scores, [-1]))
-
-        y_true = (
-            tf.concat(all_true_tensors, axis=0).numpy().astype(np.int32, copy=False)
-        )
-        y_pred = (
-            tf.concat(all_pred_tensors, axis=0).numpy().astype(np.int32, copy=False)
-        )
-        metrics = self._compute_macro_metrics(y_true, y_pred)
-        metrics.update(
-            self._compute_similarity_metrics(
-                tf.concat(all_intra_class_scores, axis=0).numpy(),
-                tf.concat(all_inter_class_scores, axis=0).numpy(),
-            )
-        )
-        metrics["task_loss"] = float(tf.reduce_mean(tf.concat(task_losses, axis=0)))
-        metrics["contrastive_loss"] = float(
-            tf.reduce_mean(tf.concat(contrastive_losses, axis=0))
-        )
-        metrics["triplet_loss"] = float(
-            tf.reduce_mean(tf.concat(triplet_losses, axis=0))
-        )
-        return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Compute accuracy, macro precision, macro recall, and macro F1."""
-        num_classes = self.config.n_way
-        conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
-        for truth, pred in zip(y_true, y_pred):
-            conf_mat[int(truth), int(pred)] += 1
-
-        tp = np.diag(conf_mat).astype(np.float64)
-        fp = np.sum(conf_mat, axis=0) - tp
-        fn = np.sum(conf_mat, axis=1) - tp
-
-        precision_per_class = np.divide(
-            tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0
-        )
-        recall_per_class = np.divide(
-            tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0
-        )
-        f1_per_class = np.divide(
-            2 * precision_per_class * recall_per_class,
-            precision_per_class + recall_per_class,
-            out=np.zeros_like(tp),
-            where=(precision_per_class + recall_per_class) > 0,
-        )
-
-        total = np.sum(conf_mat)
-        accuracy = float(np.sum(tp) / total) if total > 0 else 0.0
-        return {
-            "accuracy": accuracy,
-            "precision": float(np.mean(precision_per_class)),
-            "recall": float(np.mean(recall_per_class)),
-            "f1": float(np.mean(f1_per_class)),
-        }
+        return self.evaluator.compute_macro_metrics(y_true, y_pred)
 
     def _evaluate_sampler_loss_and_metrics(
         self,
@@ -1554,19 +979,20 @@ class FewShotPainLearner:
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
         """Evaluate average loss plus classification/similarity metrics on tasks."""
-        return self._evaluate_task_batch_loss_and_metrics(
-            [sampler.get_task() for _ in range(num_tasks)],
+        return self.evaluator.evaluate_sampler_loss_and_metrics(
+            sampler,
+            num_tasks,
             forward_batch_size=forward_batch_size,
         )
 
     @staticmethod
     def _set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
         """Update sampler task size in-place for temporary held-out evaluation sweeps."""
-        sampler.k_shot = int(k_shot)
-        sampler.q_query = int(q_query)
-        if hasattr(sampler, "n_way"):
-            sampler.support_size = int(sampler.n_way * sampler.k_shot)
-            sampler.query_size = int(sampler.n_way * sampler.q_query)
+        EpisodeEvaluationService.set_sampler_task_size(
+            sampler,
+            k_shot=k_shot,
+            q_query=q_query,
+        )
 
     def _evaluate_sampler_loss_and_metrics_at_task_size(
         self,
@@ -1578,17 +1004,13 @@ class FewShotPainLearner:
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
         """Evaluate sampler metrics with a temporary k-shot/q-query override."""
-        original_k = int(sampler.k_shot)
-        original_q = int(sampler.q_query)
-        self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
-        try:
-            return self._evaluate_sampler_loss_and_metrics(
-                sampler,
-                num_tasks=num_tasks,
-                forward_batch_size=forward_batch_size,
-            )
-        finally:
-            self._set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
+        return self.evaluator.evaluate_sampler_loss_and_metrics_at_task_size(
+            sampler,
+            num_tasks=num_tasks,
+            k_shot=k_shot,
+            q_query=q_query,
+            forward_batch_size=forward_batch_size,
+        )
 
     def _adapt_on_sampler_at_task_size(
         self,
@@ -1599,48 +1021,19 @@ class FewShotPainLearner:
         q_query: int,
     ) -> list[float]:
         """Run adaptation on tasks drawn with temporary k-shot/q-query override."""
-        original_k = int(sampler.k_shot)
-        original_q = int(sampler.q_query)
-        self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
-        adaptation_losses = []
-        try:
-            for _ in range(max(0, int(adaptation_steps))):
-                adapt_task = sampler.get_task()
-                support_x = tf.constant(adapt_task["support_X"], dtype=tf.float32)
-                support_y = tf.constant(adapt_task["support_y"], dtype=tf.int32)
-                query_x = tf.constant(adapt_task["query_X"], dtype=tf.float32)
-                query_y = tf.constant(adapt_task["query_y"], dtype=tf.int32)
-                adapt_loss, _ = self.train_step(support_x, support_y, query_x, query_y)
-                adaptation_losses.append(float(adapt_loss))
-            return adaptation_losses
-        finally:
-            self._set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
+        return self.adaptation_service.adapt_on_sampler_at_task_size(
+            sampler,
+            adaptation_steps=adaptation_steps,
+            k_shot=k_shot,
+            q_query=q_query,
+        )
 
     def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
         """Build model and save model architecture summaries to a text file."""
-        support_x = tf.constant(sample_task["support_X"], dtype=tf.float32)
-        support_y = tf.constant(sample_task["support_y"], dtype=tf.int32)
-        query_x = tf.constant(sample_task["query_X"], dtype=tf.float32)
-        _ = self.model(support_x, support_y, query_x, training=False)
-
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as fp:
-            fp.write("=== MultimodalPrototypicalNetwork Summary ===\n")
-            full_summary = io.StringIO()
-            self.model.summary(print_fn=lambda line: full_summary.write(line + "\n"))
-            fp.write(full_summary.getvalue())
-            fp.write("\n")
-
-            fp.write("=== Modality Encoder Summaries ===\n")
-            for modality_name, encoder in self.model.modality_encoders.items():
-                fp.write(f"\n--- Encoder: {modality_name} ---\n")
-                encoder_summary = io.StringIO()
-                encoder.summary(
-                    print_fn=lambda line: encoder_summary.write(line + "\n")
-                )
-                fp.write(encoder_summary.getvalue())
-        print(self.model.summary())
-        return output_path
+        return self.architecture_writer.save_model_architecture(
+            sample_task,
+            output_path,
+        )
 
     @staticmethod
     def _format_seconds(seconds: float) -> str:
@@ -1720,6 +1113,21 @@ class FewShotPainLearner:
         self.logger.info(f"{'=' * 60}\n")
 
     def train(
+        self,
+        training_progress_output_dir: str = "outputs/training_progress",
+        save_model_architecture_first_run: bool = True,
+        model_architecture_output_path: str = "outputs/model_architecture/model_summary.txt",
+    ):
+        """
+        Train on all subjects using leave-one-subject-out cross-validation.
+        """
+        return self.training_runner.train(
+            training_progress_output_dir=training_progress_output_dir,
+            save_model_architecture_first_run=save_model_architecture_first_run,
+            model_architecture_output_path=model_architecture_output_path,
+        )
+
+    def _run_loso_training_workflow(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
         save_model_architecture_first_run: bool = True,
@@ -1831,10 +1239,8 @@ class FewShotPainLearner:
                 fold_idx=fold + 1, test_subject=test_subject
             )
 
-            # Reset model for each fold and free memory from prior graph state.
-            self._rebuild_model(
-                clear_session=self.config.clear_session_per_fold,
-            )
+            # Reset fold state without clearing Keras or recreating tf.functions.
+            self._reset_model_state_for_new_fold()
 
             # Get fold dictionary with samplers
             fold_dict = self.cv.get_fold(test_subject)
@@ -2192,15 +1598,24 @@ class FewShotPainLearner:
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
                 self.model.set_weights(pre_adaptation_weights)
-                zero_shot_loss, zero_shot_metrics = (
-                    self._evaluate_sampler_loss_and_metrics_at_task_size(
-                        test_sampler,
-                        num_tasks=heldout_eval_tasks,
-                        k_shot=eval_k_shot,
-                        q_query=eval_q_query,
-                        forward_batch_size=self.train_batch_size,
+                try:
+                    zero_shot_loss, zero_shot_metrics = (
+                        self._evaluate_sampler_loss_and_metrics_at_task_size(
+                            test_sampler,
+                            num_tasks=heldout_eval_tasks,
+                            k_shot=eval_k_shot,
+                            q_query=eval_q_query,
+                            forward_batch_size=self.train_batch_size,
+                        )
                     )
-                )
+                except ValueError as exc:
+                    if (eval_k_shot, eval_q_query) == configured_eval_pair:
+                        raise
+                    self.logger.info(
+                        f"[Fold {fold + 1}/{num_subjects}] "
+                        f"Skipping optional held-out size {size_key}: {exc}"
+                    )
+                    continue
                 csv_writer.write_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,
