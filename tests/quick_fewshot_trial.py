@@ -220,7 +220,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         )
         elapsed = time.perf_counter() - start_time
         avg_update_time = elapsed / max(1, update_idx + 1)
-        eta_seconds = (total_updates - (update_idx + 1)) * avg_update_time
+        (total_updates - (update_idx + 1)) * avg_update_time
         update_history.append(
             {
                 "update": update_idx + 1,

@@ -79,7 +79,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     start_time = time.perf_counter()
     filters_list = _parse_int_tuple(args.filters)
     tcn_dilation_rates_arg = getattr(args, "tcn_dilation_rates", None)
-    tcn_dilation_rates = (
+    (
         _parse_int_tuple(tcn_dilation_rates_arg)
         if tcn_dilation_rates_arg is not None
         else None
