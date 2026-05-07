@@ -61,6 +61,9 @@ class PainDatasetConfig:
     triplet_margin: float = 0.1  # Margin used by triplet loss
     triplet_mining_strategy: str = "batch_hard"  # batch_hard or batch_all
     train_batch_size: int = 256  # Number of tasks per optimizer update
+    embedding_batch_size: int = (
+        1  # Number of tasks encoded together; 1 preserves legacy per-task embedding
+    )
     num_epochs: int = 10  # Number of epochs per fold
     tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
     val_tasks: int = 20  # Number of validation tasks per validation run
@@ -168,6 +171,9 @@ class PainDatasetConfig:
             raise ValueError(
                 "triplet_mining_strategy must be one of: 'batch_hard', 'batch_all'"
             )
+        self.embedding_batch_size = int(self.embedding_batch_size)
+        if self.embedding_batch_size <= 0:
+            raise ValueError("embedding_batch_size must be > 0")
         if self.tcn_kernel_size <= 0:
             raise ValueError("tcn_kernel_size must be > 0")
         if self.strides <= 0:

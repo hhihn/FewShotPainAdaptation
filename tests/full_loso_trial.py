@@ -99,6 +99,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         task_construction_mode=args.task_construction_mode,
         classifier_mode=args.classifier_mode,
         train_batch_size=args.task_batch_size,
+        embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
         tasks_per_epoch=max(1, int(args.tasks_per_epoch)),
         val_tasks=max(1, int(args.val_tasks)),
         heldout_eval_tasks=max(1, int(args.heldout_eval_tasks)),
@@ -190,6 +191,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "num_epochs": int(config.num_epochs),
             "tasks_per_epoch": int(config.tasks_per_epoch),
             "train_batch_size": int(config.train_batch_size),
+            "embedding_batch_size": int(config.embedding_batch_size),
             "val_tasks": int(config.val_tasks),
             "heldout_eval_tasks": int(config.heldout_eval_tasks),
             "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
@@ -308,6 +310,12 @@ def main() -> None:
     parser.add_argument("--num-epochs", type=int, default=1)
     parser.add_argument("--tasks-per-epoch", type=int, default=1)
     parser.add_argument("--task-batch-size", type=int, default=1)
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=1,
+        help="Number of episodic tasks whose samples are encoded together.",
+    )
     parser.add_argument("--val-tasks", type=int, default=1)
     parser.add_argument("--heldout-eval-tasks", type=int, default=1)
     parser.add_argument(

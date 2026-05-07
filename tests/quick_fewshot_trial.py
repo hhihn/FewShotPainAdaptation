@@ -129,6 +129,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         task_normalize_mode=args.normalize_mode,
         classifier_mode=args.classifier_mode,
         train_batch_size=args.task_batch_size,
+        embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
         tasks_per_epoch=max(1, args.updates * args.task_batch_size),
         val_tasks=max(1, args.val_tasks),
         heldout_eval_tasks=max(1, args.heldout_tasks),
@@ -282,6 +283,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "val_subject_count": int(fold["n_val_subjects"]),
         "updates": max(1, args.updates),
         "task_batch_size": args.task_batch_size,
+        "embedding_batch_size": int(config.embedding_batch_size),
         "train_task_count": len(train_tasks),
         "train_eval_task_count": len(train_eval_tasks),
         "val_task_count": len(val_tasks),
@@ -518,6 +520,12 @@ def main() -> None:
     parser.add_argument("--held-out-subject", type=int, default=None)
     parser.add_argument("--updates", type=int, default=500)
     parser.add_argument("--task-batch-size", type=int, default=10)
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=1,
+        help="Number of episodic tasks whose samples are encoded together.",
+    )
     parser.add_argument("--train-eval-tasks", type=int, default=10)
     parser.add_argument("--val-tasks", type=int, default=10)
     parser.add_argument("--heldout-tasks", type=int, default=100)

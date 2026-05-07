@@ -231,6 +231,68 @@ class ContractTests(unittest.TestCase):
 
         self.assertEqual(float(loss.numpy()), 0.0)
 
+    def test_embedding_batch_size_must_be_positive(self):
+        self.assertEqual(
+            PainDatasetConfig(embedding_batch_size=2).embedding_batch_size,
+            2,
+        )
+        with self.assertRaisesRegex(ValueError, "embedding_batch_size must be > 0"):
+            PainDatasetConfig(embedding_batch_size=0)
+
+    def test_forward_episode_batch_matches_per_task_eval_order(self):
+        model = MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=2,
+            embedding_dim=4,
+            num_tcn_blocks=1,
+            filters_list=[4],
+            fusion_method="mean",
+            tcn_dropout_rate=0.0,
+        )
+        rng = np.random.default_rng(2025)
+        support_x = tf.constant(rng.normal(size=(3, 4, 32, 3)), dtype=tf.float32)
+        query_x = tf.constant(rng.normal(size=(3, 4, 32, 3)), dtype=tf.float32)
+        support_y = tf.constant(
+            [
+                [0, 0, 1, 1],
+                [1, 0, 1, 0],
+                [0, 1, 0, 1],
+            ],
+            dtype=tf.int32,
+        )
+
+        batched = model.forward_episode_batch(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+        per_task_logits = []
+        per_task_prototypes = []
+        for task_idx in range(int(support_x.shape[0])):
+            single = model.forward_episode(
+                support_x=support_x[task_idx],
+                support_y=support_y[task_idx],
+                query_x=query_x[task_idx],
+                training=False,
+            )
+            per_task_logits.append(single["logits"])
+            per_task_prototypes.append(single["prototypes"])
+
+        np.testing.assert_allclose(
+            batched["logits"].numpy(),
+            tf.stack(per_task_logits, axis=0).numpy(),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            batched["prototypes"].numpy(),
+            tf.stack(per_task_prototypes, axis=0).numpy(),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
     def test_gated_fusion_weights_embeddings_then_averages(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=16,

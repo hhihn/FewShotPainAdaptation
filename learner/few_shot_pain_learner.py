@@ -45,6 +45,9 @@ class FewShotPainLearner:
         self.deterministic_ops = bool(config.deterministic_ops)
         self.embedding_dim = config.embedding_dim
         self.train_batch_size = max(1, int(config.train_batch_size))
+        self.embedding_batch_size = max(
+            1, int(getattr(config, "embedding_batch_size", 1))
+        )
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
@@ -117,6 +120,7 @@ class FewShotPainLearner:
             "triplet_mining_strategy": self.triplet_mining_strategy,
             "gradient_clip_norm": self.gradient_clip_norm,
             "train_batch_size": self.train_batch_size,
+            "embedding_batch_size": self.embedding_batch_size,
             "num_epochs": self.config.num_epochs,
             "tasks_per_epoch": self.config.tasks_per_epoch,
             "val_tasks": self.config.val_tasks,
@@ -666,6 +670,69 @@ class FewShotPainLearner:
             )
         return outputs
 
+    def _forward_task_batch(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+        training: bool,
+        return_similarity_scores: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run multiple tasks with batched embedding and per-task losses."""
+        episode_outputs = self.model.forward_episode_batch(
+            support_x=support_x_batch,
+            support_y=support_y_batch,
+            query_x=query_x_batch,
+            training=training,
+        )
+        logits = episode_outputs["logits"]
+        per_query_loss = keras.losses.sparse_categorical_crossentropy(
+            query_y_batch,
+            logits,
+            from_logits=True,
+        )
+        task_losses = tf.reduce_mean(per_query_loss, axis=1)
+        model_aux_loss = self._compute_model_aux_loss(dtype=task_losses.dtype)
+
+        embeddings_batch = tf.concat(
+            [
+                episode_outputs["support_embeddings"],
+                episode_outputs["query_embeddings"],
+            ],
+            axis=1,
+        )
+        labels_batch = tf.concat([support_y_batch, query_y_batch], axis=1)
+        contrastive_losses = tf.zeros_like(task_losses)
+        if self.triplet_loss_weight > 0:
+            triplet_losses = tf.map_fn(
+                lambda inputs: tf.cast(
+                    self.triplet_loss_weight, task_losses.dtype
+                )
+                * self._compute_triplet_loss(inputs[0], inputs[1]),
+                (embeddings_batch, labels_batch),
+                fn_output_signature=tf.TensorSpec(shape=(), dtype=task_losses.dtype),
+                parallel_iterations=1,
+            )
+        else:
+            triplet_losses = tf.zeros_like(task_losses)
+
+        losses = task_losses + model_aux_loss + triplet_losses
+        outputs = {
+            "logits": logits,
+            "losses": losses,
+            "task_losses": task_losses,
+            "contrastive_losses": contrastive_losses,
+            "triplet_losses": triplet_losses,
+            "model_aux_loss": model_aux_loss,
+            "support_embeddings": episode_outputs["support_embeddings"],
+            "query_embeddings": episode_outputs["query_embeddings"],
+            "prototypes": episode_outputs["prototypes"],
+        }
+        if return_similarity_scores:
+            outputs["similarity_scores"] = episode_outputs["similarity_scores"]
+        return outputs
+
     def train_step(self, support_x, support_y, query_x, query_y):
         """Single training step on one task."""
         with tf.GradientTape() as tape:
@@ -803,50 +870,111 @@ class FewShotPainLearner:
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Eager fallback for one optimizer update using a batch of tasks."""
+        if self.embedding_batch_size <= 1:
+            with tf.GradientTape() as tape:
+                losses = []
+                task_losses = []
+                accuracies = []
+                contrastive_losses = []
+                triplet_losses = []
+                for support_x, support_y, query_x, query_y in zip(
+                    tf.unstack(support_x_batch, axis=0),
+                    tf.unstack(support_y_batch, axis=0),
+                    tf.unstack(query_x_batch, axis=0),
+                    tf.unstack(query_y_batch, axis=0),
+                ):
+                    support_x = self._augment_training_inputs(support_x)
+                    query_x = self._augment_training_inputs(query_x)
+
+                    task_outputs = self._forward_task(
+                        support_x=support_x,
+                        support_y=support_y,
+                        query_x=query_x,
+                        query_y=query_y,
+                        training=True,
+                    )
+                    logits = task_outputs["logits"]
+                    loss = task_outputs["loss"]
+                    task_loss = task_outputs["task_loss"]
+                    contrastive_loss = task_outputs["contrastive_loss"]
+                    triplet_loss = task_outputs["triplet_loss"]
+                    predictions = tf.argmax(logits, axis=1)
+                    accuracy = tf.reduce_mean(
+                        tf.cast(
+                            tf.equal(predictions, tf.cast(query_y, tf.int64)),
+                            tf.float32,
+                        )
+                    )
+                    losses.append(loss)
+                    task_losses.append(task_loss)
+                    accuracies.append(accuracy)
+                    contrastive_losses.append(contrastive_loss)
+                    triplet_losses.append(triplet_loss)
+
+                batch_loss = tf.reduce_mean(tf.stack(losses))
+                batch_task_loss = tf.reduce_mean(tf.stack(task_losses))
+                batch_acc = tf.reduce_mean(tf.stack(accuracies))
+                batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
+                batch_triplet_loss = tf.reduce_mean(tf.stack(triplet_losses))
+
+            batch_loss = self._apply_gradients(batch_loss, tape)
+            return (
+                batch_loss,
+                batch_task_loss,
+                batch_acc,
+                batch_contrastive_loss,
+                batch_triplet_loss,
+            )
+
+        total_tasks = int(tf.shape(support_x_batch)[0].numpy())
+        embedding_batch_size = min(self.embedding_batch_size, total_tasks)
         with tf.GradientTape() as tape:
             losses = []
             task_losses = []
             accuracies = []
             contrastive_losses = []
             triplet_losses = []
-            for support_x, support_y, query_x, query_y in zip(
-                tf.unstack(support_x_batch, axis=0),
-                tf.unstack(support_y_batch, axis=0),
-                tf.unstack(query_x_batch, axis=0),
-                tf.unstack(query_y_batch, axis=0),
-            ):
-                support_x = self._augment_training_inputs(support_x)
-                query_x = self._augment_training_inputs(query_x)
+            for task_start in range(0, total_tasks, embedding_batch_size):
+                task_end = min(total_tasks, task_start + embedding_batch_size)
+                support_x_chunk = self._augment_training_inputs(
+                    support_x_batch[task_start:task_end]
+                )
+                query_x_chunk = self._augment_training_inputs(
+                    query_x_batch[task_start:task_end]
+                )
+                support_y_chunk = support_y_batch[task_start:task_end]
+                query_y_chunk = query_y_batch[task_start:task_end]
 
-                task_outputs = self._forward_task(
-                    support_x=support_x,
-                    support_y=support_y,
-                    query_x=query_x,
-                    query_y=query_y,
+                chunk_outputs = self._forward_task_batch(
+                    support_x_batch=support_x_chunk,
+                    support_y_batch=support_y_chunk,
+                    query_x_batch=query_x_chunk,
+                    query_y_batch=query_y_chunk,
                     training=True,
                 )
-                logits = task_outputs["logits"]
-                loss = task_outputs["loss"]
-                task_loss = task_outputs["task_loss"]
-                contrastive_loss = task_outputs["contrastive_loss"]
-                triplet_loss = task_outputs["triplet_loss"]
-                predictions = tf.argmax(logits, axis=1)
-                accuracy = tf.reduce_mean(
-                    tf.cast(
-                        tf.equal(predictions, tf.cast(query_y, tf.int64)), tf.float32
-                    )
+                logits = chunk_outputs["logits"]
+                predictions = tf.argmax(logits, axis=2, output_type=tf.int32)
+                chunk_accuracies = tf.reduce_mean(
+                    tf.cast(tf.equal(predictions, query_y_chunk), tf.float32),
+                    axis=1,
                 )
-                losses.append(loss)
-                task_losses.append(task_loss)
-                accuracies.append(accuracy)
-                contrastive_losses.append(contrastive_loss)
-                triplet_losses.append(triplet_loss)
+                losses.append(tf.reshape(chunk_outputs["losses"], [-1]))
+                task_losses.append(tf.reshape(chunk_outputs["task_losses"], [-1]))
+                accuracies.append(tf.reshape(chunk_accuracies, [-1]))
+                contrastive_losses.append(
+                    tf.reshape(chunk_outputs["contrastive_losses"], [-1])
+                )
+                triplet_losses.append(
+                    tf.reshape(chunk_outputs["triplet_losses"], [-1])
+                )
 
-            batch_loss = tf.reduce_mean(tf.stack(losses))
-            batch_task_loss = tf.reduce_mean(tf.stack(task_losses))
-            batch_acc = tf.reduce_mean(tf.stack(accuracies))
-            batch_contrastive_loss = tf.reduce_mean(tf.stack(contrastive_losses))
-            batch_triplet_loss = tf.reduce_mean(tf.stack(triplet_losses))
+            batch_loss = tf.reduce_mean(tf.concat(losses, axis=0))
+            batch_task_loss = tf.reduce_mean(tf.concat(task_losses, axis=0))
+            batch_acc = tf.reduce_mean(tf.concat(accuracies, axis=0))
+            batch_contrastive_loss = tf.reduce_mean(
+                tf.concat(contrastive_losses, axis=0)
+            )
+            batch_triplet_loss = tf.reduce_mean(tf.concat(triplet_losses, axis=0))
 
         batch_loss = self._apply_gradients(batch_loss, tape)
         return (
@@ -865,6 +993,13 @@ class FewShotPainLearner:
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Run compiled train step, with eager fallback if compilation fails."""
+        if self.embedding_batch_size > 1:
+            return self._train_batch_step_eager_tensors(
+                support_x_batch=support_x_batch,
+                support_y_batch=support_y_batch,
+                query_x_batch=query_x_batch,
+                query_y_batch=query_y_batch,
+            )
         if self._compiled_train_batch_step is not None:
             try:
                 return self._compiled_train_batch_step(
@@ -913,45 +1048,113 @@ class FewShotPainLearner:
         inter_scores = []
         class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
 
-        for support_x, support_y, query_x, query_y in zip(
-            tf.unstack(support_x_batch, axis=0),
-            tf.unstack(support_y_batch, axis=0),
-            tf.unstack(query_x_batch, axis=0),
-            tf.unstack(query_y_batch, axis=0),
-        ):
-            task_outputs = self._forward_task(
-                support_x=support_x,
-                support_y=support_y,
-                query_x=query_x,
-                query_y=query_y,
-                training=False,
-                return_similarity_scores=True,
-            )
-            logits = task_outputs["logits"]
-            similarity_scores = task_outputs["similarity_scores"]
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
-            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
-            intra_class_scores = tf.gather_nd(
-                similarity_scores,
-                tf.stack([row_indices, query_y], axis=1),
-            )
-            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
+        if self.embedding_batch_size <= 1:
+            for support_x, support_y, query_x, query_y in zip(
+                tf.unstack(support_x_batch, axis=0),
+                tf.unstack(support_y_batch, axis=0),
+                tf.unstack(query_x_batch, axis=0),
+                tf.unstack(query_y_batch, axis=0),
+            ):
+                task_outputs = self._forward_task(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    query_y=query_y,
+                    training=False,
+                    return_similarity_scores=True,
+                )
+                logits = task_outputs["logits"]
+                similarity_scores = task_outputs["similarity_scores"]
+                pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+                row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+                intra_class_scores = tf.gather_nd(
+                    similarity_scores,
+                    tf.stack([row_indices, query_y], axis=1),
+                )
+                inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+                inter_class_scores = tf.boolean_mask(
+                    similarity_scores, inter_class_mask
+                )
 
-            losses.append(tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1]))
-            task_losses.append(
-                tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
-            )
-            contrastive_losses.append(
-                tf.reshape(tf.cast(task_outputs["contrastive_loss"], tf.float32), [1])
-            )
-            triplet_losses.append(
-                tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
-            )
-            true_labels.append(tf.reshape(query_y, [-1]))
-            pred_labels.append(tf.reshape(pred, [-1]))
-            intra_scores.append(tf.reshape(intra_class_scores, [-1]))
-            inter_scores.append(tf.reshape(inter_class_scores, [-1]))
+                losses.append(
+                    tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1])
+                )
+                task_losses.append(
+                    tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
+                )
+                contrastive_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["contrastive_loss"], tf.float32), [1]
+                    )
+                )
+                triplet_losses.append(
+                    tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
+                )
+                true_labels.append(tf.reshape(query_y, [-1]))
+                pred_labels.append(tf.reshape(pred, [-1]))
+                intra_scores.append(tf.reshape(intra_class_scores, [-1]))
+                inter_scores.append(tf.reshape(inter_class_scores, [-1]))
+        else:
+            total_tasks = int(tf.shape(support_x_batch)[0].numpy())
+            embedding_batch_size = min(self.embedding_batch_size, total_tasks)
+            for task_start in range(0, total_tasks, embedding_batch_size):
+                task_end = min(total_tasks, task_start + embedding_batch_size)
+                support_y_chunk = support_y_batch[task_start:task_end]
+                query_y_chunk = query_y_batch[task_start:task_end]
+                task_outputs = self._forward_task_batch(
+                    support_x_batch=support_x_batch[task_start:task_end],
+                    support_y_batch=support_y_chunk,
+                    query_x_batch=query_x_batch[task_start:task_end],
+                    query_y_batch=query_y_chunk,
+                    training=False,
+                    return_similarity_scores=True,
+                )
+                logits = task_outputs["logits"]
+                similarity_scores = task_outputs["similarity_scores"]
+                pred = tf.argmax(logits, axis=2, output_type=tf.int32)
+                query_size = tf.shape(query_y_chunk)[1]
+                row_indices = tf.tile(
+                    tf.range(query_size, dtype=tf.int32)[tf.newaxis, :],
+                    [tf.shape(query_y_chunk)[0], 1],
+                )
+                task_indices = tf.tile(
+                    tf.range(tf.shape(query_y_chunk)[0], dtype=tf.int32)[
+                        :, tf.newaxis
+                    ],
+                    [1, query_size],
+                )
+                intra_class_scores = tf.gather_nd(
+                    similarity_scores,
+                    tf.stack([task_indices, row_indices, query_y_chunk], axis=2),
+                )
+                inter_class_mask = tf.not_equal(
+                    class_ids[tf.newaxis, :, :],
+                    query_y_chunk[:, :, tf.newaxis],
+                )
+                inter_class_scores = tf.boolean_mask(
+                    similarity_scores, inter_class_mask
+                )
+
+                losses.append(
+                    tf.reshape(tf.cast(task_outputs["losses"], tf.float32), [-1])
+                )
+                task_losses.append(
+                    tf.reshape(tf.cast(task_outputs["task_losses"], tf.float32), [-1])
+                )
+                contrastive_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["contrastive_losses"], tf.float32), [-1]
+                    )
+                )
+                triplet_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["triplet_losses"], tf.float32), [-1]
+                    )
+                )
+                true_labels.append(tf.reshape(query_y_chunk, [-1]))
+                pred_labels.append(tf.reshape(pred, [-1]))
+                intra_scores.append(tf.reshape(intra_class_scores, [-1]))
+                inter_scores.append(tf.reshape(inter_class_scores, [-1]))
 
         return (
             tf.concat(losses, axis=0),
@@ -978,8 +1181,16 @@ class FewShotPainLearner:
         tf.Tensor,
         tf.Tensor,
         tf.Tensor,
+        tf.Tensor,
     ]:
         """Run compiled task-batch eval, with eager fallback if compilation fails."""
+        if self.embedding_batch_size > 1:
+            return self._eval_task_batch_step_eager_tensors(
+                support_x_batch=support_x_batch,
+                support_y_batch=support_y_batch,
+                query_x_batch=query_x_batch,
+                query_y_batch=query_y_batch,
+            )
         if self._compiled_eval_batch_step is not None:
             try:
                 return self._compiled_eval_batch_step(

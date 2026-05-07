@@ -233,6 +233,38 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return distances
 
+    def compute_distances_batch(self, query_embeddings, prototype_embeddings):
+        """
+        Compute batched distances between query embeddings and task prototypes.
+
+        Args:
+            query_embeddings: [num_tasks, num_queries, embedding_dim]
+            prototype_embeddings: [num_tasks, num_classes, embedding_dim]
+
+        Returns:
+            distances: [num_tasks, num_queries, num_classes]
+        """
+        if self.distance_metric == "euclidean":
+            distances = tf.sqrt(
+                tf.reduce_sum(
+                    (
+                        tf.expand_dims(query_embeddings, 2)
+                        - tf.expand_dims(prototype_embeddings, 1)
+                    )
+                    ** 2,
+                    axis=3,
+                )
+                + 1e-8
+            )
+        elif self.distance_metric == "cosine":
+            query_norm = tf.nn.l2_normalize(query_embeddings, axis=2)
+            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=2)
+            distances = 1 - tf.matmul(query_norm, prototype_norm, transpose_b=True)
+        else:
+            raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+
+        return distances
+
     def compute_similarity_scores(self, query_embeddings, prototype_embeddings):
         """
         Compute similarity scores between query and class prototypes.
@@ -247,6 +279,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return -self.compute_distances(query_embeddings, prototype_embeddings)
 
+    def compute_similarity_scores_batch(self, query_embeddings, prototype_embeddings):
+        """Compute batched query-to-prototype similarity scores."""
+        if self.distance_metric == "cosine":
+            query_norm = tf.nn.l2_normalize(query_embeddings, axis=2)
+            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=2)
+            return tf.matmul(query_norm, prototype_norm, transpose_b=True)
+
+        return -self.compute_distances_batch(query_embeddings, prototype_embeddings)
+
     def compute_support_to_query_similarity(
         self, query_embeddings: tf.Tensor, support_embeddings: tf.Tensor
     ) -> tf.Tensor:
@@ -257,6 +298,19 @@ class MultimodalPrototypicalNetwork(keras.Model):
             return tf.matmul(query_norm, support_norm, transpose_b=True)
 
         return -self.compute_pairwise_distances(query_embeddings, support_embeddings)
+
+    def compute_support_to_query_similarity_batch(
+        self, query_embeddings: tf.Tensor, support_embeddings: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute batched query-to-support similarities."""
+        if self.distance_metric == "cosine":
+            query_norm = tf.nn.l2_normalize(query_embeddings, axis=2)
+            support_norm = tf.nn.l2_normalize(support_embeddings, axis=2)
+            return tf.matmul(query_norm, support_norm, transpose_b=True)
+
+        return -self.compute_pairwise_distances_batch(
+            query_embeddings, support_embeddings
+        )
 
     def compute_pairwise_distances(
         self, a_embeddings: tf.Tensor, b_embeddings: tf.Tensor
@@ -277,6 +331,25 @@ class MultimodalPrototypicalNetwork(keras.Model):
             return 1 - tf.matmul(a_norm, b_norm, transpose_b=True)
         raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
+    def compute_pairwise_distances_batch(
+        self, a_embeddings: tf.Tensor, b_embeddings: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute batched pairwise distances between two embedding sets."""
+        if self.distance_metric == "euclidean":
+            return tf.sqrt(
+                tf.reduce_sum(
+                    (tf.expand_dims(a_embeddings, 2) - tf.expand_dims(b_embeddings, 1))
+                    ** 2,
+                    axis=3,
+                )
+                + 1e-8
+            )
+        if self.distance_metric == "cosine":
+            a_norm = tf.nn.l2_normalize(a_embeddings, axis=2)
+            b_norm = tf.nn.l2_normalize(b_embeddings, axis=2)
+            return 1 - tf.matmul(a_norm, b_norm, transpose_b=True)
+        raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+
     def _compute_prototypes(self, support_embeddings, support_y):
         """Compute class prototypes as the mean support embedding per class."""
         prototypes = []
@@ -289,6 +362,18 @@ class MultimodalPrototypicalNetwork(keras.Model):
             prototypes.append(prototype)
 
         return tf.stack(prototypes, axis=0)
+
+    def _compute_prototypes_batch(self, support_embeddings, support_y):
+        """Compute class prototypes independently for each task in a batch."""
+        class_ids = tf.range(self.num_classes, dtype=support_y.dtype)
+        class_mask = tf.equal(
+            support_y[:, :, tf.newaxis],
+            class_ids[tf.newaxis, tf.newaxis, :],
+        )
+        class_weights = tf.cast(class_mask, support_embeddings.dtype)
+        class_sums = tf.einsum("bse,bsc->bce", support_embeddings, class_weights)
+        class_counts = tf.reduce_sum(class_weights, axis=1)
+        return class_sums / (class_counts[:, :, tf.newaxis] + 1e-8)
 
     def _compute_soft_knn_logits(
         self,
@@ -314,6 +399,29 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 )
             )
         return tf.stack(class_scores, axis=1)
+
+    def _compute_soft_knn_logits_batch(
+        self,
+        support_embeddings: tf.Tensor,
+        support_y: tf.Tensor,
+        query_embeddings: tf.Tensor,
+    ) -> tf.Tensor:
+        """Aggregate batched query-to-support similarities into class logits."""
+        support_similarities = self.compute_support_to_query_similarity_batch(
+            query_embeddings=query_embeddings,
+            support_embeddings=support_embeddings,
+        )
+        class_ids = tf.range(self.num_classes, dtype=support_y.dtype)
+        class_mask = tf.equal(
+            support_y[:, :, tf.newaxis],
+            class_ids[tf.newaxis, tf.newaxis, :],
+        )
+        class_mask = tf.cast(class_mask, support_similarities.dtype)
+        return tf.reduce_logsumexp(
+            support_similarities[:, :, :, tf.newaxis]
+            + tf.math.log(class_mask[:, tf.newaxis, :, :] + 1e-8),
+            axis=2,
+        )
 
     def forward_episode(self, support_x, support_y, query_x, training=False):
         """Run one episode and return logits plus intermediate embedding tensors."""
@@ -386,6 +494,117 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 "logits": logits,
             }
         )
+
+        return {
+            "support_embeddings": support_embeddings,
+            "query_embeddings": query_embeddings,
+            "prototypes": prototypes,
+            "distances": distances,
+            "logits": logits,
+            "similarity_scores": similarity_scores,
+        }
+
+    def forward_episode_batch(
+        self,
+        support_x: tf.Tensor,
+        support_y: tf.Tensor,
+        query_x: tf.Tensor,
+        training: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run multiple episodes while encoding their samples in one batch."""
+        num_tasks = tf.shape(support_x)[0]
+        support_size = tf.shape(support_x)[1]
+        query_size = tf.shape(query_x)[1]
+        sequence_length = tf.shape(support_x)[2]
+        num_sensors = tf.shape(support_x)[3]
+
+        support_flat = tf.reshape(
+            support_x, [num_tasks * support_size, sequence_length, num_sensors]
+        )
+        query_flat = tf.reshape(
+            query_x, [num_tasks * query_size, sequence_length, num_sensors]
+        )
+        all_x = tf.concat([support_flat, query_flat], axis=0)
+        all_modality_embeddings = self._encode_modality_stack(
+            all_x, training=training
+        )
+        num_modalities = tf.shape(all_modality_embeddings)[1]
+        modality_embedding_dim = tf.shape(all_modality_embeddings)[2]
+        support_count = num_tasks * support_size
+        support_modality_embeddings = tf.reshape(
+            all_modality_embeddings[:support_count],
+            [num_tasks, support_size, num_modalities, modality_embedding_dim],
+        )
+        query_modality_embeddings = tf.reshape(
+            all_modality_embeddings[support_count:],
+            [num_tasks, query_size, num_modalities, modality_embedding_dim],
+        )
+
+        modality_mean = tf.reduce_mean(
+            support_modality_embeddings, axis=1, keepdims=True
+        )
+        modality_std = (
+            tf.math.reduce_std(support_modality_embeddings, axis=1, keepdims=True)
+            + 1e-6
+        )
+        support_modality_embeddings = (
+            support_modality_embeddings - modality_mean
+        ) / modality_std
+        query_modality_embeddings = (
+            query_modality_embeddings - modality_mean
+        ) / modality_std
+
+        support_embeddings_flat = self._fuse_modality_stack(
+            tf.reshape(
+                support_modality_embeddings,
+                [num_tasks * support_size, num_modalities, modality_embedding_dim],
+            ),
+            training=training,
+        )
+        query_embeddings_flat = self._fuse_modality_stack(
+            tf.reshape(
+                query_modality_embeddings,
+                [num_tasks * query_size, num_modalities, modality_embedding_dim],
+            ),
+            training=training,
+        )
+        fused_embedding_dim = tf.shape(support_embeddings_flat)[1]
+        support_embeddings = tf.reshape(
+            support_embeddings_flat, [num_tasks, support_size, fused_embedding_dim]
+        )
+        query_embeddings = tf.reshape(
+            query_embeddings_flat, [num_tasks, query_size, fused_embedding_dim]
+        )
+
+        support_mean = tf.reduce_mean(support_embeddings, axis=1, keepdims=True)
+        support_std = (
+            tf.math.reduce_std(support_embeddings, axis=1, keepdims=True) + 1e-6
+        )
+        support_embeddings = (support_embeddings - support_mean) / support_std
+        query_embeddings = (query_embeddings - support_mean) / support_std
+
+        prototypes = self._compute_prototypes_batch(support_embeddings, support_y)
+        distances = self.compute_distances_batch(query_embeddings, prototypes)
+
+        if self.classifier_mode == "prototype":
+            logits = -distances * self.logit_scale
+            similarity_scores = self.compute_similarity_scores_batch(
+                query_embeddings, prototypes
+            )
+        elif self.classifier_mode == "soft_knn":
+            logits = (
+                self._compute_soft_knn_logits_batch(
+                    support_embeddings=support_embeddings,
+                    support_y=support_y,
+                    query_embeddings=query_embeddings,
+                )
+                * self.logit_scale
+            )
+            similarity_scores = self.compute_similarity_scores_batch(
+                query_embeddings, prototypes
+            )
+        else:
+            raise ValueError(f"Unknown classifier mode: {self.classifier_mode}")
 
         return {
             "support_embeddings": support_embeddings,
