@@ -118,7 +118,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     else:
         logger.setLevel(10)
     start_time = time.perf_counter()
-    filters_list = _parse_int_tuple(args.filters)
 
     config = PainDatasetConfig(
         seed=args.seed,
@@ -137,17 +136,15 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         single_loso_fold=True,
         train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
         embedding_dim=args.embedding_dim,
-        num_tcn_blocks=len(filters_list),
-        filters_list=filters_list,
-        tcn_attention_heads=args.tcn_attention_heads,
-        tcn_attention_key_dim=args.tcn_attention_key_dim,
-        tcn_attention_dropout=args.tcn_attention_dropout,
-        tcn_transformer_layers=args.tcn_transformer_layers,
-        tcn_transformer_ffn_dim=args.tcn_transformer_ffn_dim,
-        tcn_attention_pool_size=args.tcn_attention_pool_size,
-        use_attention=bool(getattr(args, "use_attention", False)),
-        supcon_loss_weight=float(getattr(args, "supcon_loss_weight", 0.0)),
-        supcon_temperature=float(getattr(args, "supcon_temperature", 0.05)),
+        eegnet_temporal_filters=args.eegnet_temporal_filters,
+        eegnet_depth_multiplier=args.eegnet_depth_multiplier,
+        eegnet_separable_filters=args.eegnet_separable_filters,
+        eegnet_temporal_kernel_size=args.eegnet_temporal_kernel_size,
+        eegnet_separable_kernel_size=args.eegnet_separable_kernel_size,
+        eegnet_pool_size_1=args.eegnet_pool_size_1,
+        eegnet_pool_size_2=args.eegnet_pool_size_2,
+        eegnet_dropout_rate=args.eegnet_dropout_rate,
+        eegnet_l2_weight=args.eegnet_l2_weight,
         triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
         triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
         triplet_mining_strategy=str(
@@ -161,7 +158,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         config=config,
         data_dir=args.data_dir,
         learning_rate=args.learning_rate,
-        fusion_method=args.fusion_method,
     )
 
     held_out_subject = (
@@ -291,16 +287,21 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "k_shot": args.k_shot,
         "q_query": args.q_query,
         "task_class_ids": list(config.task_class_ids),
-        "fusion_method": args.fusion_method,
         "classifier_mode": args.classifier_mode,
         "normalize_mode": args.normalize_mode,
         "embedding_dim": args.embedding_dim,
-        "filters": list(filters_list),
-        "use_attention": bool(config.use_attention),
+        "encoder": "eegnet",
+        "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
+        "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
+        "eegnet_separable_filters": int(config.eegnet_separable_filters),
+        "eegnet_temporal_kernel_size": int(config.eegnet_temporal_kernel_size),
+        "eegnet_separable_kernel_size": int(config.eegnet_separable_kernel_size),
+        "eegnet_pool_size_1": int(config.eegnet_pool_size_1),
+        "eegnet_pool_size_2": int(config.eegnet_pool_size_2),
+        "eegnet_dropout_rate": float(config.eegnet_dropout_rate),
+        "eegnet_l2_weight": float(config.eegnet_l2_weight),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
-        "supcon_loss_weight": float(config.supcon_loss_weight),
-        "supcon_temperature": float(config.supcon_temperature),
         "triplet_loss_weight": float(config.triplet_loss_weight),
         "triplet_margin": float(config.triplet_margin),
         "triplet_mining_strategy": str(config.triplet_mining_strategy),
@@ -533,12 +534,6 @@ def main() -> None:
     parser.add_argument("--q-query", type=int, default=10)
     parser.add_argument("--task-class-ids", type=str, default="0,4")
     parser.add_argument(
-        "--fusion-method",
-        type=str,
-        default="mean",
-        choices=("mean", "gated", "transformer_ib"),
-    )
-    parser.add_argument(
         "--classifier-mode",
         type=str,
         default="prototype",
@@ -552,16 +547,15 @@ def main() -> None:
     )
     parser.add_argument("--learning-rate", type=float, default=6e-4)
     parser.add_argument("--embedding-dim", type=int, default=64)
-    parser.add_argument("--filters", type=str, default="16,32,64,128")
-    parser.add_argument("--tcn-attention-heads", type=int, default=8)
-    parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
-    parser.add_argument("--tcn-attention-dropout", type=float, default=0.1)
-    parser.add_argument("--tcn-transformer-layers", type=int, default=4)
-    parser.add_argument("--tcn-transformer-ffn-dim", type=int, default=256)
-    parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
-    parser.add_argument("--use-attention", action="store_true")
-    parser.add_argument("--supcon-loss-weight", type=float, default=0.7)
-    parser.add_argument("--supcon-temperature", type=float, default=0.05)
+    parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
+    parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)
+    parser.add_argument("--eegnet-separable-filters", type=int, default=16)
+    parser.add_argument("--eegnet-temporal-kernel-size", type=int, default=64)
+    parser.add_argument("--eegnet-separable-kernel-size", type=int, default=16)
+    parser.add_argument("--eegnet-pool-size-1", type=int, default=4)
+    parser.add_argument("--eegnet-pool-size-2", type=int, default=8)
+    parser.add_argument("--eegnet-dropout-rate", type=float, default=0.25)
+    parser.add_argument("--eegnet-l2-weight", type=float, default=1e-4)
     parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
     parser.add_argument("--triplet-margin", type=float, default=0.1)
     parser.add_argument(

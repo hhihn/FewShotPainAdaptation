@@ -712,15 +712,18 @@ class PainMetaDataset:
         """Verify that the index is valid for sampling."""
         for split_name, split_index in self.index_by_split.items():
             min_samples_per_class = float("inf")
+            required_samples = self.config.k_shot + self.config.q_query
+            if self.has_predefined_split and split_name == "test":
+                required_samples = min(required_samples, 20)
             for subject in self.unique_subjects:
                 for episodic_class_id, raw_class_id in enumerate(self.task_class_ids):
                     n_samples = len(split_index[subject][episodic_class_id])
                     min_samples_per_class = min(min_samples_per_class, n_samples)
-                    if n_samples < self.config.k_shot + self.config.q_query:
+                    if n_samples < required_samples:
                         warnings.warn(
                             f"Split {split_name}, subject {subject}, raw class {raw_class_id} "
                             f"has only {n_samples} samples, but "
-                            f"{self.config.k_shot + self.config.q_query} are needed for sampling."
+                            f"{required_samples} are needed for sampling."
                         )
             self.logger.info(
                 f"  Minimum samples per (subject, class) in split={split_name}: "

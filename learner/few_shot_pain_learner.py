@@ -26,7 +26,6 @@ class FewShotPainLearner:
         config: PainDatasetConfig,
         data_dir: str = "./dataset/np-dataset",
         learning_rate: float = 1e-3,
-        fusion_method: str = "mean",
         distance_metric: str = "cosine",
     ):
         """
@@ -34,12 +33,10 @@ class FewShotPainLearner:
             config: PainDatasetConfig instance
             data_dir: Directory containing numpy files
             learning_rate: Outer loop learning rate
-            fusion_method: 'mean', 'gated', or 'transformer_ib'
         """
         self.config = config
         self.data_dir = data_dir
         self.learning_rate = learning_rate
-        self.fusion_method = fusion_method
         self.distance_metric = distance_metric
         self.seed = int(config.seed)
         self.deterministic_ops = bool(config.deterministic_ops)
@@ -122,7 +119,6 @@ class FewShotPainLearner:
             "dataset_source": self.config.dataset_source,
             "split_strategy": self.config.split_strategy,
             "learning_rate": self.learning_rate,
-            "fusion_method": self.fusion_method,
             "sequence_length": self.config.sequence_length,
             "enable_window_shift_augmentation": self.config.enable_window_shift_augmentation,
             "gaussian_noise_std": self.gaussian_noise_std,
@@ -158,9 +154,15 @@ class FewShotPainLearner:
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
             "csv_flush_every_events": self.config.csv_flush_every_events,
             "embedding_dim": self.embedding_dim,
-            "num_tcn_blocks": self.config.num_tcn_blocks,
-            "tcn_kernel_size": self.config.tcn_kernel_size,
-            "tcn_dropout_rate": self.config.tcn_dropout_rate,
+            "eegnet_temporal_filters": self.config.eegnet_temporal_filters,
+            "eegnet_depth_multiplier": self.config.eegnet_depth_multiplier,
+            "eegnet_separable_filters": self.config.eegnet_separable_filters,
+            "eegnet_temporal_kernel_size": self.config.eegnet_temporal_kernel_size,
+            "eegnet_separable_kernel_size": self.config.eegnet_separable_kernel_size,
+            "eegnet_pool_size_1": self.config.eegnet_pool_size_1,
+            "eegnet_pool_size_2": self.config.eegnet_pool_size_2,
+            "eegnet_dropout_rate": self.config.eegnet_dropout_rate,
+            "eegnet_l2_weight": self.config.eegnet_l2_weight,
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "single_loso_fold": self.config.single_loso_fold,
             "single_loso_test_subject": self.config.single_loso_test_subject,
@@ -184,7 +186,7 @@ class FewShotPainLearner:
             f"Data shape: (sequence_length={config.sequence_length}, num_sensors={num_sensors})"
         )
         self.logger.info(f"Modalities: {config.modality_names}")
-        self.logger.info(f"Fusion method: {fusion_method}")
+        self.logger.info("Encoder: EEGNet-style joint sensor encoder")
         self.logger.info(
             f"Logging verbosity={self.logging_verbosity} (0=minimal, 1=standard, 2=detailed)"
         )

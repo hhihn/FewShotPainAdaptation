@@ -206,6 +206,16 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertEqual(task["support_X"].shape[0], 20)
         self.assertEqual(task["query_X"].shape[0], 20)
 
+        test_sampler = SixWayKShotSampler(
+            dataset=dataset,
+            mode="test",
+            train_subjects=[7],
+            test_subject=7,
+            seed=123,
+        )
+        self.assertEqual((test_sampler.k_shot, test_sampler.q_query), (10, 10))
+        self.assertEqual((test_sampler.support_size, test_sampler.query_size), (20, 20))
+
 
 if __name__ == "__main__":
     unittest.main()

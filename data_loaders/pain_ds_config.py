@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional
 from dataclasses import dataclass
 
 
@@ -12,18 +12,16 @@ class PainDatasetConfig:
     num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
-    num_tcn_blocks: int = 4  # Number of Temporal Conv Blocks in the Architecture
-    filters_list: Optional[List[int]] = (
-        16,
-        32,
-        64,
-        128,
-    )
-    tcn_kernel_size: int = 3  # Kernel size used by Conv1D layers in each TCN block
-    strides: int = 2  # Stride used by temporal pooling between TCN blocks
-    pooling_size: int = 2  # Pool size used between TCN blocks
-    tcn_dropout_rate: float = 0.1  # Dropout rate inside the TCN encoder
-    embedding_dim: int = 64  # Temporal Transformer model/encoder embedding dimension
+    eegnet_temporal_filters: int = 8
+    eegnet_depth_multiplier: int = 2
+    eegnet_separable_filters: int = 16
+    eegnet_temporal_kernel_size: int = 64
+    eegnet_separable_kernel_size: int = 16
+    eegnet_pool_size_1: int = 4
+    eegnet_pool_size_2: int = 8
+    eegnet_dropout_rate: float = 0.25
+    eegnet_l2_weight: float = 1e-4
+    embedding_dim: int = 64  # Joint EEGNet encoder embedding dimension
     clear_session_per_fold: bool = True  # Legacy flag; LOSO folds now reuse one graph
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
@@ -176,14 +174,26 @@ class PainDatasetConfig:
         self.embedding_batch_size = int(self.embedding_batch_size)
         if self.embedding_batch_size <= 0:
             raise ValueError("embedding_batch_size must be > 0")
-        if self.tcn_kernel_size <= 0:
-            raise ValueError("tcn_kernel_size must be > 0")
-        if self.strides <= 0:
-            raise ValueError("strides must be > 0")
-        if self.pooling_size <= 0:
-            raise ValueError("pooling_size must be > 0")
-        if self.tcn_dropout_rate < 0 or self.tcn_dropout_rate >= 1:
-            raise ValueError("tcn_dropout_rate must be in [0, 1)")
+        if self.num_sensors <= 0:
+            raise ValueError("num_sensors must be > 0")
+        if self.eegnet_temporal_filters <= 0:
+            raise ValueError("eegnet_temporal_filters must be > 0")
+        if self.eegnet_depth_multiplier <= 0:
+            raise ValueError("eegnet_depth_multiplier must be > 0")
+        if self.eegnet_separable_filters <= 0:
+            raise ValueError("eegnet_separable_filters must be > 0")
+        if self.eegnet_temporal_kernel_size <= 0:
+            raise ValueError("eegnet_temporal_kernel_size must be > 0")
+        if self.eegnet_separable_kernel_size <= 0:
+            raise ValueError("eegnet_separable_kernel_size must be > 0")
+        if self.eegnet_pool_size_1 <= 0:
+            raise ValueError("eegnet_pool_size_1 must be > 0")
+        if self.eegnet_pool_size_2 <= 0:
+            raise ValueError("eegnet_pool_size_2 must be > 0")
+        if self.eegnet_dropout_rate < 0 or self.eegnet_dropout_rate >= 1:
+            raise ValueError("eegnet_dropout_rate must be in [0, 1)")
+        if self.eegnet_l2_weight < 0:
+            raise ValueError("eegnet_l2_weight must be non-negative")
         if self.sampling_rate_hz <= 0:
             raise ValueError("sampling_rate_hz must be > 0")
         if self.window_shift_window_seconds <= 0:

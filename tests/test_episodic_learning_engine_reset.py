@@ -46,10 +46,15 @@ def _make_tiny_learner(data_dir: Path) -> FewShotPainLearner:
         val_tasks=1,
         heldout_eval_tasks=1,
         k_shot_adaptation_steps=0,
-        filters_list=(4,),
-        num_tcn_blocks=1,
         embedding_dim=4,
-        tcn_dropout_rate=0.0,
+        eegnet_temporal_filters=2,
+        eegnet_depth_multiplier=1,
+        eegnet_separable_filters=4,
+        eegnet_temporal_kernel_size=8,
+        eegnet_separable_kernel_size=4,
+        eegnet_pool_size_1=2,
+        eegnet_pool_size_2=2,
+        eegnet_dropout_rate=0.0,
         triplet_loss_weight=0.0,
         gaussian_noise_std=0.0,
         enable_window_shift_augmentation=False,
@@ -60,7 +65,6 @@ def _make_tiny_learner(data_dir: Path) -> FewShotPainLearner:
         config=config,
         data_dir=str(data_dir),
         learning_rate=1e-3,
-        fusion_method="mean",
     )
 
 

@@ -1,13 +1,12 @@
 import tensorflow as tf
 from tensorflow import keras
-from typing import Tuple, Optional, List
 from utils.logger import setup_logger
 
-from architecture.cnn import ConvolutionalNetwork
+from architecture.cnn import EEGNetStyleEncoder
 
 
 class MultimodalPrototypicalNetwork(keras.Model):
-    """Multimodal Prototypical Networks for few-shot learning on pain data."""
+    """Prototypical network with a joint EEGNet-style physiological encoder."""
 
     def __init__(
         self,
@@ -15,15 +14,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
         num_sensors: int = 3,
         num_classes: int = 6,
         embedding_dim: int = 64,
-        num_tcn_blocks: int = 3,
-        tcn_dilation_rates: Optional[List[int]] = None,
-        tcn_kernel_size: int = 3,
-        strides: int = 2,
-        pooling_size: int = 2,
-        filters_list: Optional[List[int]] = None,
-        tcn_dropout_rate: float = 0.3,
-        modality_names: Tuple[str, ...] = ("EDA", "ECG", "EMG"),
-        fusion_method: str = "mean",
+        eegnet_temporal_filters: int = 8,
+        eegnet_depth_multiplier: int = 2,
+        eegnet_separable_filters: int = 16,
+        eegnet_temporal_kernel_size: int = 64,
+        eegnet_separable_kernel_size: int = 16,
+        eegnet_pool_size_1: int = 4,
+        eegnet_pool_size_2: int = 8,
+        eegnet_dropout_rate: float = 0.25,
+        eegnet_l2_weight: float = 1e-4,
         distance_metric: str = "cosine",
         classifier_mode: str = "prototype",
         seed: int = 0,
@@ -33,81 +32,61 @@ class MultimodalPrototypicalNetwork(keras.Model):
             sequence_length: Length of temporal sequence
             num_sensors: Number of sensor channels
             num_classes: Number of task classes
-            embedding_dim: Dimension of embedding space per modality
-            modality_names: Names of modalities (EDA, ECG, EMG)
-            filters_list: List of filters in each convolution layer
-            strides: Strides of convolution layers
-            fusion_method: 'mean', 'gated'
+            embedding_dim: Dimension of joint embedding space
+            eegnet_temporal_filters: Number of temporal Conv2D filters
+            eegnet_depth_multiplier: Depth multiplier for full-sensor depthwise mixing
+            eegnet_separable_filters: Number of separable temporal filters
+            eegnet_temporal_kernel_size: Kernel size for the first temporal filters
+            eegnet_separable_kernel_size: Kernel size for separable temporal refinement
+            eegnet_pool_size_1: Average-pooling factor after depthwise sensor mixing
+            eegnet_pool_size_2: Average-pooling factor after separable temporal filtering
+            eegnet_dropout_rate: Dropout rate inside the EEGNet encoder
+            eegnet_l2_weight: L2 regularization weight on the projection layer
             distance_metric: 'euclidean' or 'cosine'
-            num_tcn_blocks: number of Temporal Convolutional Network blocks
-            tcn_dilation_rates: Dilation rate per TCN block
-            tcn_kernel_size: Kernel size used by Conv1D layers inside each TCN block
-            strides: Stride used by temporal pooling between TCN blocks
-            pooling_size: Pool size used between TCN blocks
-            tcn_dropout_rate: Dropout rate inside each TCN encoder
+            classifier_mode: Episodic classifier mode: 'prototype' or 'soft_knn'
         """
         super().__init__()
-        self.sequence_length = sequence_length
-        self.num_sensors = num_sensors
-        self.num_classes = num_classes
-        self.embedding_dim = embedding_dim
-        self.modality_names = modality_names
-        self.fusion_method = fusion_method
+        self.sequence_length = int(sequence_length)
+        self.num_sensors = int(num_sensors)
+        self.num_classes = int(num_classes)
+        self.embedding_dim = int(embedding_dim)
+        self.fused_embedding_dim = int(embedding_dim)
         self.distance_metric = distance_metric
         self.classifier_mode = classifier_mode
-        self.num_tcn_blocks = num_tcn_blocks
-        self.tcn_dilation_rates = tcn_dilation_rates
-        self.tcn_kernel_size = tcn_kernel_size
-        self.strides = strides
-        self.pooling_size = pooling_size
-        self.filters_list = filters_list
-        self.tcn_dropout_rate = tcn_dropout_rate
+        self.eegnet_temporal_filters = int(eegnet_temporal_filters)
+        self.eegnet_depth_multiplier = int(eegnet_depth_multiplier)
+        self.eegnet_separable_filters = int(eegnet_separable_filters)
+        self.eegnet_temporal_kernel_size = int(eegnet_temporal_kernel_size)
+        self.eegnet_separable_kernel_size = int(eegnet_separable_kernel_size)
+        self.eegnet_pool_size_1 = int(eegnet_pool_size_1)
+        self.eegnet_pool_size_2 = int(eegnet_pool_size_2)
+        self.eegnet_dropout_rate = float(eegnet_dropout_rate)
+        self.eegnet_l2_weight = float(eegnet_l2_weight)
         self.seed = int(seed)
         self.logit_scale = 10.0 if distance_metric == "cosine" else 1.0
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
-        # Create separate encoder for each modality
-        self.modality_encoders = {}
-        for modality_name in modality_names:
-            self.modality_encoders[modality_name] = self._build_encoder(
-                modality_name=modality_name,
-                sequence_length=sequence_length,
-                embedding_dim=embedding_dim,
-                num_tcn_blocks=num_tcn_blocks,
-                tcn_dilation_rates=tcn_dilation_rates,
-                tcn_kernel_size=tcn_kernel_size,
-                strides=strides,
-                pooling_size=pooling_size,
-                tcn_dropout_rate=tcn_dropout_rate,
-                filters_list=filters_list,
-            )
 
-        # Fusion layer based on fusion method
-        if fusion_method == "mean":
-            self.fused_embedding_dim = embedding_dim
-            self.fusion_layer = None
-            self.gating_layer = None
-            self.gating_norm_layers = None
-            self.gating_softmax_layer = None
-        elif fusion_method == "gated":
-            self.fused_embedding_dim = embedding_dim
-            self.fusion_layer = None
-            self.gating_norm_layers = {
-                modality_name: keras.layers.Dense(
-                    embedding_dim,
-                    activation="sigmoid",
-                    name=f"gated_norm_{modality_name}",
-                )
-                for modality_name in modality_names
-            }
-        else:
-            raise ValueError(f"Unknown fusion method: {fusion_method}")
+        self.encoder = EEGNetStyleEncoder(
+            name="eegnet_encoder",
+            sequence_length=self.sequence_length,
+            num_sensors=self.num_sensors,
+            embedding_dim=self.embedding_dim,
+            temporal_filters=self.eegnet_temporal_filters,
+            depth_multiplier=self.eegnet_depth_multiplier,
+            separable_filters=self.eegnet_separable_filters,
+            temporal_kernel_size=self.eegnet_temporal_kernel_size,
+            separable_kernel_size=self.eegnet_separable_kernel_size,
+            pool_size_1=self.eegnet_pool_size_1,
+            pool_size_2=self.eegnet_pool_size_2,
+            dropout_rate=self.eegnet_dropout_rate,
+            l2_weight=self.eegnet_l2_weight,
+        )
 
         self.logger.debug(
-            f"Initialized MultimodalPrototypicalNetwork with {len(modality_names)} modalities"
+            "Initialized MultimodalPrototypicalNetwork with joint EEGNet encoder"
         )
         self.logger.debug(
-            f"Fusion method: {fusion_method}, Classifier mode: {classifier_mode}, "
-            f"Final embedding dim: {self.fused_embedding_dim}"
+            f"Classifier mode: {classifier_mode}, Final embedding dim: {self.fused_embedding_dim}"
         )
 
     def _log_episode_tensor_stats(self, episode_outputs: dict[str, tf.Tensor]) -> None:
@@ -122,84 +101,18 @@ class MultimodalPrototypicalNetwork(keras.Model):
             f"logits_shape={episode_outputs['logits'].shape}"
         )
 
-    def _build_encoder(
-        self,
-        modality_name: str,
-        sequence_length: int,
-        embedding_dim: int,
-        num_tcn_blocks: int,
-        tcn_dilation_rates: Optional[List[int]],
-        tcn_kernel_size: int,
-        strides: int,
-        pooling_size: int,
-        tcn_dropout_rate: float,
-        filters_list: Optional[List[int]] = None,
-    ) -> keras.models.Model:
-        """Build 1D CNN encoder for a single modality."""
-        model = ConvolutionalNetwork(
-            name=f"tcn_{modality_name}",
-            sequence_length=sequence_length,
-            embedding_dim=embedding_dim,
-            num_blocks=num_tcn_blocks,
-            dilation_rates=tcn_dilation_rates,
-            kernel_size=tcn_kernel_size,
-            dropout_rate=tcn_dropout_rate,
-            strides=strides,
-            pooling_size=pooling_size,
-            filters_list=filters_list,
-        )
-
-        self.logger.debug(f"Built CNN encoder with {modality_name}")
-        if self.logger.isEnabledFor(10):
-            self.logger.debug("Encoder summary for %s:", modality_name)
-            model.summary(print_fn=self.logger.debug)
-        return model
-
-    def _encode_modality_stack(self, x, training=False):
-        """Encode each modality and return [batch, num_modalities, embedding_dim]."""
-        modality_embeddings = []
-        for i, modality_name in enumerate(self.modality_names):
-            modality_data = x[:, :, i : i + 1]
-            encoder = self.modality_encoders[modality_name]
-            embedding = encoder(modality_data, training=training)
-            modality_embeddings.append(embedding)
-
-        return tf.stack(modality_embeddings, axis=1)
-
-    def _fuse_modality_stack(self, fused, training=False):
-        """Fuse [batch, num_modalities, embedding_dim] modality embeddings."""
-        if self.fusion_method == "mean":
-            fused = tf.reduce_mean(fused, axis=1)  # [batch, embedding_dim]
-        elif self.fusion_method == "gated":
-            gated_embeddings = []
-            modality_embeddings = tf.unstack(fused, axis=1)
-            for modality_name, embedding in zip(
-                self.modality_names, modality_embeddings
-            ):
-                gate = self.gating_norm_layers[modality_name](embedding)
-                gated_embeddings.append(embedding * gate)
-
-            fused = tf.reduce_mean(tf.stack(gated_embeddings, axis=1), axis=1)
-        else:
-            fused = self.fusion_layer(fused, training=training)
-
-        return fused
-
     def encode(self, x, training=False):
         """
-        Map input to combined embedding space.
+        Map input to joint EEGNet embedding space.
 
         Args:
             x: [batch_size, sequence_length, num_sensors]
             training: Whether in training mode
 
         Returns:
-            embeddings: [batch_size, fused_embedding_dim] or [batch_size, embedding_dim]
+            embeddings: [batch_size, embedding_dim]
         """
-        return self._fuse_modality_stack(
-            self._encode_modality_stack(x, training=training),
-            training=training,
-        )
+        return self.encoder(x, training=training)
 
     def compute_distances(self, query_embeddings, prototype_embeddings):
         """
@@ -425,31 +338,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
     def forward_episode(self, support_x, support_y, query_x, training=False):
         """Run one episode and return logits plus intermediate embedding tensors."""
-        support_modality_embeddings = self._encode_modality_stack(
-            support_x, training=training
-        )
-        query_modality_embeddings = self._encode_modality_stack(
-            query_x, training=training
-        )
-        modality_mean = tf.reduce_mean(
-            support_modality_embeddings, axis=0, keepdims=True
-        )
-        modality_std = (
-            tf.math.reduce_std(support_modality_embeddings, axis=0, keepdims=True)
-            + 1e-6
-        )
-        support_modality_embeddings = (
-            support_modality_embeddings - modality_mean
-        ) / modality_std
-        query_modality_embeddings = (
-            query_modality_embeddings - modality_mean
-        ) / modality_std
-        support_embeddings = self._fuse_modality_stack(
-            support_modality_embeddings, training=training
-        )
-        query_embeddings = self._fuse_modality_stack(
-            query_modality_embeddings, training=training
-        )
+        support_embeddings = self.encode(support_x, training=training)
+        query_embeddings = self.encode(query_x, training=training)
         support_mean = tf.reduce_mean(support_embeddings, axis=0, keepdims=True)
         support_std = (
             tf.math.reduce_std(support_embeddings, axis=0, keepdims=True) + 1e-6
@@ -525,47 +415,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
             query_x, [num_tasks * query_size, sequence_length, num_sensors]
         )
         all_x = tf.concat([support_flat, query_flat], axis=0)
-        all_modality_embeddings = self._encode_modality_stack(all_x, training=training)
-        num_modalities = tf.shape(all_modality_embeddings)[1]
-        modality_embedding_dim = tf.shape(all_modality_embeddings)[2]
+        all_embeddings = self.encode(all_x, training=training)
         support_count = num_tasks * support_size
-        support_modality_embeddings = tf.reshape(
-            all_modality_embeddings[:support_count],
-            [num_tasks, support_size, num_modalities, modality_embedding_dim],
-        )
-        query_modality_embeddings = tf.reshape(
-            all_modality_embeddings[support_count:],
-            [num_tasks, query_size, num_modalities, modality_embedding_dim],
-        )
-
-        modality_mean = tf.reduce_mean(
-            support_modality_embeddings, axis=1, keepdims=True
-        )
-        modality_std = (
-            tf.math.reduce_std(support_modality_embeddings, axis=1, keepdims=True)
-            + 1e-6
-        )
-        support_modality_embeddings = (
-            support_modality_embeddings - modality_mean
-        ) / modality_std
-        query_modality_embeddings = (
-            query_modality_embeddings - modality_mean
-        ) / modality_std
-
-        support_embeddings_flat = self._fuse_modality_stack(
-            tf.reshape(
-                support_modality_embeddings,
-                [num_tasks * support_size, num_modalities, modality_embedding_dim],
-            ),
-            training=training,
-        )
-        query_embeddings_flat = self._fuse_modality_stack(
-            tf.reshape(
-                query_modality_embeddings,
-                [num_tasks * query_size, num_modalities, modality_embedding_dim],
-            ),
-            training=training,
-        )
+        support_embeddings_flat = all_embeddings[:support_count]
+        query_embeddings_flat = all_embeddings[support_count:]
         fused_embedding_dim = tf.shape(support_embeddings_flat)[1]
         support_embeddings = tf.reshape(
             support_embeddings_flat, [num_tasks, support_size, fused_embedding_dim]

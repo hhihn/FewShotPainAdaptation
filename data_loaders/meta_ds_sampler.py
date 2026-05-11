@@ -87,8 +87,8 @@ class SixWayKShotSampler:
                 )
             self.tasks_per_epoch = self.config.heldout_eval_tasks
         self.active_subjects_array = np.asarray(self.active_subjects, dtype=np.int32)
-        if self.mode == "val":
-            self._apply_validation_task_size_fallback()
+        if self.mode in {"val", "test"}:
+            self._apply_eval_task_size_fallback()
 
         self.logger.info(
             "Initialized sampler: "
@@ -128,6 +128,7 @@ class SixWayKShotSampler:
         subjects: List[int],
         *,
         use_base_index: bool,
+        pool_subjects: bool = True,
     ) -> int:
         """Return the smallest per-class sample pool for selected subjects."""
         split_index = self.dataset._get_sampling_index_for_split(
@@ -135,6 +136,12 @@ class SixWayKShotSampler:
             use_base_index=use_base_index,
         )
         selected_subjects = [int(subject) for subject in subjects]
+        if not pool_subjects:
+            return min(
+                int(len(split_index[subject][class_id]))
+                for subject in selected_subjects
+                for class_id in range(self.config.n_way)
+            )
         return min(
             int(
                 sum(
@@ -145,11 +152,12 @@ class SixWayKShotSampler:
             for class_id in range(self.config.n_way)
         )
 
-    def _apply_validation_task_size_fallback(self) -> None:
-        """Use a fixed validation size when configured k+q exceeds raw val samples."""
+    def _apply_eval_task_size_fallback(self) -> None:
+        """Use a fixed eval size when configured k+q exceeds raw eval samples."""
         available_count = self._min_available_samples_per_class(
             self.active_subjects,
             use_base_index=True,
+            pool_subjects=self.task_construction_mode != "single_subject",
         )
         requested_total = int(self.k_shot) + int(self.q_query)
         if requested_total <= available_count:
@@ -160,13 +168,15 @@ class SixWayKShotSampler:
         self.k_shot = self.VALIDATION_FALLBACK_K_SHOT
         self.q_query = self.VALIDATION_FALLBACK_Q_QUERY
         self.logger.info(
-            "Validation task size k=%s, q=%s exceeds %s raw samples per class; "
-            "using k=%s, q=%s for validation.",
+            "%s task size k=%s, q=%s exceeds %s raw samples per class; "
+            "using k=%s, q=%s for %s.",
+            self.mode.capitalize(),
             original_k,
             original_q,
             available_count,
             self.k_shot,
             self.q_query,
+            self.mode,
         )
 
     def _sample_task(self) -> Dict[str, np.ndarray]:

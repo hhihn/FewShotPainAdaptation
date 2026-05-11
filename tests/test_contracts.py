@@ -5,10 +5,13 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
+from architecture.cnn import EEGNetStyleEncoder
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 from data_loaders.loso_cross_validator import LOSOCrossValidator
+from data_loaders.meta_ds_sampler import SixWayKShotSampler
 from data_loaders.pain_ds_config import PainDatasetConfig
 from data_loaders.pain_meta_dataset import PainMetaDataset
+from learner.episodic_learning_engine import EpisodicLearningEngine
 from learner.few_shot_pain_learner import FewShotPainLearner
 
 
@@ -148,61 +151,43 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PainDatasetConfig(triplet_mining_strategy="semi_hard")
 
-    def test_tcn_dilations_follow_filter_count_when_omitted(self):
-        config = PainDatasetConfig(
-            dataset_source="painmonit",
-            filters_list=(8, 16, 32),
+    def test_eegnet_defaults_are_configured_for_joint_sensor_encoding(self):
+        config = PainDatasetConfig(dataset_source="painmonit")
+
+        self.assertEqual(config.eegnet_temporal_filters, 8)
+        self.assertEqual(config.eegnet_depth_multiplier, 2)
+        self.assertEqual(config.eegnet_separable_filters, 16)
+        self.assertEqual(config.eegnet_temporal_kernel_size, 64)
+        self.assertEqual(config.eegnet_separable_kernel_size, 16)
+        self.assertEqual(config.eegnet_pool_size_1, 4)
+        self.assertEqual(config.eegnet_pool_size_2, 8)
+        self.assertEqual(config.eegnet_dropout_rate, 0.25)
+
+    def test_eegnet_hyperparameters_are_validated(self):
+        with self.assertRaisesRegex(ValueError, "eegnet_temporal_filters must be > 0"):
+            PainDatasetConfig(dataset_source="painmonit", eegnet_temporal_filters=0)
+        with self.assertRaisesRegex(ValueError, "eegnet_dropout_rate must be in"):
+            PainDatasetConfig(dataset_source="painmonit", eegnet_dropout_rate=1.0)
+        with self.assertRaisesRegex(ValueError, "eegnet_l2_weight must be non-negative"):
+            PainDatasetConfig(dataset_source="painmonit", eegnet_l2_weight=-1e-4)
+
+    def test_eegnet_encoder_outputs_compact_joint_embeddings(self):
+        encoder = EEGNetStyleEncoder(
+            sequence_length=1152,
+            num_sensors=3,
+            embedding_dim=64,
         )
 
-        self.assertEqual(config.num_tcn_blocks, 3)
-        self.assertEqual(config.filters_list, [8, 16, 32])
-        self.assertEqual(config.tcn_dilation_rates, [1, 2, 4])
+        embeddings = encoder(tf.zeros((2, 1152, 3)), training=False)
 
-    def test_explicit_tcn_dilation_rates_are_validated_against_filters(self):
-        config = PainDatasetConfig(
-            dataset_source="painmonit",
-            filters_list=(8, 16, 32),
-            tcn_dilation_rates=(1, 3, 9),
-        )
-
-        self.assertEqual(config.tcn_dilation_rates, [1, 3, 9])
-        with self.assertRaises(ValueError):
-            PainDatasetConfig(
-                dataset_source="painmonit",
-                filters_list=(8, 16, 32),
-                tcn_dilation_rates=(1, 2),
-            )
-
-    def test_single_tcn_dilation_rate_repeats_for_all_filters(self):
-        config = PainDatasetConfig(
-            dataset_source="painmonit",
-            filters_list=(8, 16),
-            tcn_dilation_rates=2,
-        )
-        self.assertEqual(config.tcn_dilation_rates, [2, 2])
-
-        config = PainDatasetConfig(
-            dataset_source="painmonit",
-            filters_list=(8, 16),
-            tcn_dilation_rates="2",
-        )
-        self.assertEqual(config.tcn_dilation_rates, [2, 2])
-
-    def test_string_filters_and_dilations_are_parsed_together(self):
-        config = PainDatasetConfig(
-            dataset_source="painmonit",
-            filters_list="16,32",
-            tcn_dilation_rates="1,2",
-        )
-
-        self.assertEqual(config.num_tcn_blocks, 2)
-        self.assertEqual(config.filters_list, [16, 32])
-        self.assertEqual(config.tcn_dilation_rates, [1, 2])
+        self.assertEqual(embeddings.shape, (2, 64))
+        self.assertLess(encoder.count_params(), 100_000)
 
     def test_batch_hard_triplet_loss_uses_hardest_positive_and_negative(self):
         learner = FewShotPainLearner.__new__(FewShotPainLearner)
         learner.triplet_loss_weight = 1.0
         learner.triplet_margin = 0.5
+        learner.engine = EpisodicLearningEngine(learner)
 
         embeddings = tf.constant(
             [
@@ -223,6 +208,7 @@ class ContractTests(unittest.TestCase):
         learner = FewShotPainLearner.__new__(FewShotPainLearner)
         learner.triplet_loss_weight = 1.0
         learner.triplet_margin = 0.5
+        learner.engine = EpisodicLearningEngine(learner)
 
         embeddings = tf.eye(3, dtype=tf.float32)
         labels = tf.constant([0, 1, 2], dtype=tf.int32)
@@ -245,10 +231,14 @@ class ContractTests(unittest.TestCase):
             num_sensors=3,
             num_classes=2,
             embedding_dim=4,
-            num_tcn_blocks=1,
-            filters_list=[4],
-            fusion_method="mean",
-            tcn_dropout_rate=0.0,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
         )
         rng = np.random.default_rng(2025)
         support_x = tf.constant(rng.normal(size=(3, 4, 32, 3)), dtype=tf.float32)
@@ -293,71 +283,52 @@ class ContractTests(unittest.TestCase):
             atol=1e-5,
         )
 
-    def test_gated_fusion_weights_embeddings_then_averages(self):
+    def test_encode_returns_joint_embedding_without_modality_stack(self):
         model = MultimodalPrototypicalNetwork(
-            sequence_length=16,
+            sequence_length=32,
             num_sensors=3,
             num_classes=2,
             embedding_dim=4,
-            num_tcn_blocks=1,
-            filters_list=[4],
-            fusion_method="gated",
-        )
-        for gate_layer in model.gating_norm_layers.values():
-            gate_layer(tf.zeros((1, model.embedding_dim)))
-            gate_layer.set_weights(
-                [
-                    np.zeros(
-                        (model.embedding_dim, model.embedding_dim),
-                        dtype=np.float32,
-                    ),
-                    np.zeros((model.embedding_dim,), dtype=np.float32),
-                ]
-            )
-
-        modality_embeddings = tf.constant(
-            [
-                [
-                    [1.0, 2.0, 3.0, 4.0],
-                    [2.0, 4.0, 6.0, 8.0],
-                    [3.0, 6.0, 9.0, 12.0],
-                ]
-            ],
-            dtype=tf.float32,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
         )
 
-        fused = model._fuse_modality_stack(modality_embeddings)
-        expected = tf.reduce_mean(modality_embeddings * 0.5, axis=1)
-        np.testing.assert_allclose(fused.numpy(), expected.numpy(), rtol=1e-6)
+        embeddings = model.encode(tf.random.normal((2, 32, 3)), training=False)
 
-    def test_use_attention_adds_temporal_transformer_to_each_encoder(self):
+        self.assertEqual(embeddings.shape, (2, 4))
+        self.assertIsInstance(model.encoder, EEGNetStyleEncoder)
+        self.assertFalse(hasattr(model, "modality_encoders"))
+
+    def test_eegnet_encoder_layers_are_present(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=32,
             num_sensors=3,
             num_classes=2,
             embedding_dim=8,
-            num_tcn_blocks=2,
-            filters_list=[8, 8],
-            fusion_method="mean",
-            tcn_attention_heads=2,
-            tcn_attention_key_dim=4,
-            tcn_transformer_layers=4,
-            tcn_attention_pool_size=1,
-            use_attention=True,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
         )
 
         embeddings = model.encode(tf.random.normal((2, 32, 3)), training=False)
         self.assertEqual(embeddings.shape, (2, 8))
 
-        for encoder in model.modality_encoders.values():
-            layer_names = {layer.name for layer in encoder.layers}
-            self.assertIn("transformer_input_projection", layer_names)
-            self.assertIn("transformer_encoder_0_mha", layer_names)
-            self.assertIn("transformer_encoder_0_ffn", layer_names)
-            self.assertIn("transformer_encoder_3_mha", layer_names)
-            self.assertIn("transformer_encoder_3_ffn", layer_names)
-            self.assertIn("global_pooling", layer_names)
-            self.assertNotIn("self_attention", layer_names)
+        layer_names = {layer.name for layer in model.encoder.layers}
+        self.assertIn("temporal_conv", layer_names)
+        self.assertIn("sensor_depthwise_conv", layer_names)
+        self.assertIn("separable_temporal_conv", layer_names)
+        self.assertIn("global_pooling", layer_names)
 
     def test_loso_split_contracts(self):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)
@@ -459,10 +430,15 @@ class ContractTests(unittest.TestCase):
             tasks_per_epoch=1,
             val_tasks=1,
             heldout_eval_tasks=1,
+            k_shot_adaptation_steps=3,
             single_loso_fold=False,
             seed=7,
             deterministic_ops=True,
         )
+        original_fallback_k = SixWayKShotSampler.VALIDATION_FALLBACK_K_SHOT
+        original_fallback_q = SixWayKShotSampler.VALIDATION_FALLBACK_Q_QUERY
+        SixWayKShotSampler.VALIDATION_FALLBACK_K_SHOT = config.k_shot
+        SixWayKShotSampler.VALIDATION_FALLBACK_Q_QUERY = config.q_query
         try:
             dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
             cv = LOSOCrossValidator(dataset=dataset, seed=config.seed)
@@ -489,6 +465,8 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(np.all(test_support_counts == config.k_shot))
             self.assertTrue(np.all(test_query_counts == 1))
         finally:
+            SixWayKShotSampler.VALIDATION_FALLBACK_K_SHOT = original_fallback_k
+            SixWayKShotSampler.VALIDATION_FALLBACK_Q_QUERY = original_fallback_q
             tmp.cleanup()
 
     def test_training_contracts_smoke(self):
@@ -496,7 +474,6 @@ class ContractTests(unittest.TestCase):
             config=self.config,
             data_dir=str(self.data_dir),
             learning_rate=1e-3,
-            fusion_method="mean",
         )
 
         results = learner.train()

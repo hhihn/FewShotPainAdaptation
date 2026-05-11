@@ -21,36 +21,23 @@ from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
 
 
-def _build_model(
-    config: PainDatasetConfig, fusion_method: str
-) -> MultimodalPrototypicalNetwork:
+def _build_model(config: PainDatasetConfig) -> MultimodalPrototypicalNetwork:
     return MultimodalPrototypicalNetwork(
         sequence_length=config.sequence_length,
         num_sensors=len(config.sensor_idx),
         num_classes=config.n_way,
         embedding_dim=config.embedding_dim,
-        modality_names=config.modality_names,
-        fusion_method=fusion_method,
         distance_metric="cosine",
         classifier_mode=config.classifier_mode,
-        num_tcn_blocks=config.num_tcn_blocks,
-        tcn_dilation_rates=config.tcn_dilation_rates,
-        tcn_kernel_size=config.tcn_kernel_size,
-        strides=config.strides,
-        pooling_size=config.pooling_size,
-        filters_list=config.filters_list,
-        tcn_dropout_rate=config.tcn_dropout_rate,
-        tcn_attention_heads=config.tcn_attention_heads,
-        tcn_attention_key_dim=config.tcn_attention_key_dim,
-        tcn_attention_dropout=config.tcn_attention_dropout,
-        tcn_transformer_layers=config.tcn_transformer_layers,
-        tcn_transformer_ffn_dim=config.tcn_transformer_ffn_dim,
-        tcn_attention_pool_size=config.tcn_attention_pool_size,
-        use_attention=config.use_attention,
-        fusion_transformer_heads=config.fusion_transformer_heads,
-        fusion_transformer_layers=config.fusion_transformer_layers,
-        fusion_transformer_ffn_dim=config.fusion_transformer_ffn_dim,
-        fusion_ib_beta=config.fusion_ib_beta,
+        eegnet_temporal_filters=config.eegnet_temporal_filters,
+        eegnet_depth_multiplier=config.eegnet_depth_multiplier,
+        eegnet_separable_filters=config.eegnet_separable_filters,
+        eegnet_temporal_kernel_size=config.eegnet_temporal_kernel_size,
+        eegnet_separable_kernel_size=config.eegnet_separable_kernel_size,
+        eegnet_pool_size_1=config.eegnet_pool_size_1,
+        eegnet_pool_size_2=config.eegnet_pool_size_2,
+        eegnet_dropout_rate=config.eegnet_dropout_rate,
+        eegnet_l2_weight=config.eegnet_l2_weight,
     )
 
 
@@ -150,7 +137,6 @@ def main() -> None:
     parser.add_argument("--weights-path", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)
-    parser.add_argument("--fusion-method", type=str, default="mean")
     parser.add_argument("--classifier-mode", type=str, default="prototype")
     parser.add_argument(
         "--normalize-mode",
@@ -160,12 +146,15 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--embedding-dim", type=int, default=64)
-    parser.add_argument("--num-tcn-blocks", type=int, default=4)
-    parser.add_argument("--tcn-attention-heads", type=int, default=8)
-    parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
-    parser.add_argument("--tcn-transformer-layers", type=int, default=2)
-    parser.add_argument("--tcn-transformer-ffn-dim", type=int, default=256)
-    parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
+    parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
+    parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)
+    parser.add_argument("--eegnet-separable-filters", type=int, default=16)
+    parser.add_argument("--eegnet-temporal-kernel-size", type=int, default=64)
+    parser.add_argument("--eegnet-separable-kernel-size", type=int, default=16)
+    parser.add_argument("--eegnet-pool-size-1", type=int, default=4)
+    parser.add_argument("--eegnet-pool-size-2", type=int, default=8)
+    parser.add_argument("--eegnet-dropout-rate", type=float, default=0.25)
+    parser.add_argument("--eegnet-l2-weight", type=float, default=1e-4)
     args = parser.parse_args()
 
     logger = setup_logger("embedding_probe")
@@ -175,13 +164,15 @@ def main() -> None:
         single_loso_fold=True,
         classifier_mode=args.classifier_mode,
         embedding_dim=args.embedding_dim,
-        num_tcn_blocks=args.num_tcn_blocks,
-        tcn_attention_heads=args.tcn_attention_heads,
-        tcn_attention_key_dim=args.tcn_attention_key_dim,
-        tcn_transformer_layers=args.tcn_transformer_layers,
-        tcn_transformer_ffn_dim=args.tcn_transformer_ffn_dim,
-        tcn_attention_pool_size=args.tcn_attention_pool_size,
-        supcon_loss_weight=0.0,
+        eegnet_temporal_filters=args.eegnet_temporal_filters,
+        eegnet_depth_multiplier=args.eegnet_depth_multiplier,
+        eegnet_separable_filters=args.eegnet_separable_filters,
+        eegnet_temporal_kernel_size=args.eegnet_temporal_kernel_size,
+        eegnet_separable_kernel_size=args.eegnet_separable_kernel_size,
+        eegnet_pool_size_1=args.eegnet_pool_size_1,
+        eegnet_pool_size_2=args.eegnet_pool_size_2,
+        eegnet_dropout_rate=args.eegnet_dropout_rate,
+        eegnet_l2_weight=args.eegnet_l2_weight,
     )
     set_global_reproducibility(
         seed=config.seed,
@@ -204,7 +195,7 @@ def main() -> None:
     fold = cv.get_fold(held_out_subject)
     train_subjects = [int(subject) for subject in fold["train_subjects"]]
 
-    model = _build_model(config=config, fusion_method=args.fusion_method)
+    model = _build_model(config=config)
     _build_and_maybe_load_weights(model, config=config, weights_path=args.weights_path)
 
     (

@@ -5,7 +5,7 @@ import tensorflow as tf
 
 
 class ModelArchitectureWriter:
-    """Write model and modality encoder architecture summaries."""
+    """Write model and encoder architecture summaries."""
 
     def __init__(self, *, model_getter):
         self._model_getter = model_getter
@@ -29,13 +29,11 @@ class ModelArchitectureWriter:
             fp.write(full_summary.getvalue())
             fp.write("\n")
 
-            fp.write("=== Modality Encoder Summaries ===\n")
-            for modality_name, encoder in self.model.modality_encoders.items():
-                fp.write(f"\n--- Encoder: {modality_name} ---\n")
-                encoder_summary = io.StringIO()
-                encoder.summary(
-                    print_fn=lambda line: encoder_summary.write(line + "\n")
-                )
-                fp.write(encoder_summary.getvalue())
+            fp.write("=== EEGNet Encoder Summary ===\n")
+            encoder_summary = io.StringIO()
+            self.model.encoder.summary(
+                print_fn=lambda line: encoder_summary.write(line + "\n")
+            )
+            fp.write(encoder_summary.getvalue())
         print(self.model.summary())
         return output_path

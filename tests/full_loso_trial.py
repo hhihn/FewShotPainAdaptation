@@ -77,13 +77,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         logger.setLevel(10)
 
     start_time = time.perf_counter()
-    filters_list = _parse_int_tuple(args.filters)
-    tcn_dilation_rates_arg = getattr(args, "tcn_dilation_rates", None)
-    (
-        _parse_int_tuple(tcn_dilation_rates_arg)
-        if tcn_dilation_rates_arg is not None
-        else None
-    )
     task_class_ids = _parse_int_tuple(args.task_class_ids)
 
     logger.info("Stage 1/5: Building run configuration")
@@ -119,8 +112,15 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         loso_start_index=args.loso_start_index,
         loso_stop_index=args.loso_stop_index,
         embedding_dim=args.embedding_dim,
-        num_tcn_blocks=len(filters_list),
-        filters_list=filters_list,
+        eegnet_temporal_filters=args.eegnet_temporal_filters,
+        eegnet_depth_multiplier=args.eegnet_depth_multiplier,
+        eegnet_separable_filters=args.eegnet_separable_filters,
+        eegnet_temporal_kernel_size=args.eegnet_temporal_kernel_size,
+        eegnet_separable_kernel_size=args.eegnet_separable_kernel_size,
+        eegnet_pool_size_1=args.eegnet_pool_size_1,
+        eegnet_pool_size_2=args.eegnet_pool_size_2,
+        eegnet_dropout_rate=args.eegnet_dropout_rate,
+        eegnet_l2_weight=args.eegnet_l2_weight,
         triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
         triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
         triplet_mining_strategy=str(
@@ -136,7 +136,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         config=config,
         data_dir=args.data_dir,
         learning_rate=args.learning_rate,
-        fusion_method=args.fusion_method,
     )
 
     if (
@@ -184,10 +183,18 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "task_construction_mode": str(config.task_construction_mode),
             "normalize_mode": str(config.task_normalize_mode),
             "classifier_mode": str(config.classifier_mode),
-            "fusion_method": str(args.fusion_method),
             "learning_rate": float(args.learning_rate),
             "embedding_dim": int(config.embedding_dim),
-            "filters": list(filters_list),
+            "encoder": "eegnet",
+            "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
+            "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
+            "eegnet_separable_filters": int(config.eegnet_separable_filters),
+            "eegnet_temporal_kernel_size": int(config.eegnet_temporal_kernel_size),
+            "eegnet_separable_kernel_size": int(config.eegnet_separable_kernel_size),
+            "eegnet_pool_size_1": int(config.eegnet_pool_size_1),
+            "eegnet_pool_size_2": int(config.eegnet_pool_size_2),
+            "eegnet_dropout_rate": float(config.eegnet_dropout_rate),
+            "eegnet_l2_weight": float(config.eegnet_l2_weight),
             "num_epochs": int(config.num_epochs),
             "tasks_per_epoch": int(config.tasks_per_epoch),
             "train_batch_size": int(config.train_batch_size),
@@ -258,12 +265,6 @@ def main() -> None:
         choices=("single_subject", "cross_subject", "mixed"),
     )
     parser.add_argument(
-        "--fusion-method",
-        type=str,
-        default="mean",
-        choices=("mean", "gated", "transformer_ib"),
-    )
-    parser.add_argument(
         "--classifier-mode",
         type=str,
         default="prototype",
@@ -277,22 +278,15 @@ def main() -> None:
     )
     parser.add_argument("--learning-rate", type=float, default=6e-4)
     parser.add_argument("--embedding-dim", type=int, default=64)
-    parser.add_argument("--filters", type=str, default="16,32,64,128")
-    parser.add_argument(
-        "--tcn-dilation-rates",
-        type=str,
-        default=None,
-        help="Comma-separated TCN dilation rates. Defaults to powers of two matching --filters.",
-    )
-    parser.add_argument("--tcn-attention-heads", type=int, default=8)
-    parser.add_argument("--tcn-attention-key-dim", type=int, default=8)
-    parser.add_argument("--tcn-attention-dropout", type=float, default=0.1)
-    parser.add_argument("--tcn-transformer-layers", type=int, default=2)
-    parser.add_argument("--tcn-transformer-ffn-dim", type=int, default=256)
-    parser.add_argument("--tcn-attention-pool-size", type=int, default=0)
-    parser.add_argument("--use-attention", action="store_true")
-    parser.add_argument("--supcon-loss-weight", type=float, default=0.7)
-    parser.add_argument("--supcon-temperature", type=float, default=0.05)
+    parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
+    parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)
+    parser.add_argument("--eegnet-separable-filters", type=int, default=16)
+    parser.add_argument("--eegnet-temporal-kernel-size", type=int, default=64)
+    parser.add_argument("--eegnet-separable-kernel-size", type=int, default=16)
+    parser.add_argument("--eegnet-pool-size-1", type=int, default=4)
+    parser.add_argument("--eegnet-pool-size-2", type=int, default=8)
+    parser.add_argument("--eegnet-dropout-rate", type=float, default=0.25)
+    parser.add_argument("--eegnet-l2-weight", type=float, default=1e-4)
     parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
     parser.add_argument("--triplet-margin", type=float, default=0.1)
     parser.add_argument(

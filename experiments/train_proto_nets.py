@@ -17,25 +17,18 @@ def main():
     print("Num GPUs Available: ", len(tf.config.list_physical_devices("MPS")))
 
     logger.info("=" * 60)
-    logger.info("Multimodal Few-Shot Learning for Personalized Pain Assessment")
+    logger.info("EEGNet Few-Shot Learning for Personalized Pain Assessment")
     logger.info("=" * 60)
 
-    # Try different fusion methods
-    fusion_methods = ["mean"]
+    learner = FewShotPainLearner(
+        config=config,
+        data_dir="../data",
+        learning_rate=1e-3,
+    )
 
-    for fusion_method in fusion_methods:
-        logger.info(f"\nTraining with fusion method: {fusion_method}")
-
-        learner = FewShotPainLearner(
-            config=config,
-            data_dir="../data",
-            learning_rate=1e-3,
-            fusion_method=fusion_method,
-        )
-
-        cv_results = learner.train()
-        logger.info(cv_results)
-        logger.info(f"Training with {fusion_method} complete!")
+    cv_results = learner.train()
+    logger.info(cv_results)
+    logger.info("Training with EEGNet encoder complete!")
 
 
 if __name__ == "__main__":
