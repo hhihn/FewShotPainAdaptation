@@ -305,6 +305,71 @@ class ContractTests(unittest.TestCase):
         self.assertIsInstance(model.encoder, EEGNetStyleEncoder)
         self.assertFalse(hasattr(model, "modality_encoders"))
 
+    def test_logit_scale_is_trainable_and_initialized_by_metric(self):
+        cosine_model = MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=2,
+            embedding_dim=4,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
+            distance_metric="cosine",
+        )
+        euclidean_model = MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=2,
+            embedding_dim=4,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
+            distance_metric="euclidean",
+        )
+
+        self.assertAlmostEqual(float(cosine_model.logit_scale.numpy()), 10.0)
+        self.assertAlmostEqual(float(euclidean_model.logit_scale.numpy()), 1.0)
+        self.assertTrue(
+            any(
+                variable is cosine_model.logit_scale
+                for variable in cosine_model.trainable_variables
+            )
+        )
+
+        rng = np.random.default_rng(2026)
+        support_x = tf.constant(rng.normal(size=(1, 4, 32, 3)), dtype=tf.float32)
+        query_x = tf.constant(rng.normal(size=(1, 4, 32, 3)), dtype=tf.float32)
+        support_y = tf.constant([[0, 0, 1, 1]], dtype=tf.int32)
+        query_y = tf.constant([[0, 0, 1, 1]], dtype=tf.int32)
+
+        with tf.GradientTape() as tape:
+            logits = cosine_model.forward_episode_batch(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                training=True,
+            )["logits"]
+            loss = tf.reduce_mean(
+                tf.keras.losses.sparse_categorical_crossentropy(
+                    query_y,
+                    logits,
+                    from_logits=True,
+                )
+            )
+
+        gradient = tape.gradient(loss, cosine_model.logit_scale)
+        self.assertIsNotNone(gradient)
+
     def test_eegnet_encoder_layers_are_present(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=32,

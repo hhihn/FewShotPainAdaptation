@@ -63,7 +63,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.eegnet_dropout_rate = float(eegnet_dropout_rate)
         self.eegnet_l2_weight = float(eegnet_l2_weight)
         self.seed = int(seed)
-        self.logit_scale = 10.0 if distance_metric == "cosine" else 1.0
+        initial_logit_scale = 10.0 if distance_metric == "cosine" else 1.0
+        self.logit_scale = self.add_weight(
+            name="logit_scale",
+            shape=(),
+            initializer=keras.initializers.Constant(initial_logit_scale),
+            trainable=True,
+            constraint=keras.constraints.NonNeg(),
+        )
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
 
         self.encoder = EEGNetStyleEncoder(
@@ -173,12 +180,12 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         return -self.compute_distances_batch(query_embeddings, prototype_embeddings)
 
-    def compute_cosine_sim(self, a_embeddings, b_embeddings, axis=2):
+    def compute_cosine_sim(self, a_embeddings, b_embeddings, axis=1):
         query_norm = tf.nn.l2_normalize(a_embeddings, axis=axis)
         support_norm = tf.nn.l2_normalize(b_embeddings, axis=axis)
         return tf.matmul(query_norm, support_norm, transpose_b=True)
 
-    def compute_euclidean_sim(self, a_embeddings, b_embeddings, axis=1):
+    def compute_euclidean_sim(self, a_embeddings, b_embeddings, axis=2):
         return tf.sqrt(
             tf.reduce_sum(
                 (tf.expand_dims(a_embeddings, 1) - tf.expand_dims(b_embeddings, 0))
