@@ -126,21 +126,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distances: [num_queries, num_classes]
         """
         if self.distance_metric == "euclidean":
-            distances = tf.sqrt(
-                tf.reduce_sum(
-                    (
-                        tf.expand_dims(query_embeddings, 1)
-                        - tf.expand_dims(prototype_embeddings, 0)
-                    )
-                    ** 2,
-                    axis=2,
-                )
-                + 1e-8
-            )
+            distances = self.compute_euclidean_distance(query_embeddings, prototype_embeddings)
         elif self.distance_metric == "cosine":
-            query_norm = tf.nn.l2_normalize(query_embeddings, axis=1)
-            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=1)
-            distances = 1 - tf.matmul(query_norm, tf.transpose(prototype_norm))
+            distances = 1 - self.compute_cosine_similarity(query_embeddings, prototype_embeddings)
         else:
             raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
@@ -158,21 +146,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distances: [num_tasks, num_queries, num_classes]
         """
         if self.distance_metric == "euclidean":
-            distances = tf.sqrt(
-                tf.reduce_sum(
-                    (
-                        tf.expand_dims(query_embeddings, 2)
-                        - tf.expand_dims(prototype_embeddings, 1)
-                    )
-                    ** 2,
-                    axis=3,
-                )
-                + 1e-8
-            )
+            distances = self.compute_euclidean_distance(query_embeddings, prototype_embeddings)
         elif self.distance_metric == "cosine":
-            query_norm = tf.nn.l2_normalize(query_embeddings, axis=2)
-            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=2)
-            distances = 1 - tf.matmul(query_norm, prototype_norm, transpose_b=True)
+            distances = 1 - self.compute_cosine_similarity(query_embeddings, prototype_embeddings)
         else:
             raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
@@ -186,18 +162,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
             similarities: [num_queries, num_classes]
         """
         if self.distance_metric == "cosine":
-            query_norm = tf.nn.l2_normalize(query_embeddings, axis=1)
-            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=1)
-            return tf.matmul(query_norm, tf.transpose(prototype_norm))
+            return self.compute_cosine_similarity(query_embeddings, prototype_embeddings)
 
         return -self.compute_distances(query_embeddings, prototype_embeddings)
 
     def compute_similarity_scores_batch(self, query_embeddings, prototype_embeddings):
         """Compute batched query-to-prototype similarity scores."""
         if self.distance_metric == "cosine":
-            query_norm = tf.nn.l2_normalize(query_embeddings, axis=2)
-            prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=2)
-            return tf.matmul(query_norm, prototype_norm, transpose_b=True)
+            return self.compute_cosine_similarity(query_embeddings, prototype_embeddings)
 
         return -self.compute_distances_batch(query_embeddings, prototype_embeddings)
 
@@ -206,9 +178,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
     ) -> tf.Tensor:
         """Compute query-to-support similarities."""
         if self.distance_metric == "cosine":
-            query_norm = tf.nn.l2_normalize(query_embeddings, axis=1)
-            support_norm = tf.nn.l2_normalize(support_embeddings, axis=1)
-            return tf.matmul(query_norm, support_norm, transpose_b=True)
+            return self.compute_cosine_similarity(query_embeddings, support_embeddings)
 
         return -self.compute_pairwise_distances(query_embeddings, support_embeddings)
 
@@ -217,9 +187,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
     ) -> tf.Tensor:
         """Compute batched query-to-support similarities."""
         if self.distance_metric == "cosine":
-            query_norm = tf.nn.l2_normalize(query_embeddings, axis=2)
-            support_norm = tf.nn.l2_normalize(support_embeddings, axis=2)
-            return tf.matmul(query_norm, support_norm, transpose_b=True)
+            return self.compute_cosine_similarity(query_embeddings, support_embeddings)
 
         return -self.compute_pairwise_distances_batch(
             query_embeddings, support_embeddings
@@ -230,18 +198,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
     ) -> tf.Tensor:
         """Compute pairwise distances between two embedding sets."""
         if self.distance_metric == "euclidean":
-            return tf.sqrt(
-                tf.reduce_sum(
-                    (tf.expand_dims(a_embeddings, 1) - tf.expand_dims(b_embeddings, 0))
-                    ** 2,
-                    axis=2,
-                )
-                + 1e-8
-            )
+            return self.compute_euclidean_distance(a_embeddings, b_embeddings)
         if self.distance_metric == "cosine":
-            a_norm = tf.nn.l2_normalize(a_embeddings, axis=1)
-            b_norm = tf.nn.l2_normalize(b_embeddings, axis=1)
-            return 1 - tf.matmul(a_norm, b_norm, transpose_b=True)
+            return 1 - self.compute_cosine_similarity(a_embeddings, b_embeddings)
         raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
     def compute_pairwise_distances_batch(
@@ -249,18 +208,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
     ) -> tf.Tensor:
         """Compute batched pairwise distances between two embedding sets."""
         if self.distance_metric == "euclidean":
-            return tf.sqrt(
-                tf.reduce_sum(
-                    (tf.expand_dims(a_embeddings, 2) - tf.expand_dims(b_embeddings, 1))
-                    ** 2,
-                    axis=3,
-                )
-                + 1e-8
-            )
+            return self.compute_euclidean_distance(a_embeddings, b_embeddings)
         if self.distance_metric == "cosine":
-            a_norm = tf.nn.l2_normalize(a_embeddings, axis=2)
-            b_norm = tf.nn.l2_normalize(b_embeddings, axis=2)
-            return 1 - tf.matmul(a_norm, b_norm, transpose_b=True)
+            return 1 - self.compute_cosine_similarity(a_embeddings, b_embeddings)
         raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
     def _compute_prototypes(self, support_embeddings, support_y):
@@ -334,6 +284,21 @@ class MultimodalPrototypicalNetwork(keras.Model):
             support_similarities[:, :, :, tf.newaxis]
             + tf.math.log(class_mask[:, tf.newaxis, :, :] + 1e-8),
             axis=2,
+        )
+
+    def compute_cosine_similarity(self, query_embeddings, prototype_embeddings):
+        query_norm = tf.nn.l2_normalize(query_embeddings, axis=1)
+        prototype_norm = tf.nn.l2_normalize(prototype_embeddings, axis=1)
+        return tf.matmul(query_norm, tf.transpose(prototype_norm))
+
+    def compute_euclidean_distance(self, a_embeddings, b_embeddings):
+        return tf.sqrt(
+            tf.reduce_sum(
+                (tf.expand_dims(a_embeddings, 2) - tf.expand_dims(b_embeddings, 1))
+                ** 2,
+                axis=3,
+            )
+            + 1e-8
         )
 
     def forward_episode(self, support_x, support_y, query_x, training=False):
