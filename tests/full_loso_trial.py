@@ -126,6 +126,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         triplet_mining_strategy=str(
             getattr(args, "triplet_mining_strategy", "batch_hard")
         ),
+        triplet_center_gradient_clip_norm=float(
+            getattr(args, "triplet_center_gradient_clip_norm", 0.01)
+        ),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -207,6 +210,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "triplet_loss_weight": float(config.triplet_loss_weight),
             "triplet_margin": float(config.triplet_margin),
             "triplet_mining_strategy": str(config.triplet_mining_strategy),
+            "triplet_center_gradient_clip_norm": float(
+                config.triplet_center_gradient_clip_norm
+            ),
             "deterministic_ops": bool(config.deterministic_ops),
             "train_progress_write_every_n_batches": int(
                 config.train_progress_write_every_n_batches
@@ -293,8 +299,9 @@ def main() -> None:
         "--triplet-mining-strategy",
         type=str,
         default="batch_hard",
-        choices=("batch_hard", "batch_all"),
+        choices=("batch_hard", "batch_all", "triplet_center"),
     )
+    parser.add_argument("--triplet-center-gradient-clip-norm", type=float, default=0.01)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument(
         "--deterministic-ops",

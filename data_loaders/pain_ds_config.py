@@ -57,7 +57,10 @@ class PainDatasetConfig:
     classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
     triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
     triplet_margin: float = 0.1  # Margin used by triplet loss
-    triplet_mining_strategy: str = "batch_hard"  # batch_hard or batch_all
+    triplet_mining_strategy: str = (
+        "batch_hard"  # batch_hard, batch_all, or triplet_center
+    )
+    triplet_center_gradient_clip_norm: float = 0.01
     train_batch_size: int = 256  # Number of tasks per optimizer update
     embedding_batch_size: int = (
         1  # Number of tasks encoded together; 1 preserves legacy per-task embedding
@@ -167,10 +170,17 @@ class PainDatasetConfig:
             raise ValueError("triplet_loss_weight must be non-negative")
         if self.triplet_margin < 0:
             raise ValueError("triplet_margin must be non-negative")
-        if self.triplet_mining_strategy not in {"batch_hard", "batch_all"}:
+        if self.triplet_mining_strategy not in {
+            "batch_hard",
+            "batch_all",
+            "triplet_center",
+        }:
             raise ValueError(
-                "triplet_mining_strategy must be one of: 'batch_hard', 'batch_all'"
+                "triplet_mining_strategy must be one of: "
+                "'batch_hard', 'batch_all', 'triplet_center'"
             )
+        if self.triplet_center_gradient_clip_norm < 0:
+            raise ValueError("triplet_center_gradient_clip_norm must be non-negative")
         self.embedding_batch_size = int(self.embedding_batch_size)
         if self.embedding_batch_size <= 0:
             raise ValueError("embedding_batch_size must be > 0")

@@ -150,6 +150,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         triplet_mining_strategy=str(
             getattr(args, "triplet_mining_strategy", "batch_hard")
         ),
+        triplet_center_gradient_clip_norm=float(
+            getattr(args, "triplet_center_gradient_clip_norm", 0.01)
+        ),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -305,6 +308,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "triplet_loss_weight": float(config.triplet_loss_weight),
         "triplet_margin": float(config.triplet_margin),
         "triplet_mining_strategy": str(config.triplet_mining_strategy),
+        "triplet_center_gradient_clip_norm": float(
+            config.triplet_center_gradient_clip_norm
+        ),
         "model_architecture_file": model_architecture_file,
         "before": {
             "train": before_train,
@@ -562,8 +568,9 @@ def main() -> None:
         "--triplet-mining-strategy",
         type=str,
         default="batch_hard",
-        choices=("batch_hard", "batch_all"),
+        choices=("batch_hard", "batch_all", "triplet_center"),
     )
+    parser.add_argument("--triplet-center-gradient-clip-norm", type=float, default=0.01)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(

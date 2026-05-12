@@ -244,6 +244,22 @@ class EpisodicLearningEngine:
     def apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
         """Apply gradients for the current model update."""
         gradients = tape.gradient(loss, self.model.trainable_variables)
+        if (
+            self.triplet_mining_strategy == "triplet_center"
+            and self.triplet_center_gradient_clip_norm > 0
+        ):
+            center_clip_norm = tf.cast(
+                self.triplet_center_gradient_clip_norm,
+                tf.float32,
+            )
+            gradients = [
+                (
+                    tf.clip_by_norm(grad, center_clip_norm)
+                    if grad is not None and variable is self.model.triplet_centers
+                    else grad
+                )
+                for grad, variable in zip(gradients, self.model.trainable_variables)
+            ]
         grads_and_vars = [
             (grad, variable)
             for grad, variable in zip(gradients, self.model.trainable_variables)
@@ -355,14 +371,62 @@ class EpisodicLearningEngine:
             tf.reduce_sum(valid_anchor_weights),
         )
 
-    def compute_triplet_loss(self, embeddings: tf.Tensor, labels: tf.Tensor) -> tf.Tensor:
+    def compute_triplet_center_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute Triplet-Center Loss with trainable per-class centers."""
+        if self.triplet_loss_weight <= 0:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        centers = tf.cast(self.model.triplet_centers, embeddings.dtype)
+        if centers.shape[0] is not None and int(centers.shape[0]) <= 1:
+            return tf.constant(0.0, dtype=embeddings.dtype)
+
+        labels = tf.reshape(tf.cast(labels, tf.int32), [-1])
+        positive_centers = tf.gather(centers, labels)
+        positive_distances = 0.5 * tf.reduce_sum(
+            tf.square(embeddings - positive_centers),
+            axis=1,
+        )
+
+        center_distances = 0.5 * tf.reduce_sum(
+            tf.square(embeddings[:, tf.newaxis, :] - centers[tf.newaxis, :, :]),
+            axis=2,
+        )
+        class_ids = tf.range(tf.shape(centers)[0], dtype=labels.dtype)
+        negative_mask = tf.not_equal(labels[:, tf.newaxis], class_ids[tf.newaxis, :])
+        large_distance = (
+            tf.reduce_max(center_distances)
+            + tf.constant(1.0, dtype=center_distances.dtype)
+        )
+        negative_distances = tf.where(
+            negative_mask,
+            center_distances,
+            tf.ones_like(center_distances) * large_distance,
+        )
+        nearest_negative_distances = tf.reduce_min(negative_distances, axis=1)
+
+        per_sample_loss = tf.maximum(
+            positive_distances
+            - nearest_negative_distances
+            + tf.cast(self.triplet_margin, embeddings.dtype),
+            tf.constant(0.0, dtype=embeddings.dtype),
+        )
+        return tf.reduce_mean(per_sample_loss)
+
+    def compute_triplet_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
         """Dispatch configured triplet mining strategy over one episode."""
         if self.triplet_mining_strategy == "batch_hard":
             return self.compute_batch_hard_triplet_loss(embeddings, labels)
         if self.triplet_mining_strategy == "batch_all":
             return self.compute_batch_all_triplet_loss(embeddings, labels)
+        if self.triplet_mining_strategy == "triplet_center":
+            return self.compute_triplet_center_loss(embeddings, labels)
         raise ValueError(
-            "triplet_mining_strategy must be one of: 'batch_hard', 'batch_all'"
+            "triplet_mining_strategy must be one of: "
+            "'batch_hard', 'batch_all', 'triplet_center'"
         )
 
     def compute_task_batch_objective(

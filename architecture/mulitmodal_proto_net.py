@@ -71,6 +71,12 @@ class MultimodalPrototypicalNetwork(keras.Model):
             trainable=True,
             constraint=keras.constraints.NonNeg(),
         )
+        self.triplet_centers = self.add_weight(
+            name="triplet_centers",
+            shape=(self.num_classes, self.embedding_dim),
+            initializer=keras.initializers.GlorotUniform(seed=self.seed),
+            trainable=True,
+        )
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
 
         self.encoder = EEGNetStyleEncoder(

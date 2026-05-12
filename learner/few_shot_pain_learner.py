@@ -48,6 +48,9 @@ class FewShotPainLearner:
         self.triplet_loss_weight = float(config.triplet_loss_weight)
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
+        self.triplet_center_gradient_clip_norm = float(
+            config.triplet_center_gradient_clip_norm
+        )
         self.gaussian_noise_std = float(config.gaussian_noise_std)
         self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
         if self.gradient_clip_norm is not None:
@@ -136,6 +139,7 @@ class FewShotPainLearner:
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
+            "triplet_center_gradient_clip_norm": self.triplet_center_gradient_clip_norm,
             "gradient_clip_norm": self.gradient_clip_norm,
             "train_batch_size": self.train_batch_size,
             "embedding_batch_size": self.embedding_batch_size,
@@ -446,6 +450,12 @@ class FewShotPainLearner:
     ) -> tf.Tensor:
         """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
         return self.engine.compute_batch_hard_triplet_loss(embeddings, labels)
+
+    def _compute_triplet_center_loss(
+        self, embeddings: tf.Tensor, labels: tf.Tensor
+    ) -> tf.Tensor:
+        """Compute Triplet-Center Loss using trainable class centers."""
+        return self.engine.compute_triplet_center_loss(embeddings, labels)
 
     def _compute_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor

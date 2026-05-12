@@ -148,6 +148,12 @@ class ContractTests(unittest.TestCase):
 
     def test_triplet_mining_strategy_validation(self):
         self.assertEqual(PainDatasetConfig().triplet_mining_strategy, "batch_hard")
+        self.assertEqual(
+            PainDatasetConfig(
+                triplet_mining_strategy="triplet_center"
+            ).triplet_mining_strategy,
+            "triplet_center",
+        )
         with self.assertRaises(ValueError):
             PainDatasetConfig(triplet_mining_strategy="semi_hard")
 
@@ -216,6 +222,59 @@ class ContractTests(unittest.TestCase):
         loss = learner._compute_batch_hard_triplet_loss(embeddings, labels)
 
         self.assertEqual(float(loss.numpy()), 0.0)
+
+    def test_triplet_center_loss_uses_nearest_negative_center(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.triplet_loss_weight = 1.0
+        learner.triplet_margin = 1.0
+        learner.triplet_mining_strategy = "triplet_center"
+        learner.triplet_center_gradient_clip_norm = 0.01
+        learner.engine = EpisodicLearningEngine(learner)
+        learner.model = MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=3,
+            embedding_dim=2,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
+        )
+        learner.model.triplet_centers.assign(
+            tf.constant(
+                [
+                    [0.0, 0.0],
+                    [3.0, 0.0],
+                    [0.0, 3.0],
+                ],
+                dtype=tf.float32,
+            )
+        )
+
+        embeddings = tf.constant(
+            [
+                [2.0, 0.0],
+                [3.0, 1.0],
+            ],
+            dtype=tf.float32,
+        )
+        labels = tf.constant([0, 1], dtype=tf.int32)
+
+        with tf.GradientTape() as tape:
+            loss = learner._compute_triplet_center_loss(embeddings, labels)
+
+        self.assertAlmostEqual(float(loss.numpy()), 1.25, places=5)
+        self.assertAlmostEqual(
+            float(learner._compute_triplet_loss(embeddings, labels).numpy()),
+            1.25,
+            places=5,
+        )
+        center_gradient = tape.gradient(loss, learner.model.triplet_centers)
+        self.assertIsNotNone(center_gradient)
 
     def test_embedding_batch_size_must_be_positive(self):
         self.assertEqual(
