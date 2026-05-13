@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -356,6 +357,21 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "embedding_batch_size must be > 0"):
             PainDatasetConfig(embedding_batch_size=0)
 
+    def test_validation_checkpoint_config_validation(self):
+        self.assertEqual(PainDatasetConfig().validation_checkpoint_metric, "accuracy")
+        self.assertEqual(PainDatasetConfig().validation_checkpoint_mode, "auto")
+        self.assertEqual(
+            PainDatasetConfig(
+                validation_checkpoint_metric="f1",
+                validation_checkpoint_mode="max",
+            ).validation_checkpoint_metric,
+            "f1",
+        )
+        with self.assertRaisesRegex(ValueError, "validation_checkpoint_metric"):
+            PainDatasetConfig(validation_checkpoint_metric="unknown")
+        with self.assertRaisesRegex(ValueError, "validation_checkpoint_mode"):
+            PainDatasetConfig(validation_checkpoint_mode="sideways")
+
     def test_forward_episode_batch_matches_per_task_eval_order(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=32,
@@ -692,6 +708,25 @@ class ContractTests(unittest.TestCase):
         for key in required_keys:
             self.assertEqual(len(results[key]), n_folds)
             self.assertTrue(np.all(np.isfinite(results[key])))
+
+        self.assertEqual(results["validation_checkpoint_metric"], "accuracy")
+        self.assertEqual(results["validation_checkpoint_mode"], "auto")
+        for key in (
+            "validation_checkpoint_values",
+            "validation_checkpoint_epochs",
+            "validation_checkpoint_steps",
+        ):
+            self.assertEqual(len(results[key]), n_folds)
+            self.assertTrue(np.all(np.isfinite(results[key])))
+        self.assertEqual(len(results["validation_checkpoint_metrics"]), n_folds)
+
+        with open(
+            results["training_progress_files"][0], newline="", encoding="utf-8"
+        ) as handle:
+            header = next(csv.reader(handle))
+        self.assertIn("checkpoint_metric", header)
+        self.assertIn("checkpoint_value", header)
+        self.assertIn("checkpoint_is_best", header)
 
     def test_two_way_task_class_mapping(self):
         config = PainDatasetConfig(

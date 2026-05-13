@@ -12,7 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_loaders.pain_ds_config import PainDatasetConfig
+from data_loaders.pain_ds_config import (
+    PainDatasetConfig,
+    SUPPORTED_VALIDATION_CHECKPOINT_METRICS,
+    VALIDATION_CHECKPOINT_MODES,
+)
 from learner.few_shot_pain_learner import FewShotPainLearner
 from utils.logger import setup_logger
 
@@ -102,6 +106,12 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         eval_log_every=max(1, int(args.eval_log_every)),
         val_batch_size=max(1, int(args.val_batch_size)),
         val_every_n_train_steps=max(1, int(args.val_every_n_train_steps)),
+        validation_checkpoint_metric=str(
+            getattr(args, "validation_checkpoint_metric", "accuracy")
+        ),
+        validation_checkpoint_mode=str(
+            getattr(args, "validation_checkpoint_mode", "auto")
+        ),
         summary_every_n_train_steps=max(1, int(args.summary_every_n_train_steps)),
         train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
         train_progress_write_every_n_batches=max(
@@ -204,6 +214,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "embedding_batch_size": int(config.embedding_batch_size),
             "val_tasks": int(config.val_tasks),
             "heldout_eval_tasks": int(config.heldout_eval_tasks),
+            "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
+            "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
             "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
             "window_shift_enabled": bool(config.enable_window_shift_augmentation),
             "gaussian_noise_std": float(config.gaussian_noise_std),
@@ -330,6 +342,20 @@ def main() -> None:
     parser.add_argument("--eval-log-every", type=int, default=5)
     parser.add_argument("--val-batch-size", type=int, default=32)
     parser.add_argument("--val-every-n-train-steps", type=int, default=20)
+    parser.add_argument(
+        "--validation-checkpoint-metric",
+        type=str,
+        default="accuracy",
+        choices=SUPPORTED_VALIDATION_CHECKPOINT_METRICS,
+        help="Validation metric used to select the fold model for held-out eval.",
+    )
+    parser.add_argument(
+        "--validation-checkpoint-mode",
+        type=str,
+        default="auto",
+        choices=VALIDATION_CHECKPOINT_MODES,
+        help="Direction for the validation checkpoint metric.",
+    )
     parser.add_argument("--summary-every-n-train-steps", type=int, default=20)
     parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(

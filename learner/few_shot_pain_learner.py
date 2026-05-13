@@ -16,6 +16,7 @@ from learner.heldout_adaptation_service import HeldoutAdaptationService
 from learner.loso_training_runner import LosoTrainingRunner
 from learner.model_architecture_writer import ModelArchitectureWriter
 from learner.task_batch_pipeline import TaskBatchPipeline
+from learner.validation_checkpoint import ValidationCheckpointTracker
 
 
 class FewShotPainLearner:
@@ -152,6 +153,8 @@ class FewShotPainLearner:
             "eval_log_every": self.config.eval_log_every,
             "val_batch_size": self.config.val_batch_size,
             "val_every_n_train_steps": self.config.val_every_n_train_steps,
+            "validation_checkpoint_metric": self.config.validation_checkpoint_metric,
+            "validation_checkpoint_mode": self.config.validation_checkpoint_mode,
             "summary_every_n_train_steps": self.config.summary_every_n_train_steps,
             "logging_verbosity": self.logging_verbosity,
             "train_prefetch_batches": self.train_prefetch_batches,
@@ -1213,6 +1216,12 @@ class FewShotPainLearner:
             },
             "training_progress_files": [],
             "model_architecture_file": None,
+            "validation_checkpoint_metric": self.config.validation_checkpoint_metric,
+            "validation_checkpoint_mode": self.config.validation_checkpoint_mode,
+            "validation_checkpoint_values": [],
+            "validation_checkpoint_epochs": [],
+            "validation_checkpoint_steps": [],
+            "validation_checkpoint_metrics": [],
         }
 
         fold_subjects = self._get_loso_fold_subjects()
@@ -1253,6 +1262,10 @@ class FewShotPainLearner:
 
             # Reset fold state without clearing Keras or recreating tf.functions.
             self._reset_model_state_for_new_fold()
+            validation_checkpoint = ValidationCheckpointTracker(
+                metric=self.config.validation_checkpoint_metric,
+                mode=self.config.validation_checkpoint_mode,
+            )
 
             # Get fold dictionary with samplers
             fold_dict = self.cv.get_fold(test_subject)
@@ -1443,6 +1456,9 @@ class FewShotPainLearner:
                     validation_losses = []
                     validation_task_losses = []
                     validation_accs = []
+                    validation_precisions = []
+                    validation_recalls = []
+                    validation_f1s = []
                     validation_contrastive_losses = []
                     validation_triplet_losses = []
                     validation_intra_class_similarities = []
@@ -1463,6 +1479,9 @@ class FewShotPainLearner:
                         validation_losses.append(val_loss)
                         validation_task_losses.append(val_metrics["task_loss"])
                         validation_accs.append(val_metrics["accuracy"])
+                        validation_precisions.append(val_metrics["precision"])
+                        validation_recalls.append(val_metrics["recall"])
+                        validation_f1s.append(val_metrics["f1"])
                         validation_contrastive_losses.append(
                             val_metrics["contrastive_loss"]
                         )
@@ -1476,6 +1495,9 @@ class FewShotPainLearner:
 
                     mean_val_loss = float(np.mean(validation_losses))
                     mean_val_acc = float(np.mean(validation_accs))
+                    mean_val_precision = float(np.mean(validation_precisions))
+                    mean_val_recall = float(np.mean(validation_recalls))
+                    mean_val_f1 = float(np.mean(validation_f1s))
                     mean_val_task_loss = float(np.mean(validation_task_losses))
                     mean_val_contrastive_loss = float(
                         np.mean(validation_contrastive_losses)
@@ -1493,6 +1515,30 @@ class FewShotPainLearner:
                     )
                     epoch_val_losses.append(mean_val_loss)
                     epoch_val_accs.append(mean_val_acc)
+                    validation_checkpoint_metrics = {
+                        "loss": mean_val_loss,
+                        "task_loss": mean_val_task_loss,
+                        "contrastive_loss": mean_val_contrastive_loss,
+                        "triplet_loss": mean_val_triplet_loss,
+                        "accuracy": mean_val_acc,
+                        "precision": mean_val_precision,
+                        "recall": mean_val_recall,
+                        "f1": mean_val_f1,
+                        "intra_class_similarity": mean_val_intra_class_similarity,
+                        "inter_class_similarity": mean_val_inter_class_similarity,
+                        "similarity_margin": mean_val_similarity_margin,
+                    }
+                    checkpoint_value = validation_checkpoint_metrics[
+                        validation_checkpoint.metric
+                    ]
+                    checkpoint_improved = validation_checkpoint.maybe_update(
+                        value=checkpoint_value,
+                        epoch=epoch + 1,
+                        step=processed_tasks,
+                        metrics=validation_checkpoint_metrics,
+                        model_variables=self.model.weights,
+                        optimizer_variables=self.optimizer.variables,
+                    )
                     csv_writer.write_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
@@ -1506,9 +1552,15 @@ class FewShotPainLearner:
                         contrastive_loss=mean_val_contrastive_loss,
                         triplet_loss=mean_val_triplet_loss,
                         accuracy=mean_val_acc,
+                        precision=mean_val_precision,
+                        recall=mean_val_recall,
+                        f1=mean_val_f1,
                         intra_class_similarity=mean_val_intra_class_similarity,
                         inter_class_similarity=mean_val_inter_class_similarity,
                         similarity_margin=mean_val_similarity_margin,
+                        checkpoint_metric=validation_checkpoint.metric,
+                        checkpoint_value=checkpoint_value,
+                        checkpoint_is_best=checkpoint_improved,
                     )
                     progress.log_step(
                         stage="Validation",
@@ -1523,6 +1575,9 @@ class FewShotPainLearner:
                             "task_loss": mean_val_task_loss,
                             "contrastive_loss": mean_val_contrastive_loss,
                             "triplet_loss": mean_val_triplet_loss,
+                            "precision": mean_val_precision,
+                            "recall": mean_val_recall,
+                            "f1": mean_val_f1,
                             "intra_class_similarity": mean_val_intra_class_similarity,
                             "inter_class_similarity": mean_val_inter_class_similarity,
                             "similarity_margin": mean_val_similarity_margin,
@@ -1537,11 +1592,15 @@ class FewShotPainLearner:
                         f"mean_loss={mean_val_loss:.4f}, "
                         f"mean_task_loss={mean_val_task_loss:.4f}, "
                         f"mean_accuracy={mean_val_acc:.4f}, "
+                        f"mean_f1={mean_val_f1:.4f}, "
                         f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
                         f"triplet_loss={mean_val_triplet_loss:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
                         f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
                         f"similarity_margin={mean_val_similarity_margin:.4f}, "
+                        f"checkpoint_metric={validation_checkpoint.metric}, "
+                        f"checkpoint_value={checkpoint_value:.4f}, "
+                        f"checkpoint_is_best={checkpoint_improved}, "
                         f"validation_elapsed={self._format_seconds(time.perf_counter() - validation_start)}"
                     )
 
@@ -1596,8 +1655,45 @@ class FewShotPainLearner:
                         elapsed_seconds=time.perf_counter() - train_start_time,
                     )
 
+            checkpoint_summary = validation_checkpoint.summary()
+            restored_checkpoint = validation_checkpoint.restore(
+                model_variables=self.model.weights,
+                optimizer_variables=self.optimizer.variables,
+            )
+            cv_results["validation_checkpoint_values"].append(
+                checkpoint_summary["value"]
+            )
+            cv_results["validation_checkpoint_epochs"].append(
+                checkpoint_summary["epoch"]
+            )
+            cv_results["validation_checkpoint_steps"].append(
+                checkpoint_summary["step"]
+            )
+            cv_results["validation_checkpoint_metrics"].append(
+                checkpoint_summary["metrics"]
+            )
+            if restored_checkpoint:
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    "Restored best validation checkpoint for held-out evaluation: "
+                    f"metric={checkpoint_summary['metric']} "
+                    f"mode={checkpoint_summary['resolved_mode']} "
+                    f"value={float(checkpoint_summary['value']):.4f} "
+                    f"epoch={checkpoint_summary['epoch']} "
+                    f"step={checkpoint_summary['step']}"
+                )
+            else:
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    "No validation checkpoint was captured; using final training state "
+                    "for held-out evaluation."
+                )
+
             # Held-out evaluation sweep across fixed and additional support/query sizes.
             pre_adaptation_weights = self.model.get_weights()
+            pre_adaptation_optimizer_variables = self.engine.snapshot_variables(
+                self.optimizer.variables
+            )
             sweep_metrics_by_size = {}
             run_adaptation = k_shot_adaptation_steps > 0
             if not run_adaptation:
@@ -1610,6 +1706,11 @@ class FewShotPainLearner:
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
                 self.model.set_weights(pre_adaptation_weights)
+                self.engine.restore_variable_snapshot(
+                    self.optimizer.variables,
+                    pre_adaptation_optimizer_variables,
+                    label="pre-heldout optimizer variables",
+                )
                 try:
                     zero_shot_loss, zero_shot_metrics = (
                         self._evaluate_sampler_loss_and_metrics_at_task_size(

@@ -48,6 +48,9 @@ class TrainingProgressCSVWriter:
             "intra_class_similarity",
             "inter_class_similarity",
             "similarity_margin",
+            "checkpoint_metric",
+            "checkpoint_value",
+            "checkpoint_is_best",
         ]
         self._writer = csv.DictWriter(self._file, fieldnames=fieldnames)
         self._writer.writeheader()
@@ -71,6 +74,9 @@ class TrainingProgressCSVWriter:
         intra_class_similarity: Optional[float] = None,
         inter_class_similarity: Optional[float] = None,
         similarity_margin: Optional[float] = None,
+        checkpoint_metric: Optional[str] = None,
+        checkpoint_value: Optional[float] = None,
+        checkpoint_is_best: Optional[bool] = None,
         epoch: Optional[int] = None,
         epoch_total: Optional[int] = None,
         step: Optional[int] = None,
@@ -101,6 +107,9 @@ class TrainingProgressCSVWriter:
                 "intra_class_similarity": intra_class_similarity,
                 "inter_class_similarity": inter_class_similarity,
                 "similarity_margin": similarity_margin,
+                "checkpoint_metric": checkpoint_metric,
+                "checkpoint_value": checkpoint_value,
+                "checkpoint_is_best": checkpoint_is_best,
             }
         )
         if self._time_index % self.flush_every_events == 0 and self._file is not None:

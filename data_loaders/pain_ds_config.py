@@ -2,6 +2,23 @@ from typing import Tuple, Optional
 from dataclasses import dataclass
 
 
+SUPPORTED_VALIDATION_CHECKPOINT_METRICS = (
+    "loss",
+    "task_loss",
+    "contrastive_loss",
+    "triplet_loss",
+    "accuracy",
+    "precision",
+    "recall",
+    "f1",
+    "intra_class_similarity",
+    "inter_class_similarity",
+    "similarity_margin",
+)
+
+VALIDATION_CHECKPOINT_MODES = ("auto", "min", "max")
+
+
 @dataclass
 class PainDatasetConfig:
     """Configuration for the pain dataset."""
@@ -70,6 +87,12 @@ class PainDatasetConfig:
     val_tasks: int = 20  # Number of validation tasks per validation run
     heldout_eval_tasks: int = 20  # Number of held-out evaluation tasks per fold
     subject_eval_tasks: Optional[int] = None  # Deprecated alias for heldout_eval_tasks
+    validation_checkpoint_metric: str = (
+        "accuracy"  # Validation metric used to select the fold model for held-out eval
+    )
+    validation_checkpoint_mode: str = (
+        "auto"  # auto, min, or max direction for validation checkpoint selection
+    )
     k_shot_adaptation_steps: int = 10  # Inner-loop adaptation steps on held-out subject
     train_log_every: int = 10  # Log train metrics every N sampled train tasks
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
@@ -232,6 +255,23 @@ class PainDatasetConfig:
             raise ValueError("csv_flush_every_events must be > 0")
         if self.summary_every_n_train_steps <= 0:
             raise ValueError("summary_every_n_train_steps must be > 0")
+        self.validation_checkpoint_metric = str(
+            self.validation_checkpoint_metric
+        ).strip()
+        if (
+            self.validation_checkpoint_metric
+            not in SUPPORTED_VALIDATION_CHECKPOINT_METRICS
+        ):
+            raise ValueError(
+                "validation_checkpoint_metric must be one of: "
+                + ", ".join(SUPPORTED_VALIDATION_CHECKPOINT_METRICS)
+            )
+        self.validation_checkpoint_mode = str(self.validation_checkpoint_mode).strip()
+        if self.validation_checkpoint_mode not in VALIDATION_CHECKPOINT_MODES:
+            raise ValueError(
+                "validation_checkpoint_mode must be one of: "
+                + ", ".join(VALIDATION_CHECKPOINT_MODES)
+            )
         if self.loso_start_index is not None:
             self.loso_start_index = int(self.loso_start_index)
             if self.loso_start_index <= 0:
