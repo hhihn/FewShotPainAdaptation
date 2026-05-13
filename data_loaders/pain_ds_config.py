@@ -79,7 +79,7 @@ class PainDatasetConfig:
         20  # Log composite train/val/heldout summary every N train batches
     )
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
-    train_prefetch_batches: int = 2  # Number of asynchronously prepared train batches
+    train_prefetch_batches: int = 256  # Number of asynchronously prepared train batches
     gradient_clip_norm: Optional[float] = (
         1.0  # Per-gradient norm clip for optimizer updates
     )
