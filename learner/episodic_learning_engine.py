@@ -414,6 +414,57 @@ class EpisodicLearningEngine:
         )
         return tf.reduce_mean(per_sample_loss)
 
+    def compute_triplet_center_loss_batch(
+        self,
+        embeddings_batch: tf.Tensor,
+        labels_batch: tf.Tensor,
+    ) -> tf.Tensor:
+        """Compute Triplet-Center Loss for a batch of independent episodes."""
+        if self.triplet_loss_weight <= 0:
+            return tf.zeros(tf.shape(labels_batch)[0], dtype=embeddings_batch.dtype)
+
+        centers = tf.cast(self.model.triplet_centers, embeddings_batch.dtype)
+        if centers.shape[0] is not None and int(centers.shape[0]) <= 1:
+            return tf.zeros(tf.shape(labels_batch)[0], dtype=embeddings_batch.dtype)
+
+        labels_batch = tf.cast(labels_batch, tf.int32)
+        positive_centers = tf.gather(centers, labels_batch)
+        positive_distances = 0.5 * tf.reduce_sum(
+            tf.square(embeddings_batch - positive_centers),
+            axis=2,
+        )
+
+        center_distances = 0.5 * tf.reduce_sum(
+            tf.square(
+                embeddings_batch[:, :, tf.newaxis, :]
+                - centers[tf.newaxis, tf.newaxis, :, :]
+            ),
+            axis=3,
+        )
+        class_ids = tf.range(tf.shape(centers)[0], dtype=labels_batch.dtype)
+        negative_mask = tf.not_equal(
+            labels_batch[:, :, tf.newaxis],
+            class_ids[tf.newaxis, tf.newaxis, :],
+        )
+        large_distance = (
+            tf.reduce_max(center_distances)
+            + tf.constant(1.0, dtype=center_distances.dtype)
+        )
+        negative_distances = tf.where(
+            negative_mask,
+            center_distances,
+            tf.ones_like(center_distances) * large_distance,
+        )
+        nearest_negative_distances = tf.reduce_min(negative_distances, axis=2)
+
+        per_sample_loss = tf.maximum(
+            positive_distances
+            - nearest_negative_distances
+            + tf.cast(self.triplet_margin, embeddings_batch.dtype),
+            tf.constant(0.0, dtype=embeddings_batch.dtype),
+        )
+        return tf.reduce_mean(per_sample_loss, axis=1)
+
     def compute_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
@@ -455,15 +506,29 @@ class EpisodicLearningEngine:
         labels_batch = tf.concat([support_y_batch, query_y_batch], axis=1)
         contrastive_losses = tf.zeros_like(task_losses)
         if self.triplet_loss_weight > 0:
-            triplet_losses = tf.map_fn(
-                lambda inputs: (
-                    tf.cast(self.triplet_loss_weight, task_losses.dtype)
-                    * self.compute_triplet_loss(inputs[0], inputs[1])
-                ),
-                (embeddings_batch, labels_batch),
-                fn_output_signature=tf.TensorSpec(shape=(), dtype=task_losses.dtype),
-                parallel_iterations=1,
-            )
+            if self.triplet_mining_strategy == "triplet_center":
+                triplet_losses = tf.cast(
+                    self.triplet_loss_weight,
+                    task_losses.dtype,
+                ) * self.compute_triplet_center_loss_batch(
+                    tf.cast(embeddings_batch, task_losses.dtype),
+                    labels_batch,
+                )
+            else:
+                triplet_losses = tf.map_fn(
+                    lambda inputs: (
+                        tf.cast(self.triplet_loss_weight, task_losses.dtype)
+                        * tf.cast(
+                            self.compute_triplet_loss(inputs[0], inputs[1]),
+                            task_losses.dtype,
+                        )
+                    ),
+                    (embeddings_batch, labels_batch),
+                    fn_output_signature=tf.TensorSpec(
+                        shape=(), dtype=task_losses.dtype
+                    ),
+                    parallel_iterations=16,
+                )
         else:
             triplet_losses = tf.zeros_like(task_losses)
 
@@ -608,60 +673,125 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Compiled evaluation over a batch of tasks without optimizer updates."""
-        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+        """Compiled evaluation over vectorized chunks of episodic tasks."""
+        losses = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        task_losses = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        contrastive_losses = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        triplet_losses = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        y_true = tf.TensorArray(
+            tf.int32, size=0, dynamic_size=True, infer_shape=False
+        )
+        y_pred = tf.TensorArray(
+            tf.int32, size=0, dynamic_size=True, infer_shape=False
+        )
+        intra_scores = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        inter_scores = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
 
-        def _per_task_eval(inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]):
-            support_x, support_y, query_x, query_y = inputs
-            task_outputs = self.forward_task(
-                support_x=support_x,
-                support_y=support_y,
-                query_x=query_x,
-                query_y=query_y,
+        total_tasks = tf.shape(support_x_batch)[0]
+        chunk_size = tf.minimum(
+            tf.constant(max(1, int(self.embedding_batch_size)), dtype=tf.int32),
+            total_tasks,
+        )
+
+        def _condition(task_start, *_):
+            return task_start < total_tasks
+
+        def _body(
+            task_start,
+            chunk_index,
+            losses,
+            task_losses,
+            contrastive_losses,
+            triplet_losses,
+            y_true,
+            y_pred,
+            intra_scores,
+            inter_scores,
+        ):
+            task_end = tf.minimum(task_start + chunk_size, total_tasks)
+            task_outputs = self.forward_task_batch(
+                support_x_batch=support_x_batch[task_start:task_end],
+                support_y_batch=support_y_batch[task_start:task_end],
+                query_x_batch=query_x_batch[task_start:task_end],
+                query_y_batch=query_y_batch[task_start:task_end],
                 training=False,
                 return_similarity_scores=True,
             )
-            logits = task_outputs["logits"]
-            similarity_scores = task_outputs["similarity_scores"]
-            loss = tf.cast(task_outputs["loss"], tf.float32)
-            task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
-            contrastive_loss = tf.cast(task_outputs["contrastive_loss"], tf.float32)
-            triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
-
-            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
-            intra_class_scores = tf.gather_nd(
-                similarity_scores,
-                tf.stack([row_indices, query_y], axis=1),
+            (
+                chunk_losses,
+                chunk_task_losses,
+                chunk_contrastive_losses,
+                chunk_triplet_losses,
+                chunk_y_true,
+                chunk_y_pred,
+                chunk_intra_scores,
+                chunk_inter_scores,
+            ) = self.eval_metric_tensors_from_chunk_outputs(
+                task_outputs,
+                query_y_batch[task_start:task_end],
             )
-            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
-
             return (
-                loss,
-                task_loss,
-                contrastive_loss,
-                triplet_loss,
-                query_y,
-                pred,
-                intra_class_scores,
-                inter_class_scores,
+                task_end,
+                chunk_index + 1,
+                losses.write(chunk_index, chunk_losses),
+                task_losses.write(chunk_index, chunk_task_losses),
+                contrastive_losses.write(chunk_index, chunk_contrastive_losses),
+                triplet_losses.write(chunk_index, chunk_triplet_losses),
+                y_true.write(chunk_index, chunk_y_true),
+                y_pred.write(chunk_index, chunk_y_pred),
+                intra_scores.write(chunk_index, chunk_intra_scores),
+                inter_scores.write(chunk_index, chunk_inter_scores),
             )
 
-        return tf.map_fn(
-            _per_task_eval,
-            (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
-            fn_output_signature=(
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(None,), dtype=tf.int32),
-                tf.TensorSpec(shape=(None,), dtype=tf.int32),
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+        (
+            _,
+            _,
+            losses,
+            task_losses,
+            contrastive_losses,
+            triplet_losses,
+            y_true,
+            y_pred,
+            intra_scores,
+            inter_scores,
+        ) = tf.while_loop(
+            _condition,
+            _body,
+            loop_vars=(
+                tf.constant(0, dtype=tf.int32),
+                tf.constant(0, dtype=tf.int32),
+                losses,
+                task_losses,
+                contrastive_losses,
+                triplet_losses,
+                y_true,
+                y_pred,
+                intra_scores,
+                inter_scores,
             ),
-            parallel_iterations=1,
+        )
+
+        return (
+            losses.concat(),
+            task_losses.concat(),
+            contrastive_losses.concat(),
+            triplet_losses.concat(),
+            y_true.concat(),
+            y_pred.concat(),
+            intra_scores.concat(),
+            inter_scores.concat(),
         )
 
     def _train_batch_step_compiled_impl(
@@ -671,64 +801,104 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Compiled optimizer update over one batch of episodic tasks."""
+        """Compiled optimizer update over vectorized chunks of episodic tasks."""
         with tf.GradientTape() as tape:
+            losses = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, infer_shape=False
+            )
+            task_losses = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, infer_shape=False
+            )
+            accuracies = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, infer_shape=False
+            )
+            contrastive_losses = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, infer_shape=False
+            )
+            triplet_losses = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, infer_shape=False
+            )
 
-            def _per_task_step(
-                inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor],
-            ):
-                support_x, support_y, query_x, query_y = inputs
-                support_x = self.augment_training_inputs(support_x)
-                query_x = self.augment_training_inputs(query_x)
+            total_tasks = tf.shape(support_x_batch)[0]
+            chunk_size = tf.minimum(
+                tf.constant(max(1, int(self.embedding_batch_size)), dtype=tf.int32),
+                total_tasks,
+            )
 
-                task_outputs = self.forward_task(
-                    support_x=support_x,
-                    support_y=support_y,
-                    query_x=query_x,
-                    query_y=query_y,
-                    training=True,
-                )
-                logits = task_outputs["logits"]
-                loss = tf.cast(task_outputs["loss"], tf.float32)
-                task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
-                contrastive_loss = tf.cast(
-                    task_outputs["contrastive_loss"],
-                    tf.float32,
-                )
-                triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
-                predictions = tf.argmax(logits, axis=1, output_type=tf.int64)
-                accuracy = tf.reduce_mean(
-                    tf.cast(
-                        tf.equal(predictions, tf.cast(query_y, tf.int64)),
-                        tf.float32,
-                    )
-                )
-                return loss, task_loss, accuracy, contrastive_loss, triplet_loss
+            def _condition(task_start, *_):
+                return task_start < total_tasks
 
-            (
+            def _body(
+                task_start,
+                chunk_index,
                 losses,
                 task_losses,
                 accuracies,
                 contrastive_losses,
                 triplet_losses,
-            ) = tf.map_fn(
-                _per_task_step,
-                (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
-                fn_output_signature=(
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
+            ):
+                task_end = tf.minimum(task_start + chunk_size, total_tasks)
+                support_x_chunk = self.augment_training_inputs(
+                    support_x_batch[task_start:task_end]
+                )
+                query_x_chunk = self.augment_training_inputs(
+                    query_x_batch[task_start:task_end]
+                )
+                query_y_chunk = query_y_batch[task_start:task_end]
+                task_outputs = self.forward_task_batch(
+                    support_x_batch=support_x_chunk,
+                    support_y_batch=support_y_batch[task_start:task_end],
+                    query_x_batch=query_x_chunk,
+                    query_y_batch=query_y_chunk,
+                    training=True,
+                )
+                (
+                    chunk_losses,
+                    chunk_task_losses,
+                    chunk_accuracies,
+                    chunk_contrastive_losses,
+                    chunk_triplet_losses,
+                ) = self.train_metric_tensors_from_chunk_outputs(
+                    task_outputs,
+                    query_y_chunk,
+                )
+                return (
+                    task_end,
+                    chunk_index + 1,
+                    losses.write(chunk_index, chunk_losses),
+                    task_losses.write(chunk_index, chunk_task_losses),
+                    accuracies.write(chunk_index, chunk_accuracies),
+                    contrastive_losses.write(chunk_index, chunk_contrastive_losses),
+                    triplet_losses.write(chunk_index, chunk_triplet_losses),
+                )
+
+            (
+                _,
+                _,
+                losses,
+                task_losses,
+                accuracies,
+                contrastive_losses,
+                triplet_losses,
+            ) = tf.while_loop(
+                _condition,
+                _body,
+                loop_vars=(
+                    tf.constant(0, dtype=tf.int32),
+                    tf.constant(0, dtype=tf.int32),
+                    losses,
+                    task_losses,
+                    accuracies,
+                    contrastive_losses,
+                    triplet_losses,
                 ),
-                parallel_iterations=1,
             )
 
-            batch_loss = tf.reduce_mean(losses)
-            batch_task_loss = tf.reduce_mean(task_losses)
-            batch_acc = tf.reduce_mean(accuracies)
-            batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
-            batch_triplet_loss = tf.reduce_mean(triplet_losses)
+            batch_loss = tf.reduce_mean(losses.concat())
+            batch_task_loss = tf.reduce_mean(task_losses.concat())
+            batch_acc = tf.reduce_mean(accuracies.concat())
+            batch_contrastive_loss = tf.reduce_mean(contrastive_losses.concat())
+            batch_triplet_loss = tf.reduce_mean(triplet_losses.concat())
 
         batch_loss = self.apply_gradients(batch_loss, tape)
         return (
@@ -959,13 +1129,6 @@ class EpisodicLearningEngine:
         query_y_batch: tf.Tensor,
     ):
         """Run compiled train step, with eager fallback if compilation fails."""
-        if self.embedding_batch_size > 1:
-            return self.train_batch_step_eager_tensors(
-                support_x_batch=support_x_batch,
-                support_y_batch=support_y_batch,
-                query_x_batch=query_x_batch,
-                query_y_batch=query_y_batch,
-            )
         if self._compiled_train_batch_step is not None:
             try:
                 return self._compiled_train_batch_step(
@@ -1065,13 +1228,6 @@ class EpisodicLearningEngine:
         query_y_batch: tf.Tensor,
     ):
         """Run compiled task-batch eval, with eager fallback if compilation fails."""
-        if self.embedding_batch_size > 1:
-            return self.eval_task_batch_step_eager_tensors(
-                support_x_batch=support_x_batch,
-                support_y_batch=support_y_batch,
-                query_x_batch=query_x_batch,
-                query_y_batch=query_y_batch,
-            )
         if self._compiled_eval_batch_step is not None:
             try:
                 (

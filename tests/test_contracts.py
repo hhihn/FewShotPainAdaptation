@@ -276,6 +276,78 @@ class ContractTests(unittest.TestCase):
         center_gradient = tape.gradient(loss, learner.model.triplet_centers)
         self.assertIsNotNone(center_gradient)
 
+    def test_batched_triplet_center_loss_matches_per_task_loss(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.triplet_loss_weight = 1.0
+        learner.triplet_margin = 1.0
+        learner.triplet_mining_strategy = "triplet_center"
+        learner.triplet_center_gradient_clip_norm = 0.01
+        learner.engine = EpisodicLearningEngine(learner)
+        learner.model = MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=3,
+            embedding_dim=2,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
+        )
+        learner.model.triplet_centers.assign(
+            tf.constant(
+                [
+                    [0.0, 0.0],
+                    [3.0, 0.0],
+                    [0.0, 3.0],
+                ],
+                dtype=tf.float32,
+            )
+        )
+        embeddings_batch = tf.constant(
+            [
+                [
+                    [2.0, 0.0],
+                    [3.0, 1.0],
+                ],
+                [
+                    [0.0, 2.0],
+                    [2.0, 0.0],
+                ],
+            ],
+            dtype=tf.float32,
+        )
+        labels_batch = tf.constant([[0, 1], [2, 1]], dtype=tf.int32)
+
+        batched = learner.engine.compute_triplet_center_loss_batch(
+            embeddings_batch,
+            labels_batch,
+        )
+        per_task = tf.stack(
+            [
+                learner._compute_triplet_center_loss(
+                    embeddings_batch[task_idx],
+                    labels_batch[task_idx],
+                )
+                for task_idx in range(2)
+            ],
+            axis=0,
+        )
+
+        np.testing.assert_allclose(batched.numpy(), per_task.numpy(), atol=1e-6)
+        with tf.GradientTape() as tape:
+            loss = tf.reduce_mean(
+                learner.engine.compute_triplet_center_loss_batch(
+                    embeddings_batch,
+                    labels_batch,
+                )
+            )
+        center_gradient = tape.gradient(loss, learner.model.triplet_centers)
+        self.assertIsNotNone(center_gradient)
+
     def test_embedding_batch_size_must_be_positive(self):
         self.assertEqual(
             PainDatasetConfig(embedding_batch_size=2).embedding_batch_size,

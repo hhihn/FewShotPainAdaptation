@@ -31,7 +31,12 @@ def _write_tiny_dataset(data_dir: Path) -> None:
     np.save(data_dir / "subjects.npy", np.array(subject_rows, dtype=np.int32))
 
 
-def _make_tiny_learner(data_dir: Path) -> FewShotPainLearner:
+def _make_tiny_learner(
+    data_dir: Path,
+    *,
+    train_batch_size: int = 1,
+    embedding_batch_size: int = 1,
+) -> FewShotPainLearner:
     config = PainDatasetConfig(
         dataset_source="painmonit",
         sequence_length=32,
@@ -39,8 +44,8 @@ def _make_tiny_learner(data_dir: Path) -> FewShotPainLearner:
         task_class_ids=(0, 1),
         k_shot=1,
         q_query=1,
-        train_batch_size=1,
-        embedding_batch_size=1,
+        train_batch_size=train_batch_size,
+        embedding_batch_size=embedding_batch_size,
         num_epochs=1,
         tasks_per_epoch=1,
         val_tasks=1,
@@ -68,14 +73,20 @@ def _make_tiny_learner(data_dir: Path) -> FewShotPainLearner:
     )
 
 
-def _episode_batch(learner: FewShotPainLearner):
+def _episode_batch(learner: FewShotPainLearner, task_count: int = 1):
     rng = np.random.default_rng(2026)
     class_ids = np.arange(learner.config.n_way, dtype=np.int32)
-    support_y = np.repeat(class_ids, learner.config.k_shot)[np.newaxis, :]
-    query_y = np.repeat(class_ids, learner.config.q_query)[np.newaxis, :]
+    support_y = np.tile(
+        np.repeat(class_ids, learner.config.k_shot)[np.newaxis, :],
+        (task_count, 1),
+    )
+    query_y = np.tile(
+        np.repeat(class_ids, learner.config.q_query)[np.newaxis, :],
+        (task_count, 1),
+    )
     support_x = rng.normal(
         size=(
-            1,
+            task_count,
             learner.support_size,
             learner.sequence_length,
             learner.num_sensors,
@@ -83,7 +94,7 @@ def _episode_batch(learner: FewShotPainLearner):
     ).astype(np.float32)
     query_x = rng.normal(
         size=(
-            1,
+            task_count,
             learner.query_size,
             learner.sequence_length,
             learner.num_sensors,
@@ -151,6 +162,27 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
             engine._compiled_train_batch_step.experimental_get_tracing_count(),
             tracing_count,
         )
+
+    def test_compiled_steps_support_multi_task_embedding_batches(self):
+        learner = _make_tiny_learner(
+            self.data_dir,
+            train_batch_size=2,
+            embedding_batch_size=2,
+        )
+        engine = learner.engine
+        batch = _episode_batch(learner, task_count=2)
+
+        eval_outputs = engine.eval_task_batch_step_tensors(*batch)
+        self.assertIsNotNone(engine._compiled_eval_batch_step)
+        self.assertEqual(int(eval_outputs[0].shape[0]), 2)
+        self.assertEqual(int(eval_outputs[4].shape[0]), 2 * learner.query_size)
+        for tensor in eval_outputs[:4] + eval_outputs[6:]:
+            self.assertTrue(np.all(np.isfinite(tensor.numpy())))
+
+        train_outputs = engine.train_batch_step_tensors(*batch)
+        self.assertIsNotNone(engine._compiled_train_batch_step)
+        for tensor in train_outputs:
+            self.assertTrue(np.all(np.isfinite(tensor.numpy())))
 
 
 if __name__ == "__main__":
