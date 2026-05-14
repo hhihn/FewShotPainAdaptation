@@ -178,6 +178,41 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "eegnet_l2_weight must be non-negative"):
             PainDatasetConfig(dataset_source="painmonit", eegnet_l2_weight=-1e-4)
 
+    def test_can_config_validation(self):
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            classifier_mode="prototype",
+        )
+
+        self.assertEqual(config.attention_mode, "can")
+        self.assertEqual(config.can_attention_temperature, 1.0)
+        self.assertEqual(config.can_meta_hidden_dim, 32)
+        self.assertEqual(config.can_local_loss_weight, 1.0)
+        self.assertEqual(config.can_global_loss_weight, 0.1)
+
+        with self.assertRaisesRegex(ValueError, "requires classifier_mode"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                classifier_mode="soft_knn",
+            )
+        with self.assertRaisesRegex(ValueError, "at least two task classes"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0,),
+                attention_mode="can",
+            )
+        with self.assertRaisesRegex(ValueError, "can_attention_temperature"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                can_attention_temperature=0.0,
+            )
+
     def test_eegnet_encoder_outputs_compact_joint_embeddings(self):
         encoder = EEGNetStyleEncoder(
             sequence_length=1152,
@@ -189,6 +224,183 @@ class ContractTests(unittest.TestCase):
 
         self.assertEqual(embeddings.shape, (2, 64))
         self.assertLess(encoder.count_params(), 100_000)
+
+    def test_eegnet_encoder_extracts_temporal_feature_map(self):
+        encoder = EEGNetStyleEncoder(
+            sequence_length=32,
+            num_sensors=3,
+            embedding_dim=8,
+            temporal_filters=2,
+            depth_multiplier=1,
+            separable_filters=4,
+            temporal_kernel_size=8,
+            separable_kernel_size=4,
+            pool_size_1=2,
+            pool_size_2=2,
+            dropout_rate=0.0,
+        )
+
+        feature_map = encoder.extract_feature_map(
+            tf.zeros((2, 32, 3)),
+            training=False,
+        )
+        embeddings = encoder.embed_feature_map(feature_map, training=False)
+
+        self.assertEqual(feature_map.shape, (2, 8, 4))
+        self.assertEqual(embeddings.shape, (2, 8))
+
+    def _small_can_model(self) -> MultimodalPrototypicalNetwork:
+        return MultimodalPrototypicalNetwork(
+            sequence_length=32,
+            num_sensors=3,
+            num_classes=2,
+            embedding_dim=4,
+            eegnet_temporal_filters=2,
+            eegnet_depth_multiplier=1,
+            eegnet_separable_filters=4,
+            eegnet_temporal_kernel_size=8,
+            eegnet_separable_kernel_size=4,
+            eegnet_pool_size_1=2,
+            eegnet_pool_size_2=2,
+            eegnet_dropout_rate=0.0,
+            attention_mode="can",
+            can_meta_hidden_dim=4,
+            can_transductive_iterations=2,
+        )
+
+    def _small_episode_batch(self):
+        rng = np.random.default_rng(2718)
+        support_x = tf.constant(rng.normal(size=(2, 4, 32, 3)), dtype=tf.float32)
+        query_x = tf.constant(rng.normal(size=(2, 4, 32, 3)), dtype=tf.float32)
+        support_y = tf.constant([[0, 0, 1, 1], [1, 0, 1, 0]], dtype=tf.int32)
+        query_y = tf.constant([[0, 0, 1, 1], [1, 1, 0, 0]], dtype=tf.int32)
+        return support_x, support_y, query_x, query_y
+
+    def test_can_forward_outputs_attention_and_auxiliary_logits(self):
+        model = self._small_can_model()
+        support_x, support_y, query_x, _ = self._small_episode_batch()
+
+        outputs = model.forward_episode_batch(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+
+        self.assertEqual(outputs["logits"].shape, (2, 4, 2))
+        self.assertEqual(outputs["can_global_logits"].shape, (2, 4, 2))
+        self.assertEqual(outputs["can_local_logits"].shape, (2, 4, 8, 2))
+        self.assertEqual(outputs["can_proto_attention"].shape, (2, 4, 2, 8))
+        self.assertEqual(outputs["can_query_attention"].shape, (2, 4, 2, 8))
+        np.testing.assert_allclose(
+            tf.reduce_sum(outputs["can_proto_attention"], axis=-1).numpy(),
+            np.ones((2, 4, 2)),
+            atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            tf.reduce_sum(outputs["can_query_attention"], axis=-1).numpy(),
+            np.ones((2, 4, 2)),
+            atol=1e-5,
+        )
+
+    def test_can_batched_forward_matches_per_task_forward(self):
+        model = self._small_can_model()
+        support_x, support_y, query_x, _ = self._small_episode_batch()
+
+        batched = model.forward_episode_batch(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+        per_task_logits = []
+        per_task_local_logits = []
+        for task_idx in range(int(support_x.shape[0])):
+            single = model.forward_episode(
+                support_x=support_x[task_idx],
+                support_y=support_y[task_idx],
+                query_x=query_x[task_idx],
+                training=False,
+            )
+            per_task_logits.append(single["logits"])
+            per_task_local_logits.append(single["can_local_logits"])
+
+        np.testing.assert_allclose(
+            batched["logits"].numpy(),
+            tf.stack(per_task_logits, axis=0).numpy(),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            batched["can_local_logits"].numpy(),
+            tf.stack(per_task_local_logits, axis=0).numpy(),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+    def test_can_gradients_reach_cam_and_global_classifier_variables(self):
+        model = self._small_can_model()
+        support_x, support_y, query_x, query_y = self._small_episode_batch()
+
+        with tf.GradientTape() as tape:
+            outputs = model.forward_episode_batch(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                training=True,
+            )
+            task_loss = tf.reduce_mean(
+                tf.keras.losses.sparse_categorical_crossentropy(
+                    query_y,
+                    outputs["logits"],
+                    from_logits=True,
+                )
+            )
+            local_labels = tf.tile(
+                query_y[:, :, tf.newaxis],
+                [1, 1, int(outputs["can_local_logits"].shape[2])],
+            )
+            local_loss = tf.reduce_mean(
+                tf.keras.losses.sparse_categorical_crossentropy(
+                    local_labels,
+                    outputs["can_local_logits"],
+                    from_logits=True,
+                )
+            )
+            global_loss = tf.reduce_mean(
+                tf.keras.losses.sparse_categorical_crossentropy(
+                    query_y,
+                    outputs["can_global_logits"],
+                    from_logits=True,
+                )
+            )
+            loss = task_loss + local_loss + 0.1 * global_loss
+
+        variables = model.cross_attention.trainable_variables + (
+            model.global_classifier.trainable_variables
+        )
+        gradients = tape.gradient(loss, variables)
+        cam_gradients = gradients[: len(model.cross_attention.trainable_variables)]
+        global_gradients = gradients[len(model.cross_attention.trainable_variables) :]
+
+        self.assertTrue(any(gradient is not None for gradient in cam_gradients))
+        self.assertTrue(any(gradient is not None for gradient in global_gradients))
+
+    def test_can_transductive_outputs_are_reported_separately(self):
+        model = self._small_can_model()
+        support_x, support_y, query_x, _ = self._small_episode_batch()
+
+        outputs = model.forward_episode_batch_transductive(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+
+        self.assertEqual(outputs["logits"].shape, (2, 4, 2))
+        self.assertEqual(outputs["transductive_logits"].shape, (2, 4, 2))
+        self.assertEqual(outputs["transductive_similarity_scores"].shape, (2, 4, 2))
+        self.assertEqual(outputs["transductive_selected_mask"].shape, (2, 4))
 
     def test_batch_hard_triplet_loss_uses_hardest_positive_and_negative(self):
         learner = FewShotPainLearner.__new__(FewShotPainLearner)

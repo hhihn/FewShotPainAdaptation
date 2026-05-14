@@ -1,5 +1,6 @@
 from typing import List, Any
 from keras import Model
+import tensorflow as tf
 from tensorflow import keras
 
 from utils.logger import setup_logger
@@ -111,8 +112,8 @@ class EEGNetStyleEncoder(keras.Model):
             self.embedding_dim,
         )
 
-    def call(self, x, training=False):
-        """Encode [batch, time, sensors] windows into [batch, embedding_dim]."""
+    def _feature_map_4d(self, x, training=False):
+        """Return post-separable EEGNet activations as [batch, time, 1, channels]."""
         x = self.reshape(x)
         x = self.temporal_conv(x)
         x = self.temporal_norm(x, training=training)
@@ -129,10 +130,27 @@ class EEGNetStyleEncoder(keras.Model):
         x = self.separable_activation(x)
         x = self.pool_2(x)
         x = self.dropout_2(x, training=training)
+        return x
 
+    def extract_feature_map(self, x, training=False):
+        """Return post-sensor-mixing temporal features as [batch, time, channels]."""
+        return self._feature_map_4d(x, training=training)[:, :, 0, :]
+
+    def embed_feature_map(self, feature_map, training=False):
+        """Pool/project a temporal feature map into the configured embedding space."""
+        x = feature_map
+        if len(x.shape) == 3:
+            x = x[:, :, tf.newaxis, :]
         x = self.global_pool(x)
         x = self.embedding_dense(x)
         return self.embedding_norm(x, training=training)
+
+    def call(self, x, training=False):
+        """Encode [batch, time, sensors] windows into [batch, embedding_dim]."""
+        return self.embed_feature_map(
+            self._feature_map_4d(x, training=training),
+            training=training,
+        )
 
     def get_config(self):
         """Return model configuration for serialization."""

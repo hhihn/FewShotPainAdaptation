@@ -175,8 +175,8 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
         eval_outputs = engine.eval_task_batch_step_tensors(*batch)
         self.assertIsNotNone(engine._compiled_eval_batch_step)
         self.assertEqual(int(eval_outputs[0].shape[0]), 2)
-        self.assertEqual(int(eval_outputs[4].shape[0]), 2 * learner.query_size)
-        for tensor in eval_outputs[:4] + eval_outputs[6:]:
+        self.assertEqual(int(eval_outputs[6].shape[0]), 2 * learner.query_size)
+        for tensor in eval_outputs:
             self.assertTrue(np.all(np.isfinite(tensor.numpy())))
 
         train_outputs = engine.train_batch_step_tensors(*batch)

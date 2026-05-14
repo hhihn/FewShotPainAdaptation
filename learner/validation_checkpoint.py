@@ -14,6 +14,8 @@ VALIDATION_CHECKPOINT_MINIMIZE_METRICS = {
     "task_loss",
     "contrastive_loss",
     "triplet_loss",
+    "can_local_loss",
+    "can_global_loss",
     "inter_class_similarity",
 }
 

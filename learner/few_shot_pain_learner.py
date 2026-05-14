@@ -52,6 +52,9 @@ class FewShotPainLearner:
         self.triplet_center_gradient_clip_norm = float(
             config.triplet_center_gradient_clip_norm
         )
+        self.attention_mode = str(config.attention_mode)
+        self.can_local_loss_weight = float(config.can_local_loss_weight)
+        self.can_global_loss_weight = float(config.can_global_loss_weight)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
         self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
         if self.gradient_clip_norm is not None:
@@ -137,6 +140,14 @@ class FewShotPainLearner:
             "q_query": self.config.q_query,
             "task_normalize_mode": self.config.task_normalize_mode,
             "classifier_mode": self.config.classifier_mode,
+            "attention_mode": self.config.attention_mode,
+            "can_attention_temperature": self.config.can_attention_temperature,
+            "can_meta_hidden_dim": self.config.can_meta_hidden_dim,
+            "can_local_loss_weight": self.config.can_local_loss_weight,
+            "can_global_loss_weight": self.config.can_global_loss_weight,
+            "can_transductive_iterations": self.config.can_transductive_iterations,
+            "can_transductive_top_k_per_class": self.config.can_transductive_top_k_per_class,
+            "can_transductive_min_confidence": self.config.can_transductive_min_confidence,
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
@@ -273,90 +284,13 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-    ]:
+    ) -> tuple[tf.Tensor, ...]:
         """Compiled evaluation over a batch of tasks without optimizer updates."""
-        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
-
-        def _per_task_eval(inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]):
-            support_x, support_y, query_x, query_y = inputs
-            task_outputs = self._forward_task(
-                support_x=support_x,
-                support_y=support_y,
-                query_x=query_x,
-                query_y=query_y,
-                training=False,
-                return_similarity_scores=True,
-            )
-            logits = task_outputs["logits"]
-            similarity_scores = task_outputs["similarity_scores"]
-            loss = tf.cast(task_outputs["loss"], tf.float32)
-            task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
-            contrastive_loss = tf.cast(task_outputs["contrastive_loss"], tf.float32)
-            triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
-
-            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
-            intra_class_scores = tf.gather_nd(
-                similarity_scores,
-                tf.stack([row_indices, query_y], axis=1),
-            )
-            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-            inter_class_scores = tf.boolean_mask(similarity_scores, inter_class_mask)
-
-            return (
-                loss,
-                task_loss,
-                contrastive_loss,
-                triplet_loss,
-                query_y,
-                pred,
-                intra_class_scores,
-                inter_class_scores,
-            )
-
-        (
-            losses,
-            task_losses,
-            contrastive_losses,
-            triplet_losses,
-            y_true_batch,
-            y_pred_batch,
-            intra_class_scores_batch,
-            inter_class_scores_batch,
-        ) = tf.map_fn(
-            _per_task_eval,
-            (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
-            fn_output_signature=(
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(), dtype=tf.float32),
-                tf.TensorSpec(shape=(None,), dtype=tf.int32),
-                tf.TensorSpec(shape=(None,), dtype=tf.int32),
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),
-            ),
-            parallel_iterations=1,
-        )
-
-        return (
-            tf.reshape(losses, [-1]),
-            tf.reshape(task_losses, [-1]),
-            tf.reshape(contrastive_losses, [-1]),
-            tf.reshape(triplet_losses, [-1]),
-            tf.reshape(y_true_batch, [-1]),
-            tf.reshape(y_pred_batch, [-1]),
-            tf.reshape(intra_class_scores_batch, [-1]),
-            tf.reshape(inter_class_scores_batch, [-1]),
+        return self.engine._eval_task_batch_step_compiled_impl(
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
         )
 
     def _train_batch_step_compiled_impl(
@@ -365,73 +299,13 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, ...]:
         """Compiled optimizer update over one batch of episodic tasks."""
-        with tf.GradientTape() as tape:
-
-            def _per_task_step(
-                inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor],
-            ):
-                support_x, support_y, query_x, query_y = inputs
-                support_x = self._augment_training_inputs(support_x)
-                query_x = self._augment_training_inputs(query_x)
-
-                task_outputs = self._forward_task(
-                    support_x=support_x,
-                    support_y=support_y,
-                    query_x=query_x,
-                    query_y=query_y,
-                    training=True,
-                )
-                logits = task_outputs["logits"]
-                loss = tf.cast(task_outputs["loss"], tf.float32)
-                task_loss = tf.cast(task_outputs["task_loss"], tf.float32)
-                contrastive_loss = tf.cast(
-                    task_outputs["contrastive_loss"],
-                    tf.float32,
-                )
-                triplet_loss = tf.cast(task_outputs["triplet_loss"], tf.float32)
-                predictions = tf.argmax(logits, axis=1, output_type=tf.int64)
-                accuracy = tf.reduce_mean(
-                    tf.cast(
-                        tf.equal(predictions, tf.cast(query_y, tf.int64)),
-                        tf.float32,
-                    )
-                )
-                return loss, task_loss, accuracy, contrastive_loss, triplet_loss
-
-            (
-                losses,
-                task_losses,
-                accuracies,
-                contrastive_losses,
-                triplet_losses,
-            ) = tf.map_fn(
-                _per_task_step,
-                (support_x_batch, support_y_batch, query_x_batch, query_y_batch),
-                fn_output_signature=(
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.float32),
-                ),
-                parallel_iterations=1,
-            )
-
-            batch_loss = tf.reduce_mean(losses)
-            batch_task_loss = tf.reduce_mean(task_losses)
-            batch_acc = tf.reduce_mean(accuracies)
-            batch_contrastive_loss = tf.reduce_mean(contrastive_losses)
-            batch_triplet_loss = tf.reduce_mean(triplet_losses)
-
-        batch_loss = self._apply_gradients(batch_loss, tape)
-        return (
-            batch_loss,
-            batch_task_loss,
-            batch_acc,
-            batch_contrastive_loss,
-            batch_triplet_loss,
+        return self.engine._train_batch_step_compiled_impl(
+            support_x_batch,
+            support_y_batch,
+            query_x_batch,
+            query_y_batch,
         )
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
@@ -600,42 +474,11 @@ class FewShotPainLearner:
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
         """Forward one eager task chunk and normalize outputs to task-major tensors."""
-        task_count = int(tf.shape(support_x_chunk)[0].numpy())
-        if task_count == 1:
-            task_outputs = self._forward_task(
-                support_x=support_x_chunk[0],
-                support_y=support_y_chunk[0],
-                query_x=query_x_chunk[0],
-                query_y=query_y_chunk[0],
-                training=training,
-                return_similarity_scores=return_similarity_scores,
-            )
-            outputs = {
-                "logits": task_outputs["logits"][tf.newaxis, ...],
-                "losses": tf.reshape(task_outputs["loss"], [1]),
-                "task_losses": tf.reshape(task_outputs["task_loss"], [1]),
-                "contrastive_losses": tf.reshape(
-                    task_outputs["contrastive_loss"], [1]
-                ),
-                "triplet_losses": tf.reshape(task_outputs["triplet_loss"], [1]),
-                "model_aux_loss": task_outputs["model_aux_loss"],
-                "support_embeddings": task_outputs["support_embeddings"][
-                    tf.newaxis, ...
-                ],
-                "query_embeddings": task_outputs["query_embeddings"][tf.newaxis, ...],
-                "prototypes": task_outputs["prototypes"][tf.newaxis, ...],
-            }
-            if return_similarity_scores:
-                outputs["similarity_scores"] = task_outputs["similarity_scores"][
-                    tf.newaxis, ...
-                ]
-            return outputs
-
-        return self._forward_task_batch(
-            support_x_batch=support_x_chunk,
-            support_y_batch=support_y_chunk,
-            query_x_batch=query_x_chunk,
-            query_y_batch=query_y_chunk,
+        return self.engine.forward_task_chunk(
+            support_x_chunk=support_x_chunk,
+            support_y_chunk=support_y_chunk,
+            query_x_chunk=query_x_chunk,
+            query_y_chunk=query_y_chunk,
             training=training,
             return_similarity_scores=return_similarity_scores,
         )
@@ -649,20 +492,11 @@ class FewShotPainLearner:
     def _train_metric_tensors_from_chunk_outputs(
         chunk_outputs: dict[str, tf.Tensor],
         query_y_chunk: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, ...]:
         """Return per-task train losses and accuracies for one normalized chunk."""
-        logits = chunk_outputs["logits"]
-        predictions = tf.argmax(logits, axis=2, output_type=tf.int32)
-        accuracies = tf.reduce_mean(
-            tf.cast(tf.equal(predictions, query_y_chunk), tf.float32),
-            axis=1,
-        )
-        return (
-            tf.reshape(tf.cast(chunk_outputs["losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(chunk_outputs["task_losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(accuracies, tf.float32), [-1]),
-            tf.reshape(tf.cast(chunk_outputs["contrastive_losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(chunk_outputs["triplet_losses"], tf.float32), [-1]),
+        return EpisodicLearningEngine.train_metric_tensors_from_chunk_outputs(
+            chunk_outputs,
+            query_y_chunk,
         )
 
     def _split_batched_similarity_scores(
@@ -698,32 +532,11 @@ class FewShotPainLearner:
         self,
         chunk_outputs: dict[str, tf.Tensor],
         query_y_chunk: tf.Tensor,
-    ) -> tuple[
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-    ]:
+    ) -> tuple[tf.Tensor, ...]:
         """Return flattened eval losses, labels, predictions, and similarity groups."""
-        logits = chunk_outputs["logits"]
-        pred = tf.argmax(logits, axis=2, output_type=tf.int32)
-        intra_scores, inter_scores = self._split_batched_similarity_scores(
-            chunk_outputs["similarity_scores"],
+        return self.engine.eval_metric_tensors_from_chunk_outputs(
+            chunk_outputs,
             query_y_chunk,
-        )
-        return (
-            tf.reshape(tf.cast(chunk_outputs["losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(chunk_outputs["task_losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(chunk_outputs["contrastive_losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(chunk_outputs["triplet_losses"], tf.float32), [-1]),
-            tf.reshape(tf.cast(query_y_chunk, tf.int32), [-1]),
-            tf.reshape(pred, [-1]),
-            tf.reshape(intra_scores, [-1]),
-            tf.reshape(inter_scores, [-1]),
         )
 
     def _train_batch_step_eager_tensors(
@@ -732,65 +545,13 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, ...]:
         """Eager fallback for one optimizer update using a batch of tasks."""
-        with tf.GradientTape() as tape:
-            losses = []
-            task_losses = []
-            accuracies = []
-            contrastive_losses = []
-            triplet_losses = []
-            for (
-                support_x_chunk,
-                support_y_chunk,
-                query_x_chunk,
-                query_y_chunk,
-            ) in self._iter_task_tensor_chunks(
-                support_x_batch,
-                support_y_batch,
-                query_x_batch,
-                query_y_batch,
-            ):
-                support_x_chunk, query_x_chunk = self._augment_training_task_chunk(
-                    support_x_chunk,
-                    query_x_chunk,
-                )
-                chunk_outputs = self._forward_task_chunk(
-                    support_x_chunk=support_x_chunk,
-                    support_y_chunk=support_y_chunk,
-                    query_x_chunk=query_x_chunk,
-                    query_y_chunk=query_y_chunk,
-                    training=True,
-                )
-                (
-                    chunk_losses,
-                    chunk_task_losses,
-                    chunk_accuracies,
-                    chunk_contrastive_losses,
-                    chunk_triplet_losses,
-                ) = self._train_metric_tensors_from_chunk_outputs(
-                    chunk_outputs,
-                    query_y_chunk,
-                )
-                losses.append(chunk_losses)
-                task_losses.append(chunk_task_losses)
-                accuracies.append(chunk_accuracies)
-                contrastive_losses.append(chunk_contrastive_losses)
-                triplet_losses.append(chunk_triplet_losses)
-
-            batch_loss = self._mean_concat(losses)
-            batch_task_loss = self._mean_concat(task_losses)
-            batch_acc = self._mean_concat(accuracies)
-            batch_contrastive_loss = self._mean_concat(contrastive_losses)
-            batch_triplet_loss = self._mean_concat(triplet_losses)
-
-        batch_loss = self._apply_gradients(batch_loss, tape)
-        return (
-            batch_loss,
-            batch_task_loss,
-            batch_acc,
-            batch_contrastive_loss,
-            batch_triplet_loss,
+        return self.engine.train_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
         )
 
     def _train_batch_step_tensors(
@@ -799,7 +560,7 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, ...]:
         """Run compiled train step, with eager fallback if compilation fails."""
         return self.engine.train_batch_step_tensors(
             support_x_batch=support_x_batch,
@@ -814,76 +575,13 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-    ]:
+    ) -> tuple[tf.Tensor, ...]:
         """Eager fallback for task-batch evaluation without optimizer updates."""
-        losses = []
-        task_losses = []
-        contrastive_losses = []
-        triplet_losses = []
-        true_labels = []
-        pred_labels = []
-        intra_scores = []
-        inter_scores = []
-
-        for (
-            support_x_chunk,
-            support_y_chunk,
-            query_x_chunk,
-            query_y_chunk,
-        ) in self._iter_task_tensor_chunks(
-            support_x_batch,
-            support_y_batch,
-            query_x_batch,
-            query_y_batch,
-        ):
-            task_outputs = self._forward_task_chunk(
-                support_x_chunk=support_x_chunk,
-                support_y_chunk=support_y_chunk,
-                query_x_chunk=query_x_chunk,
-                query_y_chunk=query_y_chunk,
-                training=False,
-                return_similarity_scores=True,
-            )
-            (
-                chunk_losses,
-                chunk_task_losses,
-                chunk_contrastive_losses,
-                chunk_triplet_losses,
-                chunk_true_labels,
-                chunk_pred_labels,
-                chunk_intra_scores,
-                chunk_inter_scores,
-            ) = self._eval_metric_tensors_from_chunk_outputs(
-                task_outputs,
-                query_y_chunk,
-            )
-            losses.append(chunk_losses)
-            task_losses.append(chunk_task_losses)
-            contrastive_losses.append(chunk_contrastive_losses)
-            triplet_losses.append(chunk_triplet_losses)
-            true_labels.append(chunk_true_labels)
-            pred_labels.append(chunk_pred_labels)
-            intra_scores.append(chunk_intra_scores)
-            inter_scores.append(chunk_inter_scores)
-
-        return (
-            tf.concat(losses, axis=0),
-            tf.concat(task_losses, axis=0),
-            tf.concat(contrastive_losses, axis=0),
-            tf.concat(triplet_losses, axis=0),
-            tf.concat(true_labels, axis=0),
-            tf.concat(pred_labels, axis=0),
-            tf.concat(intra_scores, axis=0),
-            tf.concat(inter_scores, axis=0),
+        return self.engine.eval_task_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
         )
 
     def _eval_task_batch_step_tensors(
@@ -892,16 +590,7 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
-    ) -> tuple[
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-        tf.Tensor,
-    ]:
+    ) -> tuple[tf.Tensor, ...]:
         """Run compiled task-batch eval, with eager fallback if compilation fails."""
         return self.engine.eval_task_batch_step_tensors(
             support_x_batch=support_x_batch,
@@ -1115,6 +804,18 @@ class FewShotPainLearner:
         self.logger.info(
             f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
         )
+        if cv_results.get("zero_shot_transductive_accuracies"):
+            self.logger.info(
+                "Average Zero-shot Transductive Accuracy: "
+                f"{np.mean(cv_results['zero_shot_transductive_accuracies']):.4f} "
+                f"(±{np.std(cv_results['zero_shot_transductive_accuracies']):.4f})"
+            )
+        if cv_results.get("k_shot_transductive_accuracies"):
+            self.logger.info(
+                "Average K-shot Transductive Accuracy: "
+                f"{np.mean(cv_results['k_shot_transductive_accuracies']):.4f} "
+                f"(±{np.std(cv_results['k_shot_transductive_accuracies']):.4f})"
+            )
         self.logger.info(
             "Average Zero-shot Similarities: "
             f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
@@ -1182,6 +883,11 @@ class FewShotPainLearner:
             "zero_shot_f1s": [],
             "zero_shot_intra_class_similarities": [],
             "zero_shot_inter_class_similarities": [],
+            "zero_shot_transductive_losses": [],
+            "zero_shot_transductive_accuracies": [],
+            "zero_shot_transductive_precisions": [],
+            "zero_shot_transductive_recalls": [],
+            "zero_shot_transductive_f1s": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
@@ -1189,6 +895,11 @@ class FewShotPainLearner:
             "k_shot_f1s": [],
             "k_shot_intra_class_similarities": [],
             "k_shot_inter_class_similarities": [],
+            "k_shot_transductive_losses": [],
+            "k_shot_transductive_accuracies": [],
+            "k_shot_transductive_precisions": [],
+            "k_shot_transductive_recalls": [],
+            "k_shot_transductive_f1s": [],
             "heldout_eval_task_sizes": [
                 {"k_shot": int(k_shot), "q_query": int(q_query)}
                 for k_shot, q_query in heldout_eval_pairs
@@ -1204,6 +915,11 @@ class FewShotPainLearner:
                     "zero_shot_f1s": [],
                     "zero_shot_intra_class_similarities": [],
                     "zero_shot_inter_class_similarities": [],
+                    "zero_shot_transductive_losses": [],
+                    "zero_shot_transductive_accuracies": [],
+                    "zero_shot_transductive_precisions": [],
+                    "zero_shot_transductive_recalls": [],
+                    "zero_shot_transductive_f1s": [],
                     "k_shot_losses": [],
                     "k_shot_accuracies": [],
                     "k_shot_precisions": [],
@@ -1211,6 +927,11 @@ class FewShotPainLearner:
                     "k_shot_f1s": [],
                     "k_shot_intra_class_similarities": [],
                     "k_shot_inter_class_similarities": [],
+                    "k_shot_transductive_losses": [],
+                    "k_shot_transductive_accuracies": [],
+                    "k_shot_transductive_precisions": [],
+                    "k_shot_transductive_recalls": [],
+                    "k_shot_transductive_f1s": [],
                 }
                 for k_shot, q_query in heldout_eval_pairs
             },
@@ -1315,25 +1036,31 @@ class FewShotPainLearner:
                     train_sampler,
                     tasks_per_epoch,
                 ):
-                    loss, task_loss, acc, contrastive_loss, triplet_loss = (
-                        self._train_batch_step_tensors(
-                            support_x_batch=tf.convert_to_tensor(
-                                support_x_np,
-                                dtype=tf.float32,
-                            ),
-                            support_y_batch=tf.convert_to_tensor(
-                                support_y_np,
-                                dtype=tf.int32,
-                            ),
-                            query_x_batch=tf.convert_to_tensor(
-                                query_x_np,
-                                dtype=tf.float32,
-                            ),
-                            query_y_batch=tf.convert_to_tensor(
-                                query_y_np,
-                                dtype=tf.int32,
-                            ),
-                        )
+                    (
+                        loss,
+                        task_loss,
+                        acc,
+                        contrastive_loss,
+                        triplet_loss,
+                        can_local_loss,
+                        can_global_loss,
+                    ) = self._train_batch_step_tensors(
+                        support_x_batch=tf.convert_to_tensor(
+                            support_x_np,
+                            dtype=tf.float32,
+                        ),
+                        support_y_batch=tf.convert_to_tensor(
+                            support_y_np,
+                            dtype=tf.int32,
+                        ),
+                        query_x_batch=tf.convert_to_tensor(
+                            query_x_np,
+                            dtype=tf.float32,
+                        ),
+                        query_y_batch=tf.convert_to_tensor(
+                            query_y_np,
+                            dtype=tf.int32,
+                        ),
                     )
                     processed_tasks += current_batch_size
                     processed_batches += 1
@@ -1361,6 +1088,8 @@ class FewShotPainLearner:
                             task_loss=float(task_loss),
                             contrastive_loss=float(contrastive_loss),
                             triplet_loss=float(triplet_loss),
+                            can_local_loss=float(can_local_loss),
+                            can_global_loss=float(can_global_loss),
                             accuracy=float(acc),
                         )
                     progress.log_step(
@@ -1378,6 +1107,8 @@ class FewShotPainLearner:
                             "task_loss": float(task_loss),
                             "contrastive_loss": float(contrastive_loss),
                             "triplet_loss": float(triplet_loss),
+                            "can_local_loss": float(can_local_loss),
+                            "can_global_loss": float(can_global_loss),
                         },
                         log_every=train_log_every,
                     )
@@ -1392,6 +1123,8 @@ class FewShotPainLearner:
                             f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
                             f"accuracy={float(acc):.4f}, contrastive_loss={float(contrastive_loss):.4f}, "
                             f"triplet_loss={float(triplet_loss):.4f}, "
+                            f"can_local_loss={float(can_local_loss):.4f}, "
+                            f"can_global_loss={float(can_global_loss):.4f}, "
                             f"elapsed={self._format_seconds(elapsed)}, "
                             f"eta={self._format_seconds(eta_seconds)}"
                         )
@@ -1461,6 +1194,8 @@ class FewShotPainLearner:
                     validation_f1s = []
                     validation_contrastive_losses = []
                     validation_triplet_losses = []
+                    validation_can_local_losses = []
+                    validation_can_global_losses = []
                     validation_intra_class_similarities = []
                     validation_inter_class_similarities = []
                     for val_task_start in range(0, val_tasks, val_batch_size):
@@ -1486,6 +1221,12 @@ class FewShotPainLearner:
                             val_metrics["contrastive_loss"]
                         )
                         validation_triplet_losses.append(val_metrics["triplet_loss"])
+                        validation_can_local_losses.append(
+                            val_metrics["can_local_loss"]
+                        )
+                        validation_can_global_losses.append(
+                            val_metrics["can_global_loss"]
+                        )
                         validation_intra_class_similarities.append(
                             val_metrics["intra_class_similarity"]
                         )
@@ -1503,6 +1244,12 @@ class FewShotPainLearner:
                         np.mean(validation_contrastive_losses)
                     )
                     mean_val_triplet_loss = float(np.mean(validation_triplet_losses))
+                    mean_val_can_local_loss = float(
+                        np.mean(validation_can_local_losses)
+                    )
+                    mean_val_can_global_loss = float(
+                        np.mean(validation_can_global_losses)
+                    )
                     mean_val_intra_class_similarity = float(
                         np.mean(validation_intra_class_similarities)
                     )
@@ -1520,6 +1267,8 @@ class FewShotPainLearner:
                         "task_loss": mean_val_task_loss,
                         "contrastive_loss": mean_val_contrastive_loss,
                         "triplet_loss": mean_val_triplet_loss,
+                        "can_local_loss": mean_val_can_local_loss,
+                        "can_global_loss": mean_val_can_global_loss,
                         "accuracy": mean_val_acc,
                         "precision": mean_val_precision,
                         "recall": mean_val_recall,
@@ -1551,6 +1300,8 @@ class FewShotPainLearner:
                         task_loss=mean_val_task_loss,
                         contrastive_loss=mean_val_contrastive_loss,
                         triplet_loss=mean_val_triplet_loss,
+                        can_local_loss=mean_val_can_local_loss,
+                        can_global_loss=mean_val_can_global_loss,
                         accuracy=mean_val_acc,
                         precision=mean_val_precision,
                         recall=mean_val_recall,
@@ -1575,6 +1326,8 @@ class FewShotPainLearner:
                             "task_loss": mean_val_task_loss,
                             "contrastive_loss": mean_val_contrastive_loss,
                             "triplet_loss": mean_val_triplet_loss,
+                            "can_local_loss": mean_val_can_local_loss,
+                            "can_global_loss": mean_val_can_global_loss,
                             "precision": mean_val_precision,
                             "recall": mean_val_recall,
                             "f1": mean_val_f1,
@@ -1595,6 +1348,8 @@ class FewShotPainLearner:
                         f"mean_f1={mean_val_f1:.4f}, "
                         f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
                         f"triplet_loss={mean_val_triplet_loss:.4f}, "
+                        f"can_local_loss={mean_val_can_local_loss:.4f}, "
+                        f"can_global_loss={mean_val_can_global_loss:.4f}, "
                         f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
                         f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
                         f"similarity_margin={mean_val_similarity_margin:.4f}, "
@@ -1737,6 +1492,8 @@ class FewShotPainLearner:
                     task_loss=zero_shot_metrics["task_loss"],
                     contrastive_loss=zero_shot_metrics["contrastive_loss"],
                     triplet_loss=zero_shot_metrics["triplet_loss"],
+                    can_local_loss=zero_shot_metrics["can_local_loss"],
+                    can_global_loss=zero_shot_metrics["can_global_loss"],
                     accuracy=zero_shot_metrics["accuracy"],
                     precision=zero_shot_metrics["precision"],
                     recall=zero_shot_metrics["recall"],
@@ -1791,6 +1548,8 @@ class FewShotPainLearner:
                     task_loss=k_shot_metrics["task_loss"],
                     contrastive_loss=k_shot_metrics["contrastive_loss"],
                     triplet_loss=k_shot_metrics["triplet_loss"],
+                    can_local_loss=k_shot_metrics["can_local_loss"],
+                    can_global_loss=k_shot_metrics["can_global_loss"],
                     accuracy=k_shot_metrics["accuracy"],
                     precision=k_shot_metrics["precision"],
                     recall=k_shot_metrics["recall"],
@@ -1824,6 +1583,22 @@ class FewShotPainLearner:
                 size_results["zero_shot_inter_class_similarities"].append(
                     zero_shot_metrics["inter_class_similarity"]
                 )
+                if "transductive_accuracy" in zero_shot_metrics:
+                    size_results["zero_shot_transductive_losses"].append(
+                        zero_shot_metrics["transductive_loss"]
+                    )
+                    size_results["zero_shot_transductive_accuracies"].append(
+                        zero_shot_metrics["transductive_accuracy"]
+                    )
+                    size_results["zero_shot_transductive_precisions"].append(
+                        zero_shot_metrics["transductive_precision"]
+                    )
+                    size_results["zero_shot_transductive_recalls"].append(
+                        zero_shot_metrics["transductive_recall"]
+                    )
+                    size_results["zero_shot_transductive_f1s"].append(
+                        zero_shot_metrics["transductive_f1"]
+                    )
                 size_results["k_shot_losses"].append(k_shot_loss)
                 size_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
                 size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
@@ -1835,6 +1610,22 @@ class FewShotPainLearner:
                 size_results["k_shot_inter_class_similarities"].append(
                     k_shot_metrics["inter_class_similarity"]
                 )
+                if "transductive_accuracy" in k_shot_metrics:
+                    size_results["k_shot_transductive_losses"].append(
+                        k_shot_metrics["transductive_loss"]
+                    )
+                    size_results["k_shot_transductive_accuracies"].append(
+                        k_shot_metrics["transductive_accuracy"]
+                    )
+                    size_results["k_shot_transductive_precisions"].append(
+                        k_shot_metrics["transductive_precision"]
+                    )
+                    size_results["k_shot_transductive_recalls"].append(
+                        k_shot_metrics["transductive_recall"]
+                    )
+                    size_results["k_shot_transductive_f1s"].append(
+                        k_shot_metrics["transductive_f1"]
+                    )
 
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] [Heldout size {size_key}] "
@@ -1859,6 +1650,8 @@ class FewShotPainLearner:
                 task_loss=zero_shot_metrics["task_loss"],
                 contrastive_loss=zero_shot_metrics["contrastive_loss"],
                 triplet_loss=zero_shot_metrics["triplet_loss"],
+                can_local_loss=zero_shot_metrics["can_local_loss"],
+                can_global_loss=zero_shot_metrics["can_global_loss"],
                 accuracy=zero_shot_metrics["accuracy"],
                 precision=zero_shot_metrics["precision"],
                 recall=zero_shot_metrics["recall"],
@@ -1881,6 +1674,8 @@ class FewShotPainLearner:
                 task_loss=k_shot_metrics["task_loss"],
                 contrastive_loss=k_shot_metrics["contrastive_loss"],
                 triplet_loss=k_shot_metrics["triplet_loss"],
+                can_local_loss=k_shot_metrics["can_local_loss"],
+                can_global_loss=k_shot_metrics["can_global_loss"],
                 accuracy=k_shot_metrics["accuracy"],
                 precision=k_shot_metrics["precision"],
                 recall=k_shot_metrics["recall"],
@@ -1925,6 +1720,22 @@ class FewShotPainLearner:
             cv_results["zero_shot_inter_class_similarities"].append(
                 zero_shot_metrics["inter_class_similarity"]
             )
+            if "transductive_accuracy" in zero_shot_metrics:
+                cv_results["zero_shot_transductive_losses"].append(
+                    zero_shot_metrics["transductive_loss"]
+                )
+                cv_results["zero_shot_transductive_accuracies"].append(
+                    zero_shot_metrics["transductive_accuracy"]
+                )
+                cv_results["zero_shot_transductive_precisions"].append(
+                    zero_shot_metrics["transductive_precision"]
+                )
+                cv_results["zero_shot_transductive_recalls"].append(
+                    zero_shot_metrics["transductive_recall"]
+                )
+                cv_results["zero_shot_transductive_f1s"].append(
+                    zero_shot_metrics["transductive_f1"]
+                )
             cv_results["k_shot_losses"].append(k_shot_loss)
             cv_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
             cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
@@ -1936,6 +1747,22 @@ class FewShotPainLearner:
             cv_results["k_shot_inter_class_similarities"].append(
                 k_shot_metrics["inter_class_similarity"]
             )
+            if "transductive_accuracy" in k_shot_metrics:
+                cv_results["k_shot_transductive_losses"].append(
+                    k_shot_metrics["transductive_loss"]
+                )
+                cv_results["k_shot_transductive_accuracies"].append(
+                    k_shot_metrics["transductive_accuracy"]
+                )
+                cv_results["k_shot_transductive_precisions"].append(
+                    k_shot_metrics["transductive_precision"]
+                )
+                cv_results["k_shot_transductive_recalls"].append(
+                    k_shot_metrics["transductive_recall"]
+                )
+                cv_results["k_shot_transductive_f1s"].append(
+                    k_shot_metrics["transductive_f1"]
+                )
             csv_writer.write_event(
                 fold_idx=fold + 1,
                 test_subject=test_subject,

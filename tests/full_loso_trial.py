@@ -51,7 +51,7 @@ def _metric_summary(values: list[float]) -> dict[str, float]:
 
 
 def _build_summary(cv_results: dict[str, Any]) -> dict[str, Any]:
-    return {
+    summary = {
         "num_folds": int(len(cv_results.get("zero_shot_accuracies", []))),
         "zero_shot_accuracy": _metric_summary(
             cv_results.get("zero_shot_accuracies", [])
@@ -62,6 +62,23 @@ def _build_summary(cv_results: dict[str, Any]) -> dict[str, Any]:
         "zero_shot_f1": _metric_summary(cv_results.get("zero_shot_f1s", [])),
         "k_shot_f1": _metric_summary(cv_results.get("k_shot_f1s", [])),
     }
+    transductive_summary_keys = {
+        "zero_shot_transductive_losses": "zero_shot_transductive_loss",
+        "zero_shot_transductive_accuracies": "zero_shot_transductive_accuracy",
+        "zero_shot_transductive_precisions": "zero_shot_transductive_precision",
+        "zero_shot_transductive_recalls": "zero_shot_transductive_recall",
+        "zero_shot_transductive_f1s": "zero_shot_transductive_f1",
+        "k_shot_transductive_losses": "k_shot_transductive_loss",
+        "k_shot_transductive_accuracies": "k_shot_transductive_accuracy",
+        "k_shot_transductive_precisions": "k_shot_transductive_precision",
+        "k_shot_transductive_recalls": "k_shot_transductive_recall",
+        "k_shot_transductive_f1s": "k_shot_transductive_f1",
+    }
+    for key, summary_key in transductive_summary_keys.items():
+        values = cv_results.get(key, [])
+        if len(values) > 0:
+            summary[summary_key] = _metric_summary(values)
+    return summary
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -95,6 +112,22 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         task_normalize_mode=args.normalize_mode,
         task_construction_mode=args.task_construction_mode,
         classifier_mode=args.classifier_mode,
+        attention_mode=str(getattr(args, "attention_mode", "none")),
+        can_attention_temperature=float(
+            getattr(args, "can_attention_temperature", 1.0)
+        ),
+        can_meta_hidden_dim=int(getattr(args, "can_meta_hidden_dim", 32)),
+        can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
+        can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
+        can_transductive_iterations=int(
+            getattr(args, "can_transductive_iterations", 3)
+        ),
+        can_transductive_top_k_per_class=int(
+            getattr(args, "can_transductive_top_k_per_class", 1)
+        ),
+        can_transductive_min_confidence=float(
+            getattr(args, "can_transductive_min_confidence", 0.0)
+        ),
         train_batch_size=args.task_batch_size,
         embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
         tasks_per_epoch=max(1, int(args.tasks_per_epoch)),
@@ -196,6 +229,18 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "task_construction_mode": str(config.task_construction_mode),
             "normalize_mode": str(config.task_normalize_mode),
             "classifier_mode": str(config.classifier_mode),
+            "attention_mode": str(config.attention_mode),
+            "can_attention_temperature": float(config.can_attention_temperature),
+            "can_meta_hidden_dim": int(config.can_meta_hidden_dim),
+            "can_local_loss_weight": float(config.can_local_loss_weight),
+            "can_global_loss_weight": float(config.can_global_loss_weight),
+            "can_transductive_iterations": int(config.can_transductive_iterations),
+            "can_transductive_top_k_per_class": int(
+                config.can_transductive_top_k_per_class
+            ),
+            "can_transductive_min_confidence": float(
+                config.can_transductive_min_confidence
+            ),
             "learning_rate": float(args.learning_rate),
             "embedding_dim": int(config.embedding_dim),
             "encoder": "eegnet",
@@ -288,6 +333,20 @@ def main() -> None:
         default="prototype",
         choices=("prototype", "soft_knn"),
     )
+    parser.add_argument(
+        "--attention-mode",
+        type=str,
+        default="none",
+        choices=("none", "can"),
+        help="Optional episodic attention module. 'can' enables CAN/CAM.",
+    )
+    parser.add_argument("--can-attention-temperature", type=float, default=1.0)
+    parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
+    parser.add_argument("--can-local-loss-weight", type=float, default=1.0)
+    parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
+    parser.add_argument("--can-transductive-iterations", type=int, default=3)
+    parser.add_argument("--can-transductive-top-k-per-class", type=int, default=1)
+    parser.add_argument("--can-transductive-min-confidence", type=float, default=0.0)
     parser.add_argument(
         "--normalize-mode",
         type=str,

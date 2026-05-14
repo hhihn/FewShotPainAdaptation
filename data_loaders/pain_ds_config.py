@@ -7,6 +7,8 @@ SUPPORTED_VALIDATION_CHECKPOINT_METRICS = (
     "task_loss",
     "contrastive_loss",
     "triplet_loss",
+    "can_local_loss",
+    "can_global_loss",
     "accuracy",
     "precision",
     "recall",
@@ -72,6 +74,14 @@ class PainDatasetConfig:
         "single_subject"  # single_subject, cross_subject, or mixed
     )
     classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
+    attention_mode: str = "none"  # none or can
+    can_attention_temperature: float = 1.0
+    can_meta_hidden_dim: int = 32
+    can_local_loss_weight: float = 1.0
+    can_global_loss_weight: float = 0.1
+    can_transductive_iterations: int = 3
+    can_transductive_top_k_per_class: int = 1
+    can_transductive_min_confidence: float = 0.0
     triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
     triplet_margin: float = 0.1  # Margin used by triplet loss
     triplet_mining_strategy: str = (
@@ -189,6 +199,36 @@ class PainDatasetConfig:
             )
         if self.classifier_mode not in {"prototype", "soft_knn"}:
             raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
+        self.attention_mode = str(self.attention_mode).strip().lower()
+        if self.attention_mode not in {"none", "can"}:
+            raise ValueError("attention_mode must be one of: 'none', 'can'")
+        if self.attention_mode == "can" and self.classifier_mode != "prototype":
+            raise ValueError("attention_mode='can' requires classifier_mode='prototype'")
+        if self.attention_mode == "can" and self.n_way < 2:
+            raise ValueError("attention_mode='can' requires at least two task classes")
+        self.can_attention_temperature = float(self.can_attention_temperature)
+        if self.can_attention_temperature <= 0:
+            raise ValueError("can_attention_temperature must be > 0")
+        self.can_meta_hidden_dim = int(self.can_meta_hidden_dim)
+        if self.can_meta_hidden_dim <= 0:
+            raise ValueError("can_meta_hidden_dim must be > 0")
+        self.can_local_loss_weight = float(self.can_local_loss_weight)
+        if self.can_local_loss_weight < 0:
+            raise ValueError("can_local_loss_weight must be non-negative")
+        self.can_global_loss_weight = float(self.can_global_loss_weight)
+        if self.can_global_loss_weight < 0:
+            raise ValueError("can_global_loss_weight must be non-negative")
+        self.can_transductive_iterations = int(self.can_transductive_iterations)
+        if self.can_transductive_iterations < 0:
+            raise ValueError("can_transductive_iterations must be non-negative")
+        self.can_transductive_top_k_per_class = int(
+            self.can_transductive_top_k_per_class
+        )
+        if self.can_transductive_top_k_per_class <= 0:
+            raise ValueError("can_transductive_top_k_per_class must be > 0")
+        self.can_transductive_min_confidence = float(
+            self.can_transductive_min_confidence
+        )
         if self.triplet_loss_weight < 0:
             raise ValueError("triplet_loss_weight must be non-negative")
         if self.triplet_margin < 0:

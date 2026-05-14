@@ -127,6 +127,22 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         q_query=args.q_query,
         task_normalize_mode=args.normalize_mode,
         classifier_mode=args.classifier_mode,
+        attention_mode=str(getattr(args, "attention_mode", "none")),
+        can_attention_temperature=float(
+            getattr(args, "can_attention_temperature", 1.0)
+        ),
+        can_meta_hidden_dim=int(getattr(args, "can_meta_hidden_dim", 32)),
+        can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
+        can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
+        can_transductive_iterations=int(
+            getattr(args, "can_transductive_iterations", 3)
+        ),
+        can_transductive_top_k_per_class=int(
+            getattr(args, "can_transductive_top_k_per_class", 1)
+        ),
+        can_transductive_min_confidence=float(
+            getattr(args, "can_transductive_min_confidence", 0.0)
+        ),
         train_batch_size=args.task_batch_size,
         embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
         tasks_per_epoch=max(1, args.updates * args.task_batch_size),
@@ -214,9 +230,15 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     for update_idx in range(max(1, args.updates)):
         update_start = time.perf_counter()
         task_batch = _cyclic_task_batch(train_tasks, update_idx, args.task_batch_size)
-        loss, task_loss, accuracy, contrastive_loss, triplet_loss = (
-            learner.train_batch_step(task_batch)
-        )
+        (
+            loss,
+            task_loss,
+            accuracy,
+            contrastive_loss,
+            triplet_loss,
+            can_local_loss,
+            can_global_loss,
+        ) = learner.train_batch_step(task_batch)
         elapsed = time.perf_counter() - start_time
         avg_update_time = elapsed / max(1, update_idx + 1)
         (total_updates - (update_idx + 1)) * avg_update_time
@@ -228,6 +250,8 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
                 "accuracy": float(accuracy.numpy()),
                 "contrastive_loss": float(contrastive_loss.numpy()),
                 "triplet_loss": float(triplet_loss.numpy()),
+                "can_local_loss": float(can_local_loss.numpy()),
+                "can_global_loss": float(can_global_loss.numpy()),
                 "elapsed_seconds": float(time.perf_counter() - update_start),
             }
         )
@@ -291,6 +315,18 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "q_query": args.q_query,
         "task_class_ids": list(config.task_class_ids),
         "classifier_mode": args.classifier_mode,
+        "attention_mode": str(config.attention_mode),
+        "can_attention_temperature": float(config.can_attention_temperature),
+        "can_meta_hidden_dim": int(config.can_meta_hidden_dim),
+        "can_local_loss_weight": float(config.can_local_loss_weight),
+        "can_global_loss_weight": float(config.can_global_loss_weight),
+        "can_transductive_iterations": int(config.can_transductive_iterations),
+        "can_transductive_top_k_per_class": int(
+            config.can_transductive_top_k_per_class
+        ),
+        "can_transductive_min_confidence": float(
+            config.can_transductive_min_confidence
+        ),
         "normalize_mode": args.normalize_mode,
         "embedding_dim": args.embedding_dim,
         "encoder": "eegnet",
@@ -545,6 +581,20 @@ def main() -> None:
         default="prototype",
         choices=("prototype", "soft_knn"),
     )
+    parser.add_argument(
+        "--attention-mode",
+        type=str,
+        default="none",
+        choices=("none", "can"),
+        help="Optional episodic attention module. 'can' enables CAN/CAM.",
+    )
+    parser.add_argument("--can-attention-temperature", type=float, default=1.0)
+    parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
+    parser.add_argument("--can-local-loss-weight", type=float, default=1.0)
+    parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
+    parser.add_argument("--can-transductive-iterations", type=int, default=3)
+    parser.add_argument("--can-transductive-top-k-per-class", type=int, default=1)
+    parser.add_argument("--can-transductive-min-confidence", type=float, default=0.0)
     parser.add_argument(
         "--normalize-mode",
         type=str,

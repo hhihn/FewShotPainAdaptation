@@ -70,6 +70,78 @@ class EpisodeEvaluationService:
             "f1": float(np.mean(f1_per_class)),
         }
 
+    def evaluate_transductive_task_batch_metrics(self, task_batch: list[dict]) -> dict:
+        """Evaluate CAN transductive predictions without changing inductive metrics."""
+        if getattr(self.config, "attention_mode", "none") != "can":
+            return {}
+        if int(getattr(self.config, "can_transductive_iterations", 0)) <= 0:
+            return {}
+
+        losses = []
+        all_true = []
+        all_pred = []
+        all_intra_scores = []
+        all_inter_scores = []
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
+        for task_dict in task_batch:
+            support_x = tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32)
+            support_y = tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32)
+            query_x = tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32)
+            query_y = tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32)
+            outputs = self.engine.model.forward_episode_batch_transductive(
+                support_x=support_x[tf.newaxis, ...],
+                support_y=support_y[tf.newaxis, ...],
+                query_x=query_x[tf.newaxis, ...],
+                training=False,
+            )
+            logits = outputs["transductive_logits"][0]
+            similarity_scores = outputs["transductive_similarity_scores"][0]
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+            losses.append(
+                tf.reshape(
+                    tf.keras.losses.sparse_categorical_crossentropy(
+                        query_y,
+                        logits,
+                        from_logits=True,
+                    ),
+                    [-1],
+                )
+            )
+            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
+            intra_class_scores = tf.gather_nd(
+                similarity_scores,
+                tf.stack([row_indices, query_y], axis=1),
+            )
+            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
+            all_intra_scores.append(tf.reshape(intra_class_scores, [-1]))
+            all_inter_scores.append(
+                tf.reshape(tf.boolean_mask(similarity_scores, inter_class_mask), [-1])
+            )
+            all_true.append(tf.reshape(query_y, [-1]))
+            all_pred.append(tf.reshape(pred, [-1]))
+
+        y_true = tf.concat(all_true, axis=0).numpy().astype(np.int32, copy=False)
+        y_pred = tf.concat(all_pred, axis=0).numpy().astype(np.int32, copy=False)
+        macro = self.compute_macro_metrics(y_true, y_pred)
+        similarity = self.compute_similarity_metrics(
+            tf.concat(all_intra_scores, axis=0).numpy(),
+            tf.concat(all_inter_scores, axis=0).numpy(),
+        )
+        return {
+            "transductive_loss": float(tf.reduce_mean(tf.concat(losses, axis=0))),
+            "transductive_accuracy": macro["accuracy"],
+            "transductive_precision": macro["precision"],
+            "transductive_recall": macro["recall"],
+            "transductive_f1": macro["f1"],
+            "transductive_intra_class_similarity": similarity[
+                "intra_class_similarity"
+            ],
+            "transductive_inter_class_similarity": similarity[
+                "inter_class_similarity"
+            ],
+            "transductive_similarity_margin": similarity["similarity_margin"],
+        }
+
     @staticmethod
     def set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
         """Update sampler task size in-place for temporary held-out evaluation sweeps."""
@@ -93,6 +165,8 @@ class EpisodeEvaluationService:
         task_losses = []
         contrastive_losses = []
         triplet_losses = []
+        can_local_losses = []
+        can_global_losses = []
         all_true_tensors = []
         all_pred_tensors = []
         all_intra_class_scores = []
@@ -119,6 +193,8 @@ class EpisodeEvaluationService:
                     batch_task_losses,
                     batch_contrastive_losses,
                     batch_triplet_losses,
+                    batch_can_local_losses,
+                    batch_can_global_losses,
                     batch_y_true,
                     batch_y_pred,
                     batch_intra_scores,
@@ -133,6 +209,8 @@ class EpisodeEvaluationService:
                 task_losses.append(tf.reshape(batch_task_losses, [-1]))
                 contrastive_losses.append(tf.reshape(batch_contrastive_losses, [-1]))
                 triplet_losses.append(tf.reshape(batch_triplet_losses, [-1]))
+                can_local_losses.append(tf.reshape(batch_can_local_losses, [-1]))
+                can_global_losses.append(tf.reshape(batch_can_global_losses, [-1]))
                 all_true_tensors.append(tf.reshape(batch_y_true, [-1]))
                 all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(batch_intra_scores, [-1]))
@@ -199,6 +277,16 @@ class EpisodeEvaluationService:
                 triplet_losses.append(
                     tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
                 )
+                can_local_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["can_local_loss"], tf.float32), [1]
+                    )
+                )
+                can_global_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["can_global_loss"], tf.float32), [1]
+                    )
+                )
                 all_true_tensors.append(tf.reshape(query_y, [-1]))
                 all_pred_tensors.append(tf.reshape(pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
@@ -224,6 +312,13 @@ class EpisodeEvaluationService:
         metrics["triplet_loss"] = float(
             tf.reduce_mean(tf.concat(triplet_losses, axis=0))
         )
+        metrics["can_local_loss"] = float(
+            tf.reduce_mean(tf.concat(can_local_losses, axis=0))
+        )
+        metrics["can_global_loss"] = float(
+            tf.reduce_mean(tf.concat(can_global_losses, axis=0))
+        )
+        metrics.update(self.evaluate_transductive_task_batch_metrics(task_batch))
         return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
 
     def evaluate_sampler_loss_and_metrics(
