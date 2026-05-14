@@ -51,7 +51,7 @@ class EEGNetStyleEncoder(keras.Model):
             kernel_initializer="he_normal",
             name="temporal_conv",
         )
-        self.temporal_norm = keras.layers.LayerNormalization(name="temporal_norm")
+        self.temporal_norm = keras.layers.BatchNormalization(name="temporal_norm")
         self.temporal_activation = keras.layers.Activation("elu", name="temporal_elu")
 
         self.depthwise_conv = keras.layers.DepthwiseConv2D(
@@ -61,7 +61,7 @@ class EEGNetStyleEncoder(keras.Model):
             depthwise_constraint=keras.constraints.max_norm(1.0),
             name="sensor_depthwise_conv",
         )
-        self.depthwise_norm = keras.layers.LayerNormalization(name="depthwise_norm")
+        self.depthwise_norm = keras.layers.BatchNormalization(name="depthwise_norm")
         self.depthwise_activation = keras.layers.Activation(
             "elu", name="depthwise_elu"
         )
@@ -82,7 +82,7 @@ class EEGNetStyleEncoder(keras.Model):
             pointwise_initializer="he_normal",
             name="separable_temporal_conv",
         )
-        self.separable_norm = keras.layers.LayerNormalization(name="separable_norm")
+        self.separable_norm = keras.layers.BatchNormalization(name="separable_norm")
         self.separable_activation = keras.layers.Activation(
             "elu", name="separable_elu"
         )
@@ -100,7 +100,7 @@ class EEGNetStyleEncoder(keras.Model):
             kernel_regularizer=keras.regularizers.l2(self.l2_weight),
             name="embedding_dense",
         )
-        self.embedding_norm = keras.layers.LayerNormalization(name="embedding_norm")
+        self.embedding_norm = keras.layers.BatchNormalization(name="embedding_norm")
 
         self.logger.debug(
             "Initialized EEGNetStyleEncoder with temporal_filters=%s, "
@@ -243,7 +243,7 @@ class ConvolutionalNetwork(keras.Model):
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
         )
-        self.embedding_dense_hidden_bn = keras.layers.LayerNormalization(
+        self.embedding_dense_hidden_bn = keras.layers.BatchNormalization(
             name="embedding_dense_hidden_bn"
         )
         self.embedding_dense_hidden2 = keras.layers.Dense(
@@ -256,7 +256,7 @@ class ConvolutionalNetwork(keras.Model):
             rate=self.dropout_rate,
             name="embedding_dense_hidden_dropout",
         )
-        self.embedding_dense_hidden_bn2 = keras.layers.LayerNormalization(
+        self.embedding_dense_hidden_bn2 = keras.layers.BatchNormalization(
             name="embedding_dense_hidden_bn"
         )
         self.embedding_dense = keras.layers.Dense(
@@ -265,7 +265,7 @@ class ConvolutionalNetwork(keras.Model):
             name="embedding_dense",
             kernel_initializer="he_normal",
         )
-        self.embedding_dense_bn = keras.layers.LayerNormalization(
+        self.embedding_dense_bn = keras.layers.BatchNormalization(
             name="embedding_dense_bn"
         )
 
@@ -289,7 +289,7 @@ class ConvolutionalNetwork(keras.Model):
             kernel_initializer="he_normal",
             name=f"cnn_block_{block_idx}_conv1",
         )(inputs)
-        x = keras.layers.LayerNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
+        x = keras.layers.BatchNormalization(name=f"cnn_block_{block_idx}_ln1")(x)
         x = keras.layers.MaxPool1D(
             pool_size=pooling_size,
             strides=pooling_stride,
