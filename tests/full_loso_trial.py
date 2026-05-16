@@ -145,6 +145,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         validation_checkpoint_mode=str(
             getattr(args, "validation_checkpoint_mode", "auto")
         ),
+        lr_schedule=str(getattr(args, "lr_schedule", "constant")),
+        lr_decay_alpha=float(getattr(args, "lr_decay_alpha", 0.1)),
         train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
         train_progress_write_every_n_batches=max(
             1, int(args.train_progress_write_every_n_batches)
@@ -241,6 +243,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
                 config.can_transductive_min_confidence
             ),
             "learning_rate": float(args.learning_rate),
+            "lr_schedule": str(config.lr_schedule),
+            "lr_decay_alpha": float(config.lr_decay_alpha),
             "embedding_dim": int(config.embedding_dim),
             "encoder": "eegnet",
             "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
@@ -353,6 +357,19 @@ def main() -> None:
         choices=("subject", "split", "support", "none"),
     )
     parser.add_argument("--learning-rate", type=float, default=6e-4)
+    parser.add_argument(
+        "--lr-schedule",
+        type=str,
+        default="constant",
+        choices=("constant", "cosine"),
+        help="Learning-rate schedule passed to the Keras optimizer.",
+    )
+    parser.add_argument(
+        "--lr-decay-alpha",
+        type=float,
+        default=0.1,
+        help="Final LR fraction for cosine decay.",
+    )
     parser.add_argument("--embedding-dim", type=int, default=64)
     parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
     parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)

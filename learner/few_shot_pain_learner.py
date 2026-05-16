@@ -126,6 +126,8 @@ class FewShotPainLearner:
             "dataset_source": self.config.dataset_source,
             "split_strategy": self.config.split_strategy,
             "learning_rate": self.learning_rate,
+            "lr_schedule": self.config.lr_schedule,
+            "lr_decay_alpha": self.config.lr_decay_alpha,
             "sequence_length": self.config.sequence_length,
             "enable_window_shift_augmentation": self.config.enable_window_shift_augmentation,
             "gaussian_noise_std": self.gaussian_noise_std,

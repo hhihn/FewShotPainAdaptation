@@ -53,8 +53,7 @@ class EEGNetStyleEncoder(keras.Model):
             name="temporal_conv",
         )
         self.temporal_norm = keras.layers.BatchNormalization(name="temporal_norm")
-        self.temporal_activation = keras.layers.Activation("elu", name="temporal_elu")
-
+        self.temporal_activation = keras.layers.Activation("gelu", name="temporal_elu")
         self.depthwise_conv = keras.layers.DepthwiseConv2D(
             kernel_size=(1, self.num_sensors),
             depth_multiplier=self.depth_multiplier,
@@ -64,7 +63,7 @@ class EEGNetStyleEncoder(keras.Model):
         )
         self.depthwise_norm = keras.layers.BatchNormalization(name="depthwise_norm")
         self.depthwise_activation = keras.layers.Activation(
-            "elu", name="depthwise_elu"
+            "gelu", name="depthwise_elu"
         )
         self.pool_1 = keras.layers.AveragePooling2D(
             pool_size=(self.pool_size_1, 1),
@@ -85,7 +84,7 @@ class EEGNetStyleEncoder(keras.Model):
         )
         self.separable_norm = keras.layers.BatchNormalization(name="separable_norm")
         self.separable_activation = keras.layers.Activation(
-            "elu", name="separable_elu"
+            "gelu", name="separable_elu"
         )
         self.pool_2 = keras.layers.AveragePooling2D(
             pool_size=(self.pool_size_2, 1),
@@ -253,7 +252,7 @@ class ConvolutionalNetwork(keras.Model):
         # Final embedding layers
         self.embedding_dense_hidden = keras.layers.Dense(
             1024,
-            activation="elu",
+            activation="gelu",
             name="embedding_dense_hidden",
             kernel_initializer="he_normal",
         )
@@ -266,7 +265,7 @@ class ConvolutionalNetwork(keras.Model):
         )
         self.embedding_dense_hidden2 = keras.layers.Dense(
             512,
-            activation="elu",
+            activation="gelu",
             name="embedding_dense_hidden",
             kernel_initializer="he_normal",
         )
@@ -279,7 +278,7 @@ class ConvolutionalNetwork(keras.Model):
         )
         self.embedding_dense = keras.layers.Dense(
             embedding_dim,
-            activation="elu",
+            activation="gelu",
             name="embedding_dense",
             kernel_initializer="he_normal",
         )
@@ -303,7 +302,7 @@ class ConvolutionalNetwork(keras.Model):
             filters,
             kernel_size=self.kernel_size,
             strides=1,
-            activation="elu",
+            activation="gelu",
             kernel_initializer="he_normal",
             name=f"cnn_block_{block_idx}_conv1",
         )(inputs)

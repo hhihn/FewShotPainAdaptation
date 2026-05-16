@@ -169,6 +169,8 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         triplet_center_gradient_clip_norm=float(
             getattr(args, "triplet_center_gradient_clip_norm", 0.01)
         ),
+        lr_schedule=str(getattr(args, "lr_schedule", "constant")),
+        lr_decay_alpha=float(getattr(args, "lr_decay_alpha", 0.1)),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -327,6 +329,9 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "can_transductive_min_confidence": float(
             config.can_transductive_min_confidence
         ),
+        "learning_rate": float(args.learning_rate),
+        "lr_schedule": str(config.lr_schedule),
+        "lr_decay_alpha": float(config.lr_decay_alpha),
         "normalize_mode": args.normalize_mode,
         "embedding_dim": args.embedding_dim,
         "encoder": "eegnet",
@@ -602,6 +607,19 @@ def main() -> None:
         choices=("subject", "split", "support", "none"),
     )
     parser.add_argument("--learning-rate", type=float, default=6e-4)
+    parser.add_argument(
+        "--lr-schedule",
+        type=str,
+        default="constant",
+        choices=("constant", "cosine"),
+        help="Learning-rate schedule passed to the Keras optimizer.",
+    )
+    parser.add_argument(
+        "--lr-decay-alpha",
+        type=float,
+        default=0.1,
+        help="Final LR fraction for cosine decay.",
+    )
     parser.add_argument("--embedding-dim", type=int, default=64)
     parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
     parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)

@@ -103,6 +103,8 @@ class PainDatasetConfig:
     validation_checkpoint_mode: str = (
         "auto"  # auto, min, or max direction for validation checkpoint selection
     )
+    lr_schedule: str = "constant"  # Learning-rate schedule: constant or cosine
+    lr_decay_alpha: float = 0.1  # Final LR fraction for cosine decay
     k_shot_adaptation_steps: int = 10  # Inner-loop adaptation steps on held-out subject
     train_log_every: int = 10  # Log train metrics every N sampled train tasks
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
@@ -307,6 +309,12 @@ class PainDatasetConfig:
                 "validation_checkpoint_mode must be one of: "
                 + ", ".join(VALIDATION_CHECKPOINT_MODES)
             )
+        self.lr_schedule = str(self.lr_schedule).strip().lower()
+        if self.lr_schedule not in {"constant", "cosine"}:
+            raise ValueError("lr_schedule must be one of: 'constant', 'cosine'")
+        self.lr_decay_alpha = float(self.lr_decay_alpha)
+        if self.lr_decay_alpha < 0 or self.lr_decay_alpha > 1:
+            raise ValueError("lr_decay_alpha must be in [0, 1]")
         if self.loso_start_index is not None:
             self.loso_start_index = int(self.loso_start_index)
             if self.loso_start_index <= 0:

@@ -1,4 +1,5 @@
 import gc
+import math
 
 import tensorflow as tf
 from tensorflow import keras
@@ -95,7 +96,7 @@ class EpisodicLearningEngine:
             seed=self.seed,
         )
         optimizer_kwargs = {
-            "learning_rate": self.learning_rate,
+            "learning_rate": self.build_learning_rate(),
             "weight_decay": 1e-4,
         }
         if self.gradient_clip_norm is not None:
@@ -105,6 +106,26 @@ class EpisodicLearningEngine:
         self.build_compiled_train_batch_step()
         self.build_compiled_eval_batch_step()
         self.capture_initial_model_state()
+
+    def build_learning_rate(self):
+        """Return the configured scalar LR or Keras schedule for optimizer updates."""
+        schedule_name = str(getattr(self.config, "lr_schedule", "constant")).lower()
+        if schedule_name == "constant":
+            return self.learning_rate
+        if schedule_name == "cosine":
+            updates_per_epoch = max(
+                1,
+                math.ceil(
+                    max(1, int(self.config.tasks_per_epoch)) / self.train_batch_size
+                ),
+            )
+            decay_steps = max(1, updates_per_epoch * max(1, int(self.config.num_epochs)))
+            return keras.optimizers.schedules.CosineDecay(
+                initial_learning_rate=self.learning_rate,
+                decay_steps=decay_steps,
+                alpha=float(getattr(self.config, "lr_decay_alpha", 0.1)),
+            )
+        raise ValueError(f"Unknown lr_schedule: {schedule_name}")
 
     def make_dummy_episode_tensors(
         self,

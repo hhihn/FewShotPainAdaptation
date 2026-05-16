@@ -108,7 +108,7 @@ class CrossAttentionModule(keras.layers.Layer):
         self, prototype_maps: tf.Tensor, query_maps: tf.Tensor
     ) -> tuple[tf.Tensor, tf.Tensor]:
         descriptor = self._pair_descriptor(prototype_maps, query_maps)
-        hidden = tf.nn.relu(
+        hidden = tf.nn.gelu(
             tf.einsum("bqcd,dh->bqch", descriptor, self.meta_w1) + self.meta_b1
         )
         kernel_p = tf.nn.softmax(
