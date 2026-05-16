@@ -145,7 +145,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         validation_checkpoint_mode=str(
             getattr(args, "validation_checkpoint_mode", "auto")
         ),
-        summary_every_n_train_steps=max(1, int(args.summary_every_n_train_steps)),
         train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
         train_progress_write_every_n_batches=max(
             1, int(args.train_progress_write_every_n_batches)

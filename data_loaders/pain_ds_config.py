@@ -108,9 +108,6 @@ class PainDatasetConfig:
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
-    summary_every_n_train_steps: int = (
-        20  # Log composite train/val/heldout summary every N train batches
-    )
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
     train_prefetch_batches: int = 256  # Number of asynchronously prepared train batches
     gradient_clip_norm: Optional[float] = (
@@ -293,8 +290,6 @@ class PainDatasetConfig:
             raise ValueError("train_progress_write_every_n_batches must be > 0")
         if self.csv_flush_every_events <= 0:
             raise ValueError("csv_flush_every_events must be > 0")
-        if self.summary_every_n_train_steps <= 0:
-            raise ValueError("summary_every_n_train_steps must be > 0")
         self.validation_checkpoint_metric = str(
             self.validation_checkpoint_metric
         ).strip()

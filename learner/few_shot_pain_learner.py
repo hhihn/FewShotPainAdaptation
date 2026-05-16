@@ -166,7 +166,6 @@ class FewShotPainLearner:
             "val_every_n_train_steps": self.config.val_every_n_train_steps,
             "validation_checkpoint_metric": self.config.validation_checkpoint_metric,
             "validation_checkpoint_mode": self.config.validation_checkpoint_mode,
-            "summary_every_n_train_steps": self.config.summary_every_n_train_steps,
             "logging_verbosity": self.logging_verbosity,
             "train_prefetch_batches": self.train_prefetch_batches,
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
@@ -955,9 +954,6 @@ class FewShotPainLearner:
         )
         completed_train_steps = 0
         train_start_time = time.perf_counter()
-        summary_every_n_train_steps = max(
-            1, int(self.config.summary_every_n_train_steps)
-        )
         train_progress_write_every_n_batches = max(
             1, int(self.config.train_progress_write_every_n_batches)
         )
@@ -1127,56 +1123,6 @@ class FewShotPainLearner:
                             f"can_global_loss={float(can_global_loss):.4f}, "
                             f"elapsed={self._format_seconds(elapsed)}, "
                             f"eta={self._format_seconds(eta_seconds)}"
-                        )
-
-                    if processed_batches % summary_every_n_train_steps == 0:
-                        summary_train_loss, summary_train_metrics = (
-                            self._evaluate_sampler_loss_and_metrics(
-                                train_sampler, num_tasks=val_tasks
-                            )
-                        )
-                        summary_val_loss, summary_val_metrics = (
-                            self._evaluate_sampler_loss_and_metrics(
-                                val_sampler, num_tasks=val_tasks
-                            )
-                        )
-                        summary_heldout_loss, summary_heldout_metrics = (
-                            self._evaluate_sampler_loss_and_metrics(
-                                test_sampler, num_tasks=heldout_eval_tasks
-                            )
-                        )
-                        fold_summary_reference["train"] = {
-                            "accuracy": summary_train_metrics["accuracy"],
-                            "loss": summary_train_loss,
-                        }
-                        fold_summary_reference["val"] = {
-                            "accuracy": summary_val_metrics["accuracy"],
-                            "loss": summary_val_loss,
-                        }
-                        fold_summary_reference["heldout"] = {
-                            "accuracy": summary_heldout_metrics["accuracy"],
-                            "loss": summary_heldout_loss,
-                        }
-                        self._log_composite_summary(
-                            prefix=(
-                                f"[Fold {fold + 1}/{num_subjects}] "
-                                f"[Epoch {epoch + 1}/{num_epochs}] "
-                                f"[Step {processed_batches}/{max(1, int(np.ceil(tasks_per_epoch / self.train_batch_size)))}] "
-                                f"Composite summary"
-                            ),
-                            train_metrics={
-                                "accuracy": summary_train_metrics["accuracy"],
-                                "loss": summary_train_loss,
-                            },
-                            val_metrics={
-                                "accuracy": summary_val_metrics["accuracy"],
-                                "loss": summary_val_loss,
-                            },
-                            heldout_metrics={
-                                "accuracy": summary_heldout_metrics["accuracy"],
-                                "loss": summary_heldout_loss,
-                            },
-                            elapsed_seconds=time.perf_counter() - train_start_time,
                         )
 
                     should_run_validation = (
