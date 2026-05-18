@@ -329,6 +329,14 @@ class FewShotPainLearner:
             query_y_batch=query_y_batch,
         )
 
+    def _resolve_prototype_finetune_tasks_per_epoch(self, train_sampler) -> int:
+        """Return the phase-2 update budget for full-subject prototype tasks."""
+        configured_tasks = self.config.prototype_finetune_tasks_per_epoch
+        if configured_tasks is not None:
+            return max(1, int(configured_tasks))
+        active_subject_count = int(len(train_sampler.active_subjects_array))
+        return max(1, active_subject_count)
+
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
         """Return regularization losses added by submodules, or zero if absent."""
         return self.engine.compute_model_aux_loss(dtype)
@@ -1414,21 +1422,56 @@ class FewShotPainLearner:
 
             if self.config.can_support_mode == "learned_prototype_memory":
                 prototype_epochs = max(0, int(self.config.prototype_finetune_epochs))
-                prototype_tasks_per_epoch = int(
-                    self.config.prototype_finetune_tasks_per_epoch
-                    or self.config.tasks_per_epoch
+                prototype_tasks_per_epoch = (
+                    self._resolve_prototype_finetune_tasks_per_epoch(train_sampler)
                 )
                 if prototype_epochs > 0:
+                    explicit_budget = (
+                        self.config.prototype_finetune_tasks_per_epoch is not None
+                    )
+                    budget_source = "explicit" if explicit_budget else "active_subjects"
                     self.logger.info(
                         f"[Fold {fold + 1}/{num_subjects}] "
                         "Starting learned-prototype phase-2 fine-tuning: "
                         f"epochs={prototype_epochs}, tasks_per_epoch={prototype_tasks_per_epoch}, "
-                        f"slots_per_class={self.config.learned_prototype_slots_per_class}"
+                        f"budget_source={budget_source}, "
+                        f"active_train_subjects={len(train_sampler.active_subjects_array)}, "
+                        f"slots_per_class={self.config.learned_prototype_slots_per_class}. "
+                        "Each phase-2 task is a full query-only subject task, so it is "
+                        "much larger than a normal k/q episode."
                     )
+                    if (
+                        prototype_tasks_per_epoch
+                        > max(200, 4 * len(train_sampler.active_subjects_array))
+                    ):
+                        self.logger.warning(
+                            f"[Fold {fold + 1}/{num_subjects}] "
+                            "Prototype phase-2 update budget is high for all-query "
+                            f"tasks ({prototype_tasks_per_epoch} updates/epoch). "
+                            "Consider lowering --prototype-finetune-tasks-per-epoch."
+                        )
                 for prototype_epoch in range(prototype_epochs):
+                    epoch_start_time = time.perf_counter()
+                    last_log_time = epoch_start_time
                     phase_losses = []
+                    phase_task_losses = []
                     phase_accs = []
-                    for _ in range(prototype_tasks_per_epoch):
+                    phase_can_local_losses = []
+                    phase_can_global_losses = []
+                    log_every = max(
+                        1,
+                        min(
+                            int(getattr(self.config, "train_log_every", 10)),
+                            max(1, prototype_tasks_per_epoch // 5),
+                        ),
+                    )
+                    self.logger.info(
+                        f"[Fold {fold + 1}/{num_subjects}] "
+                        f"[Prototype phase {prototype_epoch + 1}/{prototype_epochs}] "
+                        f"Starting {prototype_tasks_per_epoch} full-query updates"
+                    )
+                    for prototype_step in range(prototype_tasks_per_epoch):
+                        step_start_time = time.perf_counter()
                         sampled_subject = int(
                             train_sampler.rng.choice(train_sampler.active_subjects_array)
                         )
@@ -1440,12 +1483,12 @@ class FewShotPainLearner:
                         )
                         (
                             phase_loss,
-                            _phase_task_loss,
+                            phase_task_loss,
                             phase_acc,
                             _phase_contrastive_loss,
                             _phase_triplet_loss,
-                            _phase_can_local_loss,
-                            _phase_can_global_loss,
+                            phase_can_local_loss,
+                            phase_can_global_loss,
                         ) = self._train_prototype_memory_batch_step_tensors(
                             support_x_batch=tf.convert_to_tensor(
                                 prototype_task["support_X"][tf.newaxis, ...],
@@ -1465,13 +1508,51 @@ class FewShotPainLearner:
                             ),
                         )
                         phase_losses.append(float(phase_loss))
+                        phase_task_losses.append(float(phase_task_loss))
                         phase_accs.append(float(phase_acc))
+                        phase_can_local_losses.append(float(phase_can_local_loss))
+                        phase_can_global_losses.append(float(phase_can_global_loss))
+                        completed_steps = prototype_step + 1
+                        should_log_step = (
+                            completed_steps == 1
+                            or completed_steps == prototype_tasks_per_epoch
+                            or completed_steps % log_every == 0
+                            or time.perf_counter() - last_log_time >= 60.0
+                        )
+                        if should_log_step:
+                            elapsed = time.perf_counter() - epoch_start_time
+                            seconds_per_update = elapsed / max(1, completed_steps)
+                            remaining = prototype_tasks_per_epoch - completed_steps
+                            eta_seconds = seconds_per_update * remaining
+                            step_seconds = time.perf_counter() - step_start_time
+                            query_count = int(prototype_task["query_X"].shape[0])
+                            self.logger.info(
+                                f"[Fold {fold + 1}/{num_subjects}] "
+                                f"[Prototype phase {prototype_epoch + 1}/{prototype_epochs}] "
+                                f"update {completed_steps}/{prototype_tasks_per_epoch}: "
+                                f"subject={sampled_subject}, query_windows={query_count}, "
+                                f"step_seconds={step_seconds:.2f}, "
+                                f"elapsed={elapsed / 60.0:.1f}m, "
+                                f"eta={eta_seconds / 60.0:.1f}m, "
+                                f"loss={float(np.mean(phase_losses)):.4f}, "
+                                f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
+                                f"acc={float(np.mean(phase_accs)):.4f}, "
+                                f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
+                                f"can_global={float(np.mean(phase_can_global_losses)):.4f}"
+                            )
+                            last_log_time = time.perf_counter()
                     if phase_losses:
+                        epoch_elapsed = time.perf_counter() - epoch_start_time
                         self.logger.info(
                             f"[Fold {fold + 1}/{num_subjects}] "
                             f"[Prototype phase {prototype_epoch + 1}/{prototype_epochs}] "
                             f"loss={float(np.mean(phase_losses)):.4f}, "
-                            f"accuracy={float(np.mean(phase_accs)):.4f}"
+                            f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
+                            f"accuracy={float(np.mean(phase_accs)):.4f}, "
+                            f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
+                            f"can_global={float(np.mean(phase_can_global_losses)):.4f}, "
+                            f"elapsed_seconds={epoch_elapsed:.2f}, "
+                            f"seconds_per_update={epoch_elapsed / max(1, len(phase_losses)):.2f}"
                         )
 
             # Held-out evaluation sweep across fixed and additional support/query sizes.

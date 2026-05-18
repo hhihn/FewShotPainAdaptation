@@ -138,7 +138,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         prototype_finetune_tasks_per_epoch=getattr(
             args,
             "prototype_finetune_tasks_per_epoch",
-            None,
+            50,
         ),
         prototype_phase2_loss_mode=str(
             getattr(args, "prototype_phase2_loss_mode", "ce_can")
@@ -384,7 +384,7 @@ def main() -> None:
     )
     parser.add_argument("--learned-prototype-slots-per-class", type=int, default=2)
     parser.add_argument("--prototype-finetune-epochs", type=int, default=1)
-    parser.add_argument("--prototype-finetune-tasks-per-epoch", type=int, default=None)
+    parser.add_argument("--prototype-finetune-tasks-per-epoch", type=int, default=50)
     parser.add_argument(
         "--prototype-phase2-loss-mode",
         type=str,
