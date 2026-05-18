@@ -19,6 +19,8 @@ SUPPORTED_VALIDATION_CHECKPOINT_METRICS = (
 )
 
 VALIDATION_CHECKPOINT_MODES = ("auto", "min", "max")
+CAN_SUPPORT_MODES = ("sampled", "learned_prototype_memory")
+PROTOTYPE_PHASE2_LOSS_MODES = ("ce_can",)
 
 
 @dataclass
@@ -82,6 +84,11 @@ class PainDatasetConfig:
     can_transductive_iterations: int = 3
     can_transductive_top_k_per_class: int = 1
     can_transductive_min_confidence: float = 0.0
+    can_support_mode: str = "sampled"
+    learned_prototype_slots_per_class: int = 1
+    prototype_finetune_epochs: int = 1
+    prototype_finetune_tasks_per_epoch: Optional[int] = None
+    prototype_phase2_loss_mode: str = "ce_can"
     triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
     triplet_margin: float = 0.1  # Margin used by triplet loss
     triplet_mining_strategy: str = (
@@ -228,6 +235,42 @@ class PainDatasetConfig:
         self.can_transductive_min_confidence = float(
             self.can_transductive_min_confidence
         )
+        self.can_support_mode = str(self.can_support_mode).strip().lower()
+        if self.can_support_mode not in CAN_SUPPORT_MODES:
+            raise ValueError(
+                "can_support_mode must be one of: " + ", ".join(CAN_SUPPORT_MODES)
+            )
+        self.learned_prototype_slots_per_class = int(
+            self.learned_prototype_slots_per_class
+        )
+        if self.learned_prototype_slots_per_class <= 0:
+            raise ValueError("learned_prototype_slots_per_class must be > 0")
+        self.prototype_finetune_epochs = int(self.prototype_finetune_epochs)
+        if self.prototype_finetune_epochs < 0:
+            raise ValueError("prototype_finetune_epochs must be non-negative")
+        if self.prototype_finetune_tasks_per_epoch is not None:
+            self.prototype_finetune_tasks_per_epoch = int(
+                self.prototype_finetune_tasks_per_epoch
+            )
+            if self.prototype_finetune_tasks_per_epoch <= 0:
+                raise ValueError("prototype_finetune_tasks_per_epoch must be > 0")
+        self.prototype_phase2_loss_mode = str(
+            self.prototype_phase2_loss_mode
+        ).strip().lower()
+        if self.prototype_phase2_loss_mode not in PROTOTYPE_PHASE2_LOSS_MODES:
+            raise ValueError(
+                "prototype_phase2_loss_mode must be one of: "
+                + ", ".join(PROTOTYPE_PHASE2_LOSS_MODES)
+            )
+        if self.can_support_mode == "learned_prototype_memory":
+            if self.attention_mode != "can":
+                raise ValueError(
+                    "can_support_mode='learned_prototype_memory' requires attention_mode='can'"
+                )
+            if self.classifier_mode != "prototype":
+                raise ValueError(
+                    "can_support_mode='learned_prototype_memory' requires classifier_mode='prototype'"
+                )
         if self.triplet_loss_weight < 0:
             raise ValueError("triplet_loss_weight must be non-negative")
         if self.triplet_margin < 0:

@@ -213,6 +213,35 @@ class ContractTests(unittest.TestCase):
                 can_attention_temperature=0.0,
             )
 
+    def test_learned_prototype_memory_config_validation(self):
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            classifier_mode="prototype",
+            can_support_mode="learned_prototype_memory",
+            learned_prototype_slots_per_class=3,
+        )
+
+        self.assertEqual(config.can_support_mode, "learned_prototype_memory")
+        self.assertEqual(config.learned_prototype_slots_per_class, 3)
+
+        with self.assertRaisesRegex(ValueError, "requires attention_mode"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="none",
+                can_support_mode="learned_prototype_memory",
+            )
+        with self.assertRaisesRegex(ValueError, "slots_per_class"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                can_support_mode="learned_prototype_memory",
+                learned_prototype_slots_per_class=0,
+            )
+
     def test_eegnet_encoder_outputs_compact_joint_embeddings(self):
         encoder = EEGNetStyleEncoder(
             sequence_length=1152,
@@ -249,7 +278,12 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(feature_map.shape, (2, 8, 4))
         self.assertEqual(embeddings.shape, (2, 8))
 
-    def _small_can_model(self) -> MultimodalPrototypicalNetwork:
+    def _small_can_model(
+        self,
+        *,
+        can_support_mode: str = "sampled",
+        learned_prototype_slots_per_class: int = 1,
+    ) -> MultimodalPrototypicalNetwork:
         return MultimodalPrototypicalNetwork(
             sequence_length=32,
             num_sensors=3,
@@ -266,6 +300,8 @@ class ContractTests(unittest.TestCase):
             attention_mode="can",
             can_meta_hidden_dim=4,
             can_transductive_iterations=2,
+            can_support_mode=can_support_mode,
+            learned_prototype_slots_per_class=learned_prototype_slots_per_class,
         )
 
     def _small_episode_batch(self):
@@ -302,6 +338,54 @@ class ContractTests(unittest.TestCase):
             np.ones((2, 4, 2)),
             atol=1e-5,
         )
+
+    def test_learned_prototype_memory_can_forward_uses_configurable_slots(self):
+        model = self._small_can_model(
+            can_support_mode="learned_prototype_memory",
+            learned_prototype_slots_per_class=3,
+        )
+        support_x, support_y, query_x, _ = self._small_episode_batch()
+
+        outputs = model.forward_episode_batch(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+
+        self.assertEqual(outputs["logits"].shape, (2, 4, 2))
+        self.assertEqual(outputs["slot_similarity_scores"].shape, (2, 4, 6))
+        self.assertEqual(outputs["support_feature_maps"].shape[1], 6)
+        self.assertEqual(outputs["prototype_support_y"].shape, (2, 6))
+
+    def test_learned_prototype_memory_gradients_reach_memory_and_can(self):
+        model = self._small_can_model(
+            can_support_mode="learned_prototype_memory",
+            learned_prototype_slots_per_class=2,
+        )
+        support_x, support_y, query_x, query_y = self._small_episode_batch()
+
+        with tf.GradientTape() as tape:
+            outputs = model.forward_episode_batch(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                training=True,
+            )
+            loss = tf.reduce_mean(
+                tf.keras.losses.sparse_categorical_crossentropy(
+                    query_y,
+                    outputs["logits"],
+                    from_logits=True,
+                )
+            )
+
+        variables = (
+            model.prototype_memory.trainable_variables
+            + model.cross_attention.trainable_variables
+        )
+        gradients = tape.gradient(loss, variables)
+        self.assertTrue(any(gradient is not None for gradient in gradients))
 
     def test_can_batched_forward_matches_per_task_forward(self):
         model = self._small_can_model()

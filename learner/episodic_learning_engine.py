@@ -84,6 +84,8 @@ class EpisodicLearningEngine:
             can_transductive_iterations=self.config.can_transductive_iterations,
             can_transductive_top_k_per_class=self.config.can_transductive_top_k_per_class,
             can_transductive_min_confidence=self.config.can_transductive_min_confidence,
+            can_support_mode="sampled",
+            learned_prototype_slots_per_class=self.config.learned_prototype_slots_per_class,
             eegnet_temporal_filters=self.config.eegnet_temporal_filters,
             eegnet_depth_multiplier=self.config.eegnet_depth_multiplier,
             eegnet_separable_filters=self.config.eegnet_separable_filters,
@@ -161,6 +163,18 @@ class EpisodicLearningEngine:
             query_x=query_x,
             training=False,
         )
+        if getattr(self.model, "can_enabled", False):
+            original_support_mode = self.model.can_support_mode
+            self.model.can_support_mode = "learned_prototype_memory"
+            try:
+                self.model.forward_episode(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    training=False,
+                )
+            finally:
+                self.model.can_support_mode = original_support_mode
         if hasattr(self.optimizer, "build"):
             self.optimizer.build(self.model.trainable_variables)
 
@@ -268,9 +282,17 @@ class EpisodicLearningEngine:
             return tf.constant(0.0, dtype=dtype)
         return tf.add_n([tf.cast(loss, dtype) for loss in self.model.losses])
 
-    def apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
+    def apply_gradients(
+        self,
+        loss: tf.Tensor,
+        tape: tf.GradientTape,
+        variables: list[tf.Variable] | None = None,
+    ) -> tf.Tensor:
         """Apply gradients for the current model update."""
-        gradients = tape.gradient(loss, self.model.trainable_variables)
+        trainable_variables = (
+            list(self.model.trainable_variables) if variables is None else list(variables)
+        )
+        gradients = tape.gradient(loss, trainable_variables)
         if (
             self.triplet_mining_strategy == "triplet_center"
             and self.triplet_center_gradient_clip_norm > 0
@@ -285,11 +307,11 @@ class EpisodicLearningEngine:
                     if grad is not None and variable is self.model.triplet_centers
                     else grad
                 )
-                for grad, variable in zip(gradients, self.model.trainable_variables)
+                for grad, variable in zip(gradients, trainable_variables)
             ]
         grads_and_vars = [
             (grad, variable)
-            for grad, variable in zip(gradients, self.model.trainable_variables)
+            for grad, variable in zip(gradients, trainable_variables)
             if grad is not None
         ]
         if not grads_and_vars:
@@ -298,6 +320,25 @@ class EpisodicLearningEngine:
         grads, variables = zip(*grads_and_vars)
         self.optimizer.apply_gradients(zip(grads, variables))
         return loss
+
+    def prototype_phase_trainable_variables(self) -> list[tf.Variable]:
+        """Variables updated during learned-prototype phase-2 fine-tuning."""
+        variables: list[tf.Variable] = [self.model.logit_scale]
+        if getattr(self.model, "prototype_memory", None) is not None:
+            variables.extend(self.model.prototype_memory.trainable_variables)
+        if getattr(self.model, "cross_attention", None) is not None:
+            variables.extend(self.model.cross_attention.trainable_variables)
+        if getattr(self.model, "global_classifier", None) is not None:
+            variables.extend(self.model.global_classifier.trainable_variables)
+        seen = set()
+        unique_variables = []
+        for variable in variables:
+            identifier = id(variable)
+            if identifier in seen:
+                continue
+            seen.add(identifier)
+            unique_variables.append(variable)
+        return unique_variables
 
     def compute_batch_all_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
@@ -1291,6 +1332,66 @@ class EpisodicLearningEngine:
             query_x_batch=query_x_batch,
             query_y_batch=query_y_batch,
         )
+
+    def train_prototype_memory_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Eager phase-2 update using learned prototype memory as the only support."""
+        if not getattr(self.model, "can_enabled", False):
+            raise ValueError("Prototype-memory fine-tuning requires CAN to be enabled")
+        original_support_mode = self.model.can_support_mode
+        original_triplet_weight = self.triplet_loss_weight
+        original_encoder_trainable = self.model.encoder.trainable
+        self.model.can_support_mode = "learned_prototype_memory"
+        self.triplet_loss_weight = 0.0
+        self.model.encoder.trainable = False
+        try:
+            with tf.GradientTape() as tape:
+                task_outputs = self.forward_task_batch(
+                    support_x_batch=support_x_batch,
+                    support_y_batch=support_y_batch,
+                    query_x_batch=query_x_batch,
+                    query_y_batch=query_y_batch,
+                    training=True,
+                )
+                batch_loss = tf.reduce_mean(task_outputs["losses"])
+                batch_task_loss = tf.reduce_mean(task_outputs["task_losses"])
+                batch_can_local_loss = tf.reduce_mean(
+                    task_outputs["can_local_losses"]
+                )
+                batch_can_global_loss = tf.reduce_mean(
+                    task_outputs["can_global_losses"]
+                )
+                predictions = tf.argmax(
+                    task_outputs["logits"],
+                    axis=2,
+                    output_type=tf.int32,
+                )
+                batch_acc = tf.reduce_mean(
+                    tf.cast(tf.equal(predictions, query_y_batch), tf.float32)
+                )
+            batch_loss = self.apply_gradients(
+                batch_loss,
+                tape,
+                variables=self.prototype_phase_trainable_variables(),
+            )
+            return (
+                batch_loss,
+                batch_task_loss,
+                batch_acc,
+                tf.constant(0.0, dtype=tf.float32),
+                tf.constant(0.0, dtype=tf.float32),
+                batch_can_local_loss,
+                batch_can_global_loss,
+            )
+        finally:
+            self.model.encoder.trainable = original_encoder_trainable
+            self.triplet_loss_weight = original_triplet_weight
+            self.model.can_support_mode = original_support_mode
 
     def eval_task_batch_step_eager_tensors(
         self,

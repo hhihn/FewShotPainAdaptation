@@ -1500,3 +1500,55 @@ class PainMetaDataset:
         eval_set = {"X": eval_X, "y": eval_y}
 
         return support_set, eval_set
+
+    def build_all_query_task(
+        self,
+        subject: int,
+        *,
+        split: str = "all",
+        use_base_index: bool = True,
+        normalize_with_query_subject_stats: bool = True,
+    ) -> Dict[str, np.ndarray]:
+        """Build a query-only task containing every eligible sample for one subject.
+
+        The returned support tensors are placeholders for API compatibility; learned
+        prototype-memory CAN ignores them.
+        """
+        subject = int(subject)
+        split_index = self._get_sampling_index_for_split(
+            split,
+            use_base_index=use_base_index,
+        )
+        query_X, query_y = [], []
+        for class_id in range(self.config.n_way):
+            refs = split_index[subject][class_id]
+            if len(refs) == 0:
+                continue
+            query_X.append(self._gather_samples(refs))
+            query_y.append(np.full(len(refs), class_id, dtype=np.int32))
+        if not query_X:
+            raise ValueError(
+                f"No query samples available for subject={subject}, split={split}"
+            )
+
+        query_X = np.concatenate(query_X, axis=0)
+        query_y = np.concatenate(query_y, axis=0)
+        if normalize_with_query_subject_stats:
+            stats = self._compute_batch_stats(query_X)
+            query_X = self._apply_stats(query_X, stats)
+        else:
+            query_X = self._normalize_data(query_X, subject)
+
+        support_size = int(self.config.n_way)
+        support_X = np.zeros(
+            (support_size, query_X.shape[1], query_X.shape[2]),
+            dtype=query_X.dtype,
+        )
+        support_y = np.arange(self.config.n_way, dtype=np.int32)
+        return {
+            "support_X": support_X,
+            "support_y": support_y,
+            "query_X": query_X,
+            "query_y": query_y,
+            "subject": subject,
+        }

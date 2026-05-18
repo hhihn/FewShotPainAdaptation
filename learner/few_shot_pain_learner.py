@@ -150,6 +150,11 @@ class FewShotPainLearner:
             "can_transductive_iterations": self.config.can_transductive_iterations,
             "can_transductive_top_k_per_class": self.config.can_transductive_top_k_per_class,
             "can_transductive_min_confidence": self.config.can_transductive_min_confidence,
+            "can_support_mode": self.config.can_support_mode,
+            "learned_prototype_slots_per_class": self.config.learned_prototype_slots_per_class,
+            "prototype_finetune_epochs": self.config.prototype_finetune_epochs,
+            "prototype_finetune_tasks_per_epoch": self.config.prototype_finetune_tasks_per_epoch,
+            "prototype_phase2_loss_mode": self.config.prototype_phase2_loss_mode,
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
@@ -307,6 +312,21 @@ class FewShotPainLearner:
             support_y_batch,
             query_x_batch,
             query_y_batch,
+        )
+
+    def _train_prototype_memory_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[tf.Tensor, ...]:
+        """Run one phase-2 learned-prototype-memory optimizer update."""
+        return self.engine.train_prototype_memory_batch_step_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
         )
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
@@ -1392,6 +1412,68 @@ class FewShotPainLearner:
                     "for held-out evaluation."
                 )
 
+            if self.config.can_support_mode == "learned_prototype_memory":
+                prototype_epochs = max(0, int(self.config.prototype_finetune_epochs))
+                prototype_tasks_per_epoch = int(
+                    self.config.prototype_finetune_tasks_per_epoch
+                    or self.config.tasks_per_epoch
+                )
+                if prototype_epochs > 0:
+                    self.logger.info(
+                        f"[Fold {fold + 1}/{num_subjects}] "
+                        "Starting learned-prototype phase-2 fine-tuning: "
+                        f"epochs={prototype_epochs}, tasks_per_epoch={prototype_tasks_per_epoch}, "
+                        f"slots_per_class={self.config.learned_prototype_slots_per_class}"
+                    )
+                for prototype_epoch in range(prototype_epochs):
+                    phase_losses = []
+                    phase_accs = []
+                    for _ in range(prototype_tasks_per_epoch):
+                        sampled_subject = int(
+                            train_sampler.rng.choice(train_sampler.active_subjects_array)
+                        )
+                        prototype_task = self.dataset.build_all_query_task(
+                            sampled_subject,
+                            split=train_sampler.data_split,
+                            use_base_index=True,
+                            normalize_with_query_subject_stats=True,
+                        )
+                        (
+                            phase_loss,
+                            _phase_task_loss,
+                            phase_acc,
+                            _phase_contrastive_loss,
+                            _phase_triplet_loss,
+                            _phase_can_local_loss,
+                            _phase_can_global_loss,
+                        ) = self._train_prototype_memory_batch_step_tensors(
+                            support_x_batch=tf.convert_to_tensor(
+                                prototype_task["support_X"][tf.newaxis, ...],
+                                dtype=tf.float32,
+                            ),
+                            support_y_batch=tf.convert_to_tensor(
+                                prototype_task["support_y"][tf.newaxis, ...],
+                                dtype=tf.int32,
+                            ),
+                            query_x_batch=tf.convert_to_tensor(
+                                prototype_task["query_X"][tf.newaxis, ...],
+                                dtype=tf.float32,
+                            ),
+                            query_y_batch=tf.convert_to_tensor(
+                                prototype_task["query_y"][tf.newaxis, ...],
+                                dtype=tf.int32,
+                            ),
+                        )
+                        phase_losses.append(float(phase_loss))
+                        phase_accs.append(float(phase_acc))
+                    if phase_losses:
+                        self.logger.info(
+                            f"[Fold {fold + 1}/{num_subjects}] "
+                            f"[Prototype phase {prototype_epoch + 1}/{prototype_epochs}] "
+                            f"loss={float(np.mean(phase_losses)):.4f}, "
+                            f"accuracy={float(np.mean(phase_accs)):.4f}"
+                        )
+
             # Held-out evaluation sweep across fixed and additional support/query sizes.
             pre_adaptation_weights = self.model.get_weights()
             pre_adaptation_optimizer_variables = self.engine.snapshot_variables(
@@ -1399,13 +1481,101 @@ class FewShotPainLearner:
             )
             sweep_metrics_by_size = {}
             run_adaptation = k_shot_adaptation_steps > 0
+            heldout_pairs_to_evaluate = heldout_eval_pairs
+            if self.config.can_support_mode == "learned_prototype_memory":
+                run_adaptation = False
+                fixed_size_key = f"k{configured_eval_pair[0]}_q{configured_eval_pair[1]}"
+                query_task = self.dataset.build_all_query_task(
+                    int(test_subject),
+                    split=test_sampler.data_split,
+                    use_base_index=True,
+                    normalize_with_query_subject_stats=True,
+                )
+                zero_shot_loss, zero_shot_metrics = (
+                    self.evaluator.evaluate_prototype_memory_task_metrics(query_task)
+                )
+                k_shot_loss = float(zero_shot_loss)
+                k_shot_metrics = dict(zero_shot_metrics)
+                sweep_metrics_by_size[fixed_size_key] = {
+                    "zero_shot_loss": zero_shot_loss,
+                    "zero_shot_metrics": zero_shot_metrics,
+                    "adaptation_mean_loss": 0.0,
+                    "k_shot_loss": k_shot_loss,
+                    "k_shot_metrics": k_shot_metrics,
+                }
+                size_results = cv_results["heldout_eval_by_task_size"][fixed_size_key]
+                size_results["zero_shot_losses"].append(zero_shot_loss)
+                size_results["zero_shot_accuracies"].append(
+                    zero_shot_metrics["accuracy"]
+                )
+                size_results["zero_shot_precisions"].append(
+                    zero_shot_metrics["precision"]
+                )
+                size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
+                size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
+                size_results["zero_shot_intra_class_similarities"].append(
+                    zero_shot_metrics["intra_class_similarity"]
+                )
+                size_results["zero_shot_inter_class_similarities"].append(
+                    zero_shot_metrics["inter_class_similarity"]
+                )
+                if "transductive_accuracy" in zero_shot_metrics:
+                    size_results["zero_shot_transductive_losses"].append(
+                        zero_shot_metrics["transductive_loss"]
+                    )
+                    size_results["zero_shot_transductive_accuracies"].append(
+                        zero_shot_metrics["transductive_accuracy"]
+                    )
+                    size_results["zero_shot_transductive_precisions"].append(
+                        zero_shot_metrics["transductive_precision"]
+                    )
+                    size_results["zero_shot_transductive_recalls"].append(
+                        zero_shot_metrics["transductive_recall"]
+                    )
+                    size_results["zero_shot_transductive_f1s"].append(
+                        zero_shot_metrics["transductive_f1"]
+                    )
+                size_results["k_shot_losses"].append(k_shot_loss)
+                size_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
+                size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
+                size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
+                size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
+                size_results["k_shot_intra_class_similarities"].append(
+                    k_shot_metrics["intra_class_similarity"]
+                )
+                size_results["k_shot_inter_class_similarities"].append(
+                    k_shot_metrics["inter_class_similarity"]
+                )
+                if "transductive_accuracy" in k_shot_metrics:
+                    size_results["k_shot_transductive_losses"].append(
+                        k_shot_metrics["transductive_loss"]
+                    )
+                    size_results["k_shot_transductive_accuracies"].append(
+                        k_shot_metrics["transductive_accuracy"]
+                    )
+                    size_results["k_shot_transductive_precisions"].append(
+                        k_shot_metrics["transductive_precision"]
+                    )
+                    size_results["k_shot_transductive_recalls"].append(
+                        k_shot_metrics["transductive_recall"]
+                    )
+                    size_results["k_shot_transductive_f1s"].append(
+                        k_shot_metrics["transductive_f1"]
+                    )
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    "Prototype-only holdout evaluated on all query samples: "
+                    f"queries={len(query_task['query_y'])}, "
+                    f"accuracy={zero_shot_metrics['accuracy']:.4f}"
+                )
+                heldout_pairs_to_evaluate = []
             if not run_adaptation:
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
                     "Skipping held-out adaptation sweep because "
                     "k_shot_adaptation_steps=0."
                 )
-            for eval_k_shot, eval_q_query in heldout_eval_pairs:
+            for eval_k_shot, eval_q_query in heldout_pairs_to_evaluate:
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
                 self.model.set_weights(pre_adaptation_weights)

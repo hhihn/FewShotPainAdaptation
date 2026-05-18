@@ -112,7 +112,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         task_normalize_mode=args.normalize_mode,
         task_construction_mode=args.task_construction_mode,
         classifier_mode=args.classifier_mode,
-        attention_mode=str(getattr(args, "attention_mode", "none")),
+        attention_mode=str(getattr(args, "attention_mode", "can")),
         can_attention_temperature=float(
             getattr(args, "can_attention_temperature", 1.0)
         ),
@@ -120,13 +120,28 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
         can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
         can_transductive_iterations=int(
-            getattr(args, "can_transductive_iterations", 3)
+            getattr(args, "can_transductive_iterations", 1)
         ),
         can_transductive_top_k_per_class=int(
             getattr(args, "can_transductive_top_k_per_class", 1)
         ),
         can_transductive_min_confidence=float(
             getattr(args, "can_transductive_min_confidence", 0.0)
+        ),
+        can_support_mode=str(
+            getattr(args, "can_support_mode", "learned_prototype_memory")
+        ),
+        learned_prototype_slots_per_class=int(
+            getattr(args, "learned_prototype_slots_per_class", 2)
+        ),
+        prototype_finetune_epochs=int(getattr(args, "prototype_finetune_epochs", 1)),
+        prototype_finetune_tasks_per_epoch=getattr(
+            args,
+            "prototype_finetune_tasks_per_epoch",
+            None,
+        ),
+        prototype_phase2_loss_mode=str(
+            getattr(args, "prototype_phase2_loss_mode", "ce_can")
         ),
         train_batch_size=args.task_batch_size,
         embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
@@ -242,6 +257,17 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             "can_transductive_min_confidence": float(
                 config.can_transductive_min_confidence
             ),
+            "can_support_mode": str(config.can_support_mode),
+            "learned_prototype_slots_per_class": int(
+                config.learned_prototype_slots_per_class
+            ),
+            "prototype_finetune_epochs": int(config.prototype_finetune_epochs),
+            "prototype_finetune_tasks_per_epoch": (
+                int(config.prototype_finetune_tasks_per_epoch)
+                if config.prototype_finetune_tasks_per_epoch is not None
+                else None
+            ),
+            "prototype_phase2_loss_mode": str(config.prototype_phase2_loss_mode),
             "learning_rate": float(args.learning_rate),
             "lr_schedule": str(config.lr_schedule),
             "lr_decay_alpha": float(config.lr_decay_alpha),
@@ -303,8 +329,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run full LOSO training/evaluation across all held-out subjects and "
-            "store results as JSON."
+            "Run full LOSO training/evaluation with learned CAN prototype memory "
+            "across all held-out subjects and store results as JSON."
         )
     )
     parser.add_argument("--data-dir", type=str, default="../data")
@@ -339,7 +365,7 @@ def main() -> None:
     parser.add_argument(
         "--attention-mode",
         type=str,
-        default="none",
+        default="can",
         choices=("none", "can"),
         help="Optional episodic attention module. 'can' enables CAN/CAM.",
     )
@@ -347,9 +373,24 @@ def main() -> None:
     parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
     parser.add_argument("--can-local-loss-weight", type=float, default=1.0)
     parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
-    parser.add_argument("--can-transductive-iterations", type=int, default=3)
+    parser.add_argument("--can-transductive-iterations", type=int, default=1)
     parser.add_argument("--can-transductive-top-k-per-class", type=int, default=1)
     parser.add_argument("--can-transductive-min-confidence", type=float, default=0.0)
+    parser.add_argument(
+        "--can-support-mode",
+        type=str,
+        default="learned_prototype_memory",
+        choices=("sampled", "learned_prototype_memory"),
+    )
+    parser.add_argument("--learned-prototype-slots-per-class", type=int, default=2)
+    parser.add_argument("--prototype-finetune-epochs", type=int, default=1)
+    parser.add_argument("--prototype-finetune-tasks-per-epoch", type=int, default=None)
+    parser.add_argument(
+        "--prototype-phase2-loss-mode",
+        type=str,
+        default="ce_can",
+        choices=("ce_can",),
+    )
     parser.add_argument(
         "--normalize-mode",
         type=str,
@@ -412,7 +453,7 @@ def main() -> None:
         default=None,
         help="Deprecated alias for --heldout-eval-tasks.",
     )
-    parser.add_argument("--k-shot-adaptation-steps", type=int, default=10)
+    parser.add_argument("--k-shot-adaptation-steps", type=int, default=0)
     parser.add_argument("--train-log-every", type=int, default=10)
     parser.add_argument("--eval-log-every", type=int, default=5)
     parser.add_argument("--val-batch-size", type=int, default=32)

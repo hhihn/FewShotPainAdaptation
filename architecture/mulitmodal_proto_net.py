@@ -169,6 +169,67 @@ class CrossAttentionModule(keras.layers.Layer):
         }
 
 
+class LearnedPrototypeMemory(keras.layers.Layer):
+    """Trainable class-conditional temporal feature-map prototype slots."""
+
+    def __init__(
+        self,
+        num_classes: int,
+        slots_per_class: int,
+        seed: int = 0,
+        name: str = "learned_prototype_memory",
+    ):
+        super().__init__(name=name)
+        self.num_classes = int(num_classes)
+        self.slots_per_class = int(slots_per_class)
+        self.seed = int(seed)
+        self.prototype_maps = None
+
+    def build(self, input_shape):
+        feature_time = int(input_shape[-2])
+        feature_dim = int(input_shape[-1])
+        self.prototype_maps = self.add_weight(
+            name="prototype_maps",
+            shape=(
+                self.num_classes,
+                self.slots_per_class,
+                feature_time,
+                feature_dim,
+            ),
+            initializer=keras.initializers.GlorotUniform(seed=self.seed),
+            trainable=True,
+        )
+        super().build(input_shape)
+
+    def call(self, query_feature_maps: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        """Return task-broadcast prototype maps and their class labels."""
+        task_count = tf.shape(query_feature_maps)[0]
+        slot_count = self.num_classes * self.slots_per_class
+        flat_maps = tf.reshape(
+            self.prototype_maps,
+            [
+                slot_count,
+                tf.shape(self.prototype_maps)[2],
+                tf.shape(self.prototype_maps)[3],
+            ],
+        )
+        task_maps = tf.broadcast_to(
+            flat_maps[tf.newaxis, ...],
+            [
+                task_count,
+                slot_count,
+                tf.shape(flat_maps)[1],
+                tf.shape(flat_maps)[2],
+            ],
+        )
+        labels = tf.repeat(
+            tf.range(self.num_classes, dtype=tf.int32),
+            repeats=self.slots_per_class,
+        )
+        labels = tf.broadcast_to(labels[tf.newaxis, :], [task_count, slot_count])
+        return task_maps, labels
+
+
 class MultimodalPrototypicalNetwork(keras.Model):
     """Prototypical network with a joint EEGNet-style physiological encoder."""
 
@@ -195,6 +256,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         can_transductive_iterations: int = 3,
         can_transductive_top_k_per_class: int = 1,
         can_transductive_min_confidence: float = 0.0,
+        can_support_mode: str = "sampled",
+        learned_prototype_slots_per_class: int = 1,
         seed: int = 0,
     ):
         """
@@ -229,11 +292,23 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.can_transductive_iterations = int(can_transductive_iterations)
         self.can_transductive_top_k_per_class = int(can_transductive_top_k_per_class)
         self.can_transductive_min_confidence = float(can_transductive_min_confidence)
+        self.can_support_mode = str(can_support_mode).strip().lower()
+        self.learned_prototype_slots_per_class = int(learned_prototype_slots_per_class)
         self.can_enabled = self.attention_mode == "can"
         if self.can_enabled and self.classifier_mode != "prototype":
             raise ValueError("attention_mode='can' requires classifier_mode='prototype'")
         if self.can_enabled and self.num_classes < 2:
             raise ValueError("attention_mode='can' requires at least two classes")
+        if self.can_support_mode not in {"sampled", "learned_prototype_memory"}:
+            raise ValueError(
+                "can_support_mode must be one of: sampled, learned_prototype_memory"
+            )
+        if self.can_support_mode == "learned_prototype_memory" and not self.can_enabled:
+            raise ValueError(
+                "can_support_mode='learned_prototype_memory' requires attention_mode='can'"
+            )
+        if self.learned_prototype_slots_per_class <= 0:
+            raise ValueError("learned_prototype_slots_per_class must be > 0")
         self.eegnet_temporal_filters = int(eegnet_temporal_filters)
         self.eegnet_depth_multiplier = int(eegnet_depth_multiplier)
         self.eegnet_separable_filters = int(eegnet_separable_filters)
@@ -279,6 +354,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
             CrossAttentionModule(
                 temperature=self.can_attention_temperature,
                 meta_hidden_dim=self.can_meta_hidden_dim,
+            )
+            if self.can_enabled
+            else None
+        )
+        self.prototype_memory = (
+            LearnedPrototypeMemory(
+                num_classes=self.num_classes,
+                slots_per_class=self.learned_prototype_slots_per_class,
+                seed=self.seed + 17,
             )
             if self.can_enabled
             else None
@@ -430,6 +514,127 @@ class MultimodalPrototypicalNetwork(keras.Model):
             "can_global_logits": global_logits,
             "can_proto_attention": cam_outputs["proto_attention"],
             "can_query_attention": cam_outputs["query_attention"],
+        }
+
+    def _encode_query_feature_maps_and_embeddings(
+        self,
+        query_x: tf.Tensor,
+        training: bool = False,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        num_tasks = tf.shape(query_x)[0]
+        query_size = tf.shape(query_x)[1]
+        sequence_length = tf.shape(query_x)[2]
+        num_sensors = tf.shape(query_x)[3]
+        query_flat = tf.reshape(
+            query_x, [num_tasks * query_size, sequence_length, num_sensors]
+        )
+        query_feature_maps_flat = self.encode_feature_map(query_flat, training=training)
+        query_embeddings_flat = self.embed_feature_map(
+            query_feature_maps_flat,
+            training=training,
+        )
+        feature_time = tf.shape(query_feature_maps_flat)[1]
+        feature_dim = tf.shape(query_feature_maps_flat)[2]
+        embedding_dim = tf.shape(query_embeddings_flat)[1]
+        return (
+            tf.reshape(
+                query_feature_maps_flat,
+                [num_tasks, query_size, feature_time, feature_dim],
+            ),
+            tf.reshape(
+                query_embeddings_flat,
+                [num_tasks, query_size, embedding_dim],
+            ),
+        )
+
+    def _aggregate_slot_scores(self, slot_scores: tf.Tensor) -> tf.Tensor:
+        slot_scores = tf.reshape(
+            slot_scores,
+            [
+                tf.shape(slot_scores)[0],
+                tf.shape(slot_scores)[1],
+                self.num_classes,
+                self.learned_prototype_slots_per_class,
+            ],
+        )
+        return tf.reduce_logsumexp(slot_scores, axis=-1) - tf.math.log(
+            tf.cast(self.learned_prototype_slots_per_class, slot_scores.dtype)
+        )
+
+    def _aggregate_slot_local_logits(self, local_logits: tf.Tensor) -> tf.Tensor:
+        local_logits = tf.reshape(
+            local_logits,
+            [
+                tf.shape(local_logits)[0],
+                tf.shape(local_logits)[1],
+                tf.shape(local_logits)[2],
+                self.num_classes,
+                self.learned_prototype_slots_per_class,
+            ],
+        )
+        return tf.reduce_logsumexp(local_logits, axis=-1) - tf.math.log(
+            tf.cast(self.learned_prototype_slots_per_class, local_logits.dtype)
+        )
+
+    def _forward_episode_batch_learned_prototype_memory_can(
+        self,
+        support_x: tf.Tensor,
+        support_y: tf.Tensor,
+        query_x: tf.Tensor,
+        training: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run CAN using trainable prototype feature-map slots as the only support."""
+        del support_x, support_y
+        query_feature_maps, query_embeddings = (
+            self._encode_query_feature_maps_and_embeddings(query_x, training=training)
+        )
+        prototype_maps, prototype_y = self.prototype_memory(query_feature_maps)
+        flat_prototype_maps = tf.reshape(
+            prototype_maps,
+            [
+                tf.shape(prototype_maps)[0] * tf.shape(prototype_maps)[1],
+                tf.shape(prototype_maps)[2],
+                tf.shape(prototype_maps)[3],
+            ],
+        )
+        prototype_embeddings_flat = self.embed_feature_map(
+            flat_prototype_maps,
+            training=training,
+        )
+        support_embeddings = tf.reshape(
+            prototype_embeddings_flat,
+            [
+                tf.shape(prototype_maps)[0],
+                tf.shape(prototype_maps)[1],
+                tf.shape(prototype_embeddings_flat)[1],
+            ],
+        )
+        prototypes = self._compute_prototypes_batch(support_embeddings, prototype_y)
+        cam_outputs = self.cross_attention((prototype_maps, query_feature_maps))
+        similarity_scores = self._aggregate_slot_scores(
+            cam_outputs["similarity_scores"]
+        )
+        logits = similarity_scores * self.logit_scale
+        global_logits = self.global_classifier(query_embeddings, training=training)
+
+        return {
+            "support_embeddings": support_embeddings,
+            "query_embeddings": query_embeddings,
+            "prototypes": prototypes,
+            "support_feature_maps": prototype_maps,
+            "query_feature_maps": query_feature_maps,
+            "prototype_feature_maps": prototype_maps,
+            "prototype_support_y": prototype_y,
+            "distances": 1.0 - similarity_scores,
+            "logits": logits,
+            "similarity_scores": similarity_scores,
+            "can_local_logits": self._aggregate_slot_local_logits(
+                cam_outputs["local_logits"]
+            ),
+            "can_global_logits": global_logits,
+            "can_proto_attention": cam_outputs["proto_attention"],
+            "can_query_attention": cam_outputs["query_attention"],
+            "slot_similarity_scores": cam_outputs["similarity_scores"],
         }
 
     def compute_distances(self, query_embeddings, prototype_embeddings):
@@ -621,12 +826,22 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def forward_episode(self, support_x, support_y, query_x, training=False):
         """Run one episode and return logits plus intermediate embedding tensors."""
         if self.can_enabled:
-            batched_outputs = self._forward_episode_batch_can(
-                support_x=support_x[tf.newaxis, ...],
-                support_y=support_y[tf.newaxis, ...],
-                query_x=query_x[tf.newaxis, ...],
-                training=training,
-            )
+            if self.can_support_mode == "learned_prototype_memory":
+                batched_outputs = (
+                    self._forward_episode_batch_learned_prototype_memory_can(
+                        support_x=support_x[tf.newaxis, ...],
+                        support_y=support_y[tf.newaxis, ...],
+                        query_x=query_x[tf.newaxis, ...],
+                        training=training,
+                    )
+                )
+            else:
+                batched_outputs = self._forward_episode_batch_can(
+                    support_x=support_x[tf.newaxis, ...],
+                    support_y=support_y[tf.newaxis, ...],
+                    query_x=query_x[tf.newaxis, ...],
+                    training=training,
+                )
             return {
                 key: value[0] if isinstance(value, tf.Tensor) else value
                 for key, value in batched_outputs.items()
@@ -783,15 +998,24 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 training=training,
             )
 
-        outputs = self._forward_episode_batch_can(
-            support_x=support_x,
-            support_y=support_y,
-            query_x=query_x,
-            training=training,
-        )
+        if self.can_support_mode == "learned_prototype_memory":
+            outputs = self._forward_episode_batch_learned_prototype_memory_can(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                training=training,
+            )
+        else:
+            outputs = self._forward_episode_batch_can(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                training=training,
+            )
         support_feature_maps = outputs["support_feature_maps"]
         query_feature_maps = outputs["query_feature_maps"]
         similarity_scores = outputs["similarity_scores"]
+        transductive_support_y = outputs.get("prototype_support_y", support_y)
         selected_mask = tf.zeros(tf.shape(similarity_scores)[:2], dtype=tf.bool)
         pseudo_labels = tf.argmax(similarity_scores, axis=2, output_type=tf.int32)
 
@@ -802,7 +1026,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             )
             prototype_maps = self._prototype_maps_with_pseudo_labels(
                 support_feature_maps=support_feature_maps,
-                support_y=support_y,
+                support_y=transductive_support_y,
                 query_feature_maps=query_feature_maps,
                 pseudo_labels=pseudo_labels,
                 selected_mask=selected_mask,
@@ -825,6 +1049,13 @@ class MultimodalPrototypicalNetwork(keras.Model):
     ) -> dict[str, tf.Tensor]:
         """Run multiple episodes while encoding their samples in one batch."""
         if self.can_enabled:
+            if self.can_support_mode == "learned_prototype_memory":
+                return self._forward_episode_batch_learned_prototype_memory_can(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    training=training,
+                )
             return self._forward_episode_batch_can(
                 support_x=support_x,
                 support_y=support_y,

@@ -355,3 +355,129 @@ class EpisodeEvaluationService:
             )
         finally:
             self.set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
+
+    def evaluate_prototype_memory_task_metrics(self, task_dict: dict) -> tuple[float, dict]:
+        """Evaluate one query-only task with learned prototype memory as support."""
+        original_support_mode = self.engine.model.can_support_mode
+        original_triplet_weight = self.engine.triplet_loss_weight
+        self.engine.model.can_support_mode = "learned_prototype_memory"
+        self.engine.triplet_loss_weight = 0.0
+        try:
+            support_x = tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32)[
+                tf.newaxis, ...
+            ]
+            support_y = tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32)[
+                tf.newaxis, ...
+            ]
+            query_x = tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32)[
+                tf.newaxis, ...
+            ]
+            query_y = tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32)[
+                tf.newaxis, ...
+            ]
+            outputs = self.engine.forward_task_batch(
+                support_x_batch=support_x,
+                support_y_batch=support_y,
+                query_x_batch=query_x,
+                query_y_batch=query_y,
+                training=False,
+                return_similarity_scores=True,
+            )
+            logits = outputs["logits"][0]
+            similarity_scores = outputs["similarity_scores"][0]
+            query_y_flat = query_y[0]
+            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+            per_query_loss = tf.keras.losses.sparse_categorical_crossentropy(
+                query_y_flat,
+                logits,
+                from_logits=True,
+            )
+
+            y_true = query_y_flat.numpy().astype(np.int32, copy=False)
+            y_pred = pred.numpy().astype(np.int32, copy=False)
+            macro = self.compute_macro_metrics(y_true, y_pred)
+            intra, inter = self.split_similarity_scores(
+                similarity_scores.numpy(),
+                y_true,
+            )
+            metrics = dict(macro)
+            metrics.update(self.compute_similarity_metrics(intra, inter))
+            metrics["task_loss"] = float(tf.reduce_mean(per_query_loss))
+            metrics["contrastive_loss"] = 0.0
+            metrics["triplet_loss"] = 0.0
+            metrics["can_local_loss"] = float(
+                tf.reduce_mean(outputs["can_local_losses"])
+            )
+            metrics["can_global_loss"] = float(
+                tf.reduce_mean(outputs["can_global_losses"])
+            )
+
+            if (
+                getattr(self.config, "attention_mode", "none") == "can"
+                and int(getattr(self.config, "can_transductive_iterations", 0)) > 0
+            ):
+                transductive = self.engine.model.forward_episode_batch_transductive(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    training=False,
+                )
+                transductive_logits = transductive["transductive_logits"][0]
+                transductive_scores = transductive[
+                    "transductive_similarity_scores"
+                ][0]
+                transductive_pred = tf.argmax(
+                    transductive_logits,
+                    axis=1,
+                    output_type=tf.int32,
+                )
+                transductive_macro = self.compute_macro_metrics(
+                    y_true,
+                    transductive_pred.numpy().astype(np.int32, copy=False),
+                )
+                trans_intra, trans_inter = self.split_similarity_scores(
+                    transductive_scores.numpy(),
+                    y_true,
+                )
+                trans_similarity = self.compute_similarity_metrics(
+                    trans_intra,
+                    trans_inter,
+                )
+                metrics.update(
+                    {
+                        "transductive_loss": float(
+                            tf.reduce_mean(
+                                tf.keras.losses.sparse_categorical_crossentropy(
+                                    query_y_flat,
+                                    transductive_logits,
+                                    from_logits=True,
+                                )
+                            )
+                        ),
+                        "transductive_accuracy": transductive_macro["accuracy"],
+                        "transductive_precision": transductive_macro["precision"],
+                        "transductive_recall": transductive_macro["recall"],
+                        "transductive_f1": transductive_macro["f1"],
+                        "transductive_intra_class_similarity": trans_similarity[
+                            "intra_class_similarity"
+                        ],
+                        "transductive_inter_class_similarity": trans_similarity[
+                            "inter_class_similarity"
+                        ],
+                        "transductive_similarity_margin": trans_similarity[
+                            "similarity_margin"
+                        ],
+                        "transductive_selected_count": int(
+                            tf.reduce_sum(
+                                tf.cast(
+                                    transductive["transductive_selected_mask"],
+                                    tf.int32,
+                                )
+                            )
+                        ),
+                    }
+                )
+            return float(tf.reduce_mean(per_query_loss)), metrics
+        finally:
+            self.engine.triplet_loss_weight = original_triplet_weight
+            self.engine.model.can_support_mode = original_support_mode
