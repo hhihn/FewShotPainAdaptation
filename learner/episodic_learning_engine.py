@@ -608,10 +608,28 @@ class EpisodicLearningEngine:
                 - can_score_margins,
                 tf.constant(0.0, dtype=task_losses.dtype),
             )
+            # Semi-hard mining in score-space:
+            # keep only samples with non-negative margin that still violate target.
+            semi_hard_mask = tf.logical_and(
+                can_score_margins >= tf.constant(0.0, dtype=task_losses.dtype),
+                can_score_margins < tf.cast(self.config.can_margin_target, task_losses.dtype),
+            )
+            semi_hard_mask_f = tf.cast(semi_hard_mask, task_losses.dtype)
+            semi_hard_count = tf.reduce_sum(semi_hard_mask_f, axis=1)
+            semi_hard_loss_sum = tf.reduce_sum(
+                per_query_margin_loss * semi_hard_mask_f,
+                axis=1,
+            )
+            all_positive_loss_mean = tf.reduce_mean(per_query_margin_loss, axis=1)
+            mined_margin_loss = tf.where(
+                semi_hard_count > 0,
+                semi_hard_loss_sum / semi_hard_count,
+                all_positive_loss_mean,
+            )
             can_margin_losses = tf.cast(
                 self.config.can_margin_loss_weight,
                 task_losses.dtype,
-            ) * tf.reduce_mean(per_query_margin_loss, axis=1)
+            ) * mined_margin_loss
         contrastive_losses = tf.zeros_like(task_losses)
         if can_mode:
             triplet_losses = tf.zeros_like(task_losses)
