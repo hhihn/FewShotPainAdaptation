@@ -121,7 +121,9 @@ class EpisodicLearningEngine:
                     max(1, int(self.config.tasks_per_epoch)) / self.train_batch_size
                 ),
             )
-            decay_steps = max(1, updates_per_epoch * max(1, int(self.config.num_epochs)))
+            decay_steps = max(
+                1, updates_per_epoch * max(1, int(self.config.num_epochs))
+            )
             return keras.optimizers.schedules.CosineDecay(
                 initial_learning_rate=self.learning_rate,
                 decay_steps=decay_steps,
@@ -290,7 +292,9 @@ class EpisodicLearningEngine:
     ) -> tf.Tensor:
         """Apply gradients for the current model update."""
         trainable_variables = (
-            list(self.model.trainable_variables) if variables is None else list(variables)
+            list(self.model.trainable_variables)
+            if variables is None
+            else list(variables)
         )
         gradients = tape.gradient(loss, trainable_variables)
         if (
@@ -465,9 +469,8 @@ class EpisodicLearningEngine:
         )
         class_ids = tf.range(tf.shape(centers)[0], dtype=labels.dtype)
         negative_mask = tf.not_equal(labels[:, tf.newaxis], class_ids[tf.newaxis, :])
-        large_distance = (
-            tf.reduce_max(center_distances)
-            + tf.constant(1.0, dtype=center_distances.dtype)
+        large_distance = tf.reduce_max(center_distances) + tf.constant(
+            1.0, dtype=center_distances.dtype
         )
         negative_distances = tf.where(
             negative_mask,
@@ -519,9 +522,8 @@ class EpisodicLearningEngine:
             labels_batch[:, :, tf.newaxis],
             class_ids[tf.newaxis, tf.newaxis, :],
         )
-        large_distance = (
-            tf.reduce_max(center_distances)
-            + tf.constant(1.0, dtype=center_distances.dtype)
+        large_distance = tf.reduce_max(center_distances) + tf.constant(
+            1.0, dtype=center_distances.dtype
         )
         negative_distances = tf.where(
             negative_mask,
@@ -575,7 +577,9 @@ class EpisodicLearningEngine:
             and float(getattr(self.config, "can_local_loss_weight", 0.0)) > 0
             and "can_local_logits" in episode_outputs
         ):
-            local_logits = tf.cast(episode_outputs["can_local_logits"], task_losses.dtype)
+            local_logits = tf.cast(
+                episode_outputs["can_local_logits"], task_losses.dtype
+            )
             local_time = tf.shape(local_logits)[2]
             local_labels = tf.tile(
                 query_y_batch[:, :, tf.newaxis],
@@ -612,7 +616,8 @@ class EpisodicLearningEngine:
             # keep only samples with non-negative margin that still violate target.
             semi_hard_mask = tf.logical_and(
                 can_score_margins >= tf.constant(0.0, dtype=task_losses.dtype),
-                can_score_margins < tf.cast(self.config.can_margin_target, task_losses.dtype),
+                can_score_margins
+                < tf.cast(self.config.can_margin_target, task_losses.dtype),
             )
             semi_hard_mask_f = tf.cast(semi_hard_mask, task_losses.dtype)
             semi_hard_count = tf.reduce_sum(semi_hard_mask_f, axis=1)
@@ -626,10 +631,13 @@ class EpisodicLearningEngine:
                 semi_hard_loss_sum / semi_hard_count,
                 all_positive_loss_mean,
             )
-            can_margin_losses = tf.cast(
-                self.config.can_margin_loss_weight,
-                task_losses.dtype,
-            ) * mined_margin_loss
+            can_margin_losses = (
+                tf.cast(
+                    self.config.can_margin_loss_weight,
+                    task_losses.dtype,
+                )
+                * mined_margin_loss
+            )
         contrastive_losses = tf.zeros_like(task_losses)
         if can_mode:
             triplet_losses = tf.zeros_like(task_losses)
@@ -711,9 +719,9 @@ class EpisodicLearningEngine:
                 "support_embeddings"
             ][tf.newaxis, ...]
         if "query_embeddings" in episode_outputs:
-            objective_inputs["query_embeddings"] = episode_outputs[
-                "query_embeddings"
-            ][tf.newaxis, ...]
+            objective_inputs["query_embeddings"] = episode_outputs["query_embeddings"][
+                tf.newaxis, ...
+            ]
         if "can_local_logits" in episode_outputs:
             objective_inputs["can_local_logits"] = episode_outputs["can_local_logits"][
                 tf.newaxis, ...
@@ -872,12 +880,8 @@ class EpisodicLearningEngine:
         can_margin_losses = tf.TensorArray(
             tf.float32, size=0, dynamic_size=True, infer_shape=False
         )
-        y_true = tf.TensorArray(
-            tf.int32, size=0, dynamic_size=True, infer_shape=False
-        )
-        y_pred = tf.TensorArray(
-            tf.int32, size=0, dynamic_size=True, infer_shape=False
-        )
+        y_true = tf.TensorArray(tf.int32, size=0, dynamic_size=True, infer_shape=False)
+        y_pred = tf.TensorArray(tf.int32, size=0, dynamic_size=True, infer_shape=False)
         intra_scores = tf.TensorArray(
             tf.float32, size=0, dynamic_size=True, infer_shape=False
         )
@@ -1217,14 +1221,12 @@ class EpisodicLearningEngine:
                 "logits": task_outputs["logits"][tf.newaxis, ...],
                 "losses": tf.reshape(task_outputs["loss"], [1]),
                 "task_losses": tf.reshape(task_outputs["task_loss"], [1]),
-                "contrastive_losses": tf.reshape(
-                    task_outputs["contrastive_loss"], [1]
-                ),
+                "contrastive_losses": tf.reshape(task_outputs["contrastive_loss"], [1]),
                 "triplet_losses": tf.reshape(task_outputs["triplet_loss"], [1]),
-            "can_local_losses": tf.reshape(task_outputs["can_local_loss"], [1]),
-            "can_global_losses": tf.reshape(task_outputs["can_global_loss"], [1]),
-            "can_margin_losses": tf.reshape(task_outputs["can_margin_loss"], [1]),
-            "model_aux_loss": task_outputs["model_aux_loss"],
+                "can_local_losses": tf.reshape(task_outputs["can_local_loss"], [1]),
+                "can_global_losses": tf.reshape(task_outputs["can_global_loss"], [1]),
+                "can_margin_losses": tf.reshape(task_outputs["can_margin_loss"], [1]),
+                "model_aux_loss": task_outputs["model_aux_loss"],
             }
             for key in (
                 "support_embeddings",
@@ -1366,7 +1368,9 @@ class EpisodicLearningEngine:
             tf.where(
                 other_mask,
                 similarity_scores,
-                tf.fill(tf.shape(similarity_scores), tf.cast(-1e9, similarity_scores.dtype)),
+                tf.fill(
+                    tf.shape(similarity_scores), tf.cast(-1e9, similarity_scores.dtype)
+                ),
             ),
             axis=2,
         )
@@ -1511,9 +1515,7 @@ class EpisodicLearningEngine:
                 )
                 batch_loss = tf.reduce_mean(task_outputs["losses"])
                 batch_task_loss = tf.reduce_mean(task_outputs["task_losses"])
-                batch_can_local_loss = tf.reduce_mean(
-                    task_outputs["can_local_losses"]
-                )
+                batch_can_local_loss = tf.reduce_mean(task_outputs["can_local_losses"])
                 batch_can_global_loss = tf.reduce_mean(
                     task_outputs["can_global_losses"]
                 )

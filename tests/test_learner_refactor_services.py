@@ -21,13 +21,9 @@ class _FakeSampler:
     def get_task(self):
         return {
             "support_X": np.zeros((self.support_size, 3, 1), dtype=np.float32),
-            "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(
-                np.int32
-            ),
+            "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(np.int32),
             "query_X": np.zeros((self.query_size, 3, 1), dtype=np.float32),
-            "query_y": np.repeat(np.arange(self.n_way), self.q_query).astype(
-                np.int32
-            ),
+            "query_y": np.repeat(np.arange(self.n_way), self.q_query).astype(np.int32),
         }
 
 

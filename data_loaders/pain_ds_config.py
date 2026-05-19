@@ -224,7 +224,9 @@ class PainDatasetConfig:
         if self.attention_mode not in {"none", "can"}:
             raise ValueError("attention_mode must be one of: 'none', 'can'")
         if self.attention_mode == "can" and self.classifier_mode != "prototype":
-            raise ValueError("attention_mode='can' requires classifier_mode='prototype'")
+            raise ValueError(
+                "attention_mode='can' requires classifier_mode='prototype'"
+            )
         if self.attention_mode == "can" and self.n_way < 2:
             raise ValueError("attention_mode='can' requires at least two task classes")
         self.can_attention_temperature = float(self.can_attention_temperature)
@@ -275,9 +277,9 @@ class PainDatasetConfig:
             )
             if self.prototype_finetune_tasks_per_epoch <= 0:
                 raise ValueError("prototype_finetune_tasks_per_epoch must be > 0")
-        self.prototype_phase2_loss_mode = str(
-            self.prototype_phase2_loss_mode
-        ).strip().lower()
+        self.prototype_phase2_loss_mode = (
+            str(self.prototype_phase2_loss_mode).strip().lower()
+        )
         if self.prototype_phase2_loss_mode not in PROTOTYPE_PHASE2_LOSS_MODES:
             raise ValueError(
                 "prototype_phase2_loss_mode must be one of: "

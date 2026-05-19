@@ -666,9 +666,7 @@ class FewShotPainLearner:
         """Return True when support/query tensors share identical shapes across tasks."""
         return TaskBatchPipeline.task_batch_has_uniform_shapes(task_batch)
 
-    def train_batch_step(
-        self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, ...]:
+    def train_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, ...]:
         """Single optimizer update using a batch of tasks."""
         (
             support_x_batch,
@@ -1367,11 +1365,17 @@ class FewShotPainLearner:
                             step_total=tasks_per_epoch,
                             loss=float(loss),
                             task_loss=float(task_loss),
-                            contrastive_loss=None if can_mode else float(contrastive_loss),
+                            contrastive_loss=None
+                            if can_mode
+                            else float(contrastive_loss),
                             triplet_loss=None if can_mode else float(triplet_loss),
                             can_local_loss=float(can_local_loss),
-                            can_global_loss=None if can_mode else float(can_global_loss),
-                            can_margin_loss=float(can_margin_loss) if can_mode else None,
+                            can_global_loss=None
+                            if can_mode
+                            else float(can_global_loss),
+                            can_margin_loss=float(can_margin_loss)
+                            if can_mode
+                            else None,
                             accuracy=float(acc),
                         )
                     train_extra_metrics = {
@@ -1773,9 +1777,7 @@ class FewShotPainLearner:
             cv_results["validation_checkpoint_epochs"].append(
                 checkpoint_summary["epoch"]
             )
-            cv_results["validation_checkpoint_steps"].append(
-                checkpoint_summary["step"]
-            )
+            cv_results["validation_checkpoint_steps"].append(checkpoint_summary["step"])
             cv_results["validation_checkpoint_metrics"].append(
                 checkpoint_summary["metrics"]
             )
@@ -1816,9 +1818,8 @@ class FewShotPainLearner:
                         "Each phase-2 task is a full query-only subject task, so it is "
                         "much larger than a normal k/q episode."
                     )
-                    if (
-                        prototype_tasks_per_epoch
-                        > max(200, 4 * len(train_sampler.active_subjects_array))
+                    if prototype_tasks_per_epoch > max(
+                        200, 4 * len(train_sampler.active_subjects_array)
                     ):
                         self.logger.warning(
                             f"[Fold {fold + 1}/{num_subjects}] "
@@ -1849,7 +1850,9 @@ class FewShotPainLearner:
                     for prototype_step in range(prototype_tasks_per_epoch):
                         step_start_time = time.perf_counter()
                         sampled_subject = int(
-                            train_sampler.rng.choice(train_sampler.active_subjects_array)
+                            train_sampler.rng.choice(
+                                train_sampler.active_subjects_array
+                            )
                         )
                         prototype_task = self.dataset.build_all_query_task(
                             sampled_subject,
@@ -1942,7 +1945,9 @@ class FewShotPainLearner:
             heldout_pairs_to_evaluate = heldout_eval_pairs
             if self.config.can_support_mode == "learned_prototype_memory":
                 run_adaptation = False
-                fixed_size_key = f"k{configured_eval_pair[0]}_q{configured_eval_pair[1]}"
+                fixed_size_key = (
+                    f"k{configured_eval_pair[0]}_q{configured_eval_pair[1]}"
+                )
                 query_task = self.dataset.build_all_query_task(
                     int(test_subject),
                     split=test_sampler.data_split,
@@ -2088,12 +2093,8 @@ class FewShotPainLearner:
                     inter_class_similarity=None
                     if "can_score_margin" in zero_shot_metrics
                     else zero_shot_metrics["inter_class_similarity"],
-                    can_true_class_score=zero_shot_metrics.get(
-                        "can_true_class_score"
-                    ),
-                    can_best_other_score=zero_shot_metrics.get(
-                        "can_best_other_score"
-                    ),
+                    can_true_class_score=zero_shot_metrics.get("can_true_class_score"),
+                    can_best_other_score=zero_shot_metrics.get("can_best_other_score"),
                     can_score_margin=zero_shot_metrics.get("can_score_margin"),
                 )
                 if (eval_k_shot, eval_q_query) == configured_eval_pair:
@@ -2383,9 +2384,7 @@ class FewShotPainLearner:
             cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
             cv_results["k_shot_recalls"].append(k_shot_metrics["recall"])
             cv_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-            self._append_evaluation_diagnostics(
-                cv_results, "k_shot", k_shot_metrics
-            )
+            self._append_evaluation_diagnostics(cv_results, "k_shot", k_shot_metrics)
             if "transductive_accuracy" in k_shot_metrics:
                 cv_results["k_shot_transductive_losses"].append(
                     k_shot_metrics["transductive_loss"]

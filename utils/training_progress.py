@@ -176,7 +176,9 @@ class TrainingProgressReporter:
                 f"can_best_other_score={metrics['can_best_other_score']:.4f}, "
                 f"can_score_margin={metrics['can_score_margin']:.4f}"
             )
-        elif "intra_class_similarity" in metrics and "inter_class_similarity" in metrics:
+        elif (
+            "intra_class_similarity" in metrics and "inter_class_similarity" in metrics
+        ):
             message += (
                 f", intra_class_similarity={metrics['intra_class_similarity']:.4f}, "
                 f"inter_class_similarity={metrics['inter_class_similarity']:.4f}"

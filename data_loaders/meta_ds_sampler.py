@@ -145,8 +145,7 @@ class SixWayKShotSampler:
         return min(
             int(
                 sum(
-                    len(split_index[subject][class_id])
-                    for subject in selected_subjects
+                    len(split_index[subject][class_id]) for subject in selected_subjects
                 )
             )
             for class_id in range(self.config.n_way)

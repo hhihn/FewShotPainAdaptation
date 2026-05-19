@@ -18,8 +18,7 @@ def _write_tiny_dataset(data_dir: Path) -> None:
         for class_id in range(2):
             for _ in range(3):
                 x_rows.append(
-                    rng.normal(size=(32, 6, 1)).astype(np.float32)
-                    + float(class_id)
+                    rng.normal(size=(32, 6, 1)).astype(np.float32) + float(class_id)
                 )
                 label = np.zeros(2, dtype=np.float32)
                 label[class_id] = 1.0

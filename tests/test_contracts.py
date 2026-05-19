@@ -175,7 +175,9 @@ class ContractTests(unittest.TestCase):
             PainDatasetConfig(dataset_source="painmonit", eegnet_temporal_filters=0)
         with self.assertRaisesRegex(ValueError, "eegnet_dropout_rate must be in"):
             PainDatasetConfig(dataset_source="painmonit", eegnet_dropout_rate=1.0)
-        with self.assertRaisesRegex(ValueError, "eegnet_l2_weight must be non-negative"):
+        with self.assertRaisesRegex(
+            ValueError, "eegnet_l2_weight must be non-negative"
+        ):
             PainDatasetConfig(dataset_source="painmonit", eegnet_l2_weight=-1e-4)
 
     def test_can_config_validation(self):

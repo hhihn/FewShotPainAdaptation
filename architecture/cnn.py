@@ -96,7 +96,9 @@ class EEGNetStyleEncoder(keras.Model):
             rate=self.dropout_rate, name="separable_dropout"
         )
         if self.enable_embedding_projection:
-            self.global_pool = keras.layers.GlobalAveragePooling2D(name="global_pooling")
+            self.global_pool = keras.layers.GlobalAveragePooling2D(
+                name="global_pooling"
+            )
             self.embedding_dense = keras.layers.Dense(
                 self.embedding_dim,
                 activation=None,

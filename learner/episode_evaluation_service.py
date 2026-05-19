@@ -133,12 +133,8 @@ class EpisodeEvaluationService:
             "transductive_precision": macro["precision"],
             "transductive_recall": macro["recall"],
             "transductive_f1": macro["f1"],
-            "transductive_intra_class_similarity": similarity[
-                "intra_class_similarity"
-            ],
-            "transductive_inter_class_similarity": similarity[
-                "inter_class_similarity"
-            ],
+            "transductive_intra_class_similarity": similarity["intra_class_similarity"],
+            "transductive_inter_class_similarity": similarity["inter_class_similarity"],
             "transductive_similarity_margin": similarity["similarity_margin"],
         }
 
@@ -228,9 +224,7 @@ class EpisodeEvaluationService:
                 all_can_best_other_scores.append(
                     tf.reshape(batch_can_best_other_scores, [-1])
                 )
-                all_can_score_margins.append(
-                    tf.reshape(batch_can_score_margins, [-1])
-                )
+                all_can_score_margins.append(tf.reshape(batch_can_score_margins, [-1]))
         else:
             class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
             if self.task_pipeline.task_batch_has_uniform_shapes(task_batch):
@@ -306,9 +300,7 @@ class EpisodeEvaluationService:
                     tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
                 )
                 can_local_losses.append(
-                    tf.reshape(
-                        tf.cast(task_outputs["can_local_loss"], tf.float32), [1]
-                    )
+                    tf.reshape(tf.cast(task_outputs["can_local_loss"], tf.float32), [1])
                 )
                 can_global_losses.append(
                     tf.reshape(
@@ -410,7 +402,9 @@ class EpisodeEvaluationService:
         finally:
             self.set_sampler_task_size(sampler, k_shot=original_k, q_query=original_q)
 
-    def evaluate_prototype_memory_task_metrics(self, task_dict: dict) -> tuple[float, dict]:
+    def evaluate_prototype_memory_task_metrics(
+        self, task_dict: dict
+    ) -> tuple[float, dict]:
         """Evaluate one query-only task with learned prototype memory as support."""
         original_support_mode = self.engine.model.can_support_mode
         original_triplet_weight = self.engine.triplet_loss_weight
@@ -491,9 +485,7 @@ class EpisodeEvaluationService:
                     training=False,
                 )
                 transductive_logits = transductive["transductive_logits"][0]
-                transductive_scores = transductive[
-                    "transductive_similarity_scores"
-                ][0]
+                transductive_scores = transductive["transductive_similarity_scores"][0]
                 transductive_pred = tf.argmax(
                     transductive_logits,
                     axis=1,
@@ -609,7 +601,9 @@ class EpisodeEvaluationService:
                 scores_np = similarity_scores.numpy()
 
                 for sample_index, truth in enumerate(query_y_np):
-                    sample_scores = np.asarray(scores_np[sample_index], dtype=np.float64)
+                    sample_scores = np.asarray(
+                        scores_np[sample_index], dtype=np.float64
+                    )
                     true_score = float(sample_scores[int(truth)])
                     other_scores = sample_scores.copy()
                     other_scores[int(truth)] = -np.inf

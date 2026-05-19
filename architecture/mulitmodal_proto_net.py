@@ -22,7 +22,9 @@ class CrossAttentionModule(keras.layers.Layer):
     def build(self, input_shape):
         prototype_shape, query_shape = input_shape
         if prototype_shape[-2] is None or query_shape[-2] is None:
-            raise ValueError("CAN requires statically known temporal feature-map length")
+            raise ValueError(
+                "CAN requires statically known temporal feature-map length"
+            )
         if prototype_shape[-1] is None:
             raise ValueError("CAN requires statically known feature-map channel count")
         proto_time = int(prototype_shape[-2])
@@ -69,9 +71,7 @@ class CrossAttentionModule(keras.layers.Layer):
         super().build(input_shape)
 
     @staticmethod
-    def _pair_descriptor(
-        prototype_maps: tf.Tensor, query_maps: tf.Tensor
-    ) -> tf.Tensor:
+    def _pair_descriptor(prototype_maps: tf.Tensor, query_maps: tf.Tensor) -> tf.Tensor:
         proto_summary = tf.reduce_mean(prototype_maps, axis=2)
         query_summary = tf.reduce_mean(query_maps, axis=2)
         proto_pair = proto_summary[:, tf.newaxis, :, :]
@@ -143,13 +143,11 @@ class CrossAttentionModule(keras.layers.Layer):
         proto_attention = tf.nn.softmax(proto_scores / temperature, axis=-1)
         query_attention = tf.nn.softmax(query_scores / temperature, axis=-1)
 
-        attended_proto = (
-            prototype_maps[:, tf.newaxis, :, :, :]
-            * (1.0 + proto_attention[:, :, :, :, tf.newaxis])
+        attended_proto = prototype_maps[:, tf.newaxis, :, :, :] * (
+            1.0 + proto_attention[:, :, :, :, tf.newaxis]
         )
-        attended_query = (
-            query_maps[:, :, tf.newaxis, :, :]
-            * (1.0 + query_attention[:, :, :, :, tf.newaxis])
+        attended_query = query_maps[:, :, tf.newaxis, :, :] * (
+            1.0 + query_attention[:, :, :, :, tf.newaxis]
         )
         attended_proto_embeddings = tf.reduce_mean(attended_proto, axis=3)
         attended_query_embeddings = tf.reduce_mean(attended_query, axis=3)
@@ -296,7 +294,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.learned_prototype_slots_per_class = int(learned_prototype_slots_per_class)
         self.can_enabled = self.attention_mode == "can"
         if self.can_enabled and self.classifier_mode != "prototype":
-            raise ValueError("attention_mode='can' requires classifier_mode='prototype'")
+            raise ValueError(
+                "attention_mode='can' requires classifier_mode='prototype'"
+            )
         if self.can_enabled and self.num_classes < 2:
             raise ValueError("attention_mode='can' requires at least two classes")
         if self.can_support_mode not in {"sampled", "learned_prototype_memory"}:
@@ -595,9 +595,13 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distances: [num_queries, num_classes]
         """
         if self.distance_metric == "euclidean":
-          distances = self.compute_cosine_sim(query_embeddings, prototype_embeddings, axis=2)
+            distances = self.compute_cosine_sim(
+                query_embeddings, prototype_embeddings, axis=2
+            )
         elif self.distance_metric == "cosine":
-            distances = 1 - self.compute_cosine_sim(query_embeddings, prototype_embeddings)
+            distances = 1 - self.compute_cosine_sim(
+                query_embeddings, prototype_embeddings
+            )
         else:
             raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
@@ -615,9 +619,13 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distances: [num_tasks, num_queries, num_classes]
         """
         if self.distance_metric == "euclidean":
-            distances = self.compute_cosine_sim(query_embeddings, prototype_embeddings, axis=3)
+            distances = self.compute_cosine_sim(
+                query_embeddings, prototype_embeddings, axis=3
+            )
         elif self.distance_metric == "cosine":
-            distances = 1 - self.compute_cosine_sim(query_embeddings, prototype_embeddings, axis=2)
+            distances = 1 - self.compute_cosine_sim(
+                query_embeddings, prototype_embeddings, axis=2
+            )
         else:
             raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
@@ -638,7 +646,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def compute_similarity_scores_batch(self, query_embeddings, prototype_embeddings):
         """Compute batched query-to-prototype similarity scores."""
         if self.distance_metric == "cosine":
-            return self.compute_cosine_sim(query_embeddings, prototype_embeddings, axis=2)
+            return self.compute_cosine_sim(
+                query_embeddings, prototype_embeddings, axis=2
+            )
 
         return -self.compute_distances_batch(query_embeddings, prototype_embeddings)
 
@@ -860,16 +870,17 @@ class MultimodalPrototypicalNetwork(keras.Model):
             class_ids[tf.newaxis, tf.newaxis, :],
         )
         support_weights = tf.cast(support_class_mask, support_feature_maps.dtype)
-        support_sums = tf.einsum("bstd,bsc->bctd", support_feature_maps, support_weights)
+        support_sums = tf.einsum(
+            "bstd,bsc->bctd", support_feature_maps, support_weights
+        )
         support_counts = tf.reduce_sum(support_weights, axis=1)
 
         pseudo_class_mask = tf.equal(
             pseudo_labels[:, :, tf.newaxis],
             class_ids[tf.newaxis, tf.newaxis, :],
         )
-        pseudo_weights = (
-            tf.cast(pseudo_class_mask, query_feature_maps.dtype)
-            * tf.cast(selected_mask[:, :, tf.newaxis], query_feature_maps.dtype)
+        pseudo_weights = tf.cast(pseudo_class_mask, query_feature_maps.dtype) * tf.cast(
+            selected_mask[:, :, tf.newaxis], query_feature_maps.dtype
         )
         pseudo_sums = tf.einsum("bqtd,bqc->bctd", query_feature_maps, pseudo_weights)
         pseudo_counts = tf.reduce_sum(pseudo_weights, axis=1)
@@ -892,7 +903,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
             confidence,
         )
         confidence = tf.where(
-            confidence >= tf.cast(self.can_transductive_min_confidence, confidence.dtype),
+            confidence
+            >= tf.cast(self.can_transductive_min_confidence, confidence.dtype),
             confidence,
             tf.fill(tf.shape(confidence), tf.constant(-1e9, confidence.dtype)),
         )

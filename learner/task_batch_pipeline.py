@@ -44,8 +44,8 @@ class TaskBatchPipeline:
         task_batch: list[dict],
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Pack a Python task list into dense batch tensors once per update."""
-        support_x_np, support_y_np, query_x_np, query_y_np = (
-            cls.stack_task_batch_numpy(task_batch)
+        support_x_np, support_y_np, query_x_np, query_y_np = cls.stack_task_batch_numpy(
+            task_batch
         )
         return (
             tf.convert_to_tensor(support_x_np, dtype=tf.float32),
