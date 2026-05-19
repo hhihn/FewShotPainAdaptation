@@ -16,7 +16,19 @@ SUPPORTED_VALIDATION_CHECKPOINT_METRICS = (
     "intra_class_similarity",
     "inter_class_similarity",
     "similarity_margin",
+    "can_true_class_score",
+    "can_best_other_score",
+    "can_score_margin",
 )
+
+CAN_DISABLED_VALIDATION_CHECKPOINT_METRICS = {
+    "contrastive_loss",
+    "triplet_loss",
+    "can_global_loss",
+    "intra_class_similarity",
+    "inter_class_similarity",
+    "similarity_margin",
+}
 
 VALIDATION_CHECKPOINT_MODES = ("auto", "min", "max")
 CAN_SUPPORT_MODES = ("sampled", "learned_prototype_memory")
@@ -345,6 +357,16 @@ class PainDatasetConfig:
             raise ValueError(
                 "validation_checkpoint_metric must be one of: "
                 + ", ".join(SUPPORTED_VALIDATION_CHECKPOINT_METRICS)
+            )
+        if (
+            self.attention_mode == "can"
+            and self.validation_checkpoint_metric
+            in CAN_DISABLED_VALIDATION_CHECKPOINT_METRICS
+        ):
+            raise ValueError(
+                "CAN mode does not compute embedding/global diagnostics; "
+                "use a classification metric, can_local_loss, or one of: "
+                "can_true_class_score, can_best_other_score, can_score_margin"
             )
         self.validation_checkpoint_mode = str(self.validation_checkpoint_mode).strip()
         if self.validation_checkpoint_mode not in VALIDATION_CHECKPOINT_MODES:

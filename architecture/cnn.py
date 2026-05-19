@@ -23,6 +23,7 @@ class EEGNetStyleEncoder(keras.Model):
         pool_size_2: int = 8,
         dropout_rate: float = 0.25,
         l2_weight: float = 1e-4,
+        enable_embedding_projection: bool = True,
         name: str = "eegnet_encoder",
     ):
         super().__init__(name=name)
@@ -38,6 +39,7 @@ class EEGNetStyleEncoder(keras.Model):
         self.pool_size_2 = int(pool_size_2)
         self.dropout_rate = float(dropout_rate)
         self.l2_weight = float(l2_weight)
+        self.enable_embedding_projection = bool(enable_embedding_projection)
         self.logger = setup_logger(name="EEGNetStyleEncoder")
 
         self.reshape = keras.layers.Reshape(
@@ -93,22 +95,27 @@ class EEGNetStyleEncoder(keras.Model):
         self.dropout_2 = keras.layers.Dropout(
             rate=self.dropout_rate, name="separable_dropout"
         )
-        self.global_pool = keras.layers.GlobalAveragePooling2D(name="global_pooling")
-        self.embedding_dense = keras.layers.Dense(
-            self.embedding_dim,
-            activation=None,
-            kernel_regularizer=keras.regularizers.l2(self.l2_weight),
-            name="embedding_dense",
-        )
-        self.embedding_norm = keras.layers.BatchNormalization(name="embedding_norm")
+        if self.enable_embedding_projection:
+            self.global_pool = keras.layers.GlobalAveragePooling2D(name="global_pooling")
+            self.embedding_dense = keras.layers.Dense(
+                self.embedding_dim,
+                activation=None,
+                kernel_regularizer=keras.regularizers.l2(self.l2_weight),
+                name="embedding_dense",
+            )
+            self.embedding_norm = keras.layers.BatchNormalization(name="embedding_norm")
+        else:
+            self.global_pool = None
+            self.embedding_dense = None
+            self.embedding_norm = None
 
         self.logger.debug(
             "Initialized EEGNetStyleEncoder with temporal_filters=%s, "
-            "depth_multiplier=%s, separable_filters=%s, embedding_dim=%s",
+            "depth_multiplier=%s, separable_filters=%s, embedding_projection=%s",
             self.temporal_filters,
             self.depth_multiplier,
             self.separable_filters,
-            self.embedding_dim,
+            self.enable_embedding_projection,
         )
 
     def _feature_map_4d(self, x, training=False):
@@ -137,6 +144,8 @@ class EEGNetStyleEncoder(keras.Model):
 
     def embed_feature_map(self, feature_map, training=False):
         """Pool/project a temporal feature map into the configured embedding space."""
+        if not self.enable_embedding_projection:
+            raise RuntimeError("Embedding projection is disabled for this encoder.")
         x = feature_map
         if len(x.shape) == 3:
             x = x[:, :, tf.newaxis, :]
@@ -146,6 +155,8 @@ class EEGNetStyleEncoder(keras.Model):
 
     def call(self, x, training=False):
         """Encode [batch, time, sensors] windows into [batch, embedding_dim]."""
+        if not self.enable_embedding_projection:
+            raise RuntimeError("Embedding projection is disabled for this encoder.")
         return self.embed_feature_map(
             self._feature_map_4d(x, training=training),
             training=training,
@@ -166,6 +177,7 @@ class EEGNetStyleEncoder(keras.Model):
             "pool_size_2": self.pool_size_2,
             "dropout_rate": self.dropout_rate,
             "l2_weight": self.l2_weight,
+            "enable_embedding_projection": self.enable_embedding_projection,
         }
 
 

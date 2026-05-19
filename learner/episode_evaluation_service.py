@@ -171,6 +171,9 @@ class EpisodeEvaluationService:
         all_pred_tensors = []
         all_intra_class_scores = []
         all_inter_class_scores = []
+        all_can_true_scores = []
+        all_can_best_other_scores = []
+        all_can_score_margins = []
         use_batched_forward = (
             forward_batch_size is not None and int(forward_batch_size) > 1
         )
@@ -199,6 +202,9 @@ class EpisodeEvaluationService:
                     batch_y_pred,
                     batch_intra_scores,
                     batch_inter_scores,
+                    batch_can_true_scores,
+                    batch_can_best_other_scores,
+                    batch_can_score_margins,
                 ) = self.engine.eval_task_batch_step_tensors(
                     support_x_batch=support_x_batch[task_start:task_end],
                     support_y_batch=support_y_batch[task_start:task_end],
@@ -215,6 +221,13 @@ class EpisodeEvaluationService:
                 all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(batch_intra_scores, [-1]))
                 all_inter_class_scores.append(tf.reshape(batch_inter_scores, [-1]))
+                all_can_true_scores.append(tf.reshape(batch_can_true_scores, [-1]))
+                all_can_best_other_scores.append(
+                    tf.reshape(batch_can_best_other_scores, [-1])
+                )
+                all_can_score_margins.append(
+                    tf.reshape(batch_can_score_margins, [-1])
+                )
         else:
             class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
             if self.task_pipeline.task_batch_has_uniform_shapes(task_batch):
@@ -262,6 +275,18 @@ class EpisodeEvaluationService:
                 inter_class_scores = tf.boolean_mask(
                     similarity_scores, inter_class_mask
                 )
+                best_other_scores = tf.reduce_max(
+                    tf.where(
+                        inter_class_mask,
+                        similarity_scores,
+                        tf.fill(
+                            tf.shape(similarity_scores),
+                            tf.cast(-1e9, similarity_scores.dtype),
+                        ),
+                    ),
+                    axis=1,
+                )
+                can_score_margins = intra_class_scores - best_other_scores
 
                 losses.append(
                     tf.reshape(tf.cast(task_outputs["loss"], tf.float32), [1])
@@ -291,6 +316,9 @@ class EpisodeEvaluationService:
                 all_pred_tensors.append(tf.reshape(pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
                 all_inter_class_scores.append(tf.reshape(inter_class_scores, [-1]))
+                all_can_true_scores.append(tf.reshape(intra_class_scores, [-1]))
+                all_can_best_other_scores.append(tf.reshape(best_other_scores, [-1]))
+                all_can_score_margins.append(tf.reshape(can_score_margins, [-1]))
 
         y_true = (
             tf.concat(all_true_tensors, axis=0).numpy().astype(np.int32, copy=False)
@@ -318,6 +346,16 @@ class EpisodeEvaluationService:
         metrics["can_global_loss"] = float(
             tf.reduce_mean(tf.concat(can_global_losses, axis=0))
         )
+        if getattr(self.config, "attention_mode", "none") == "can":
+            metrics["can_true_class_score"] = float(
+                tf.reduce_mean(tf.concat(all_can_true_scores, axis=0))
+            )
+            metrics["can_best_other_score"] = float(
+                tf.reduce_mean(tf.concat(all_can_best_other_scores, axis=0))
+            )
+            metrics["can_score_margin"] = float(
+                tf.reduce_mean(tf.concat(all_can_score_margins, axis=0))
+            )
         metrics.update(self.evaluate_transductive_task_batch_metrics(task_batch))
         return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
 
@@ -402,6 +440,16 @@ class EpisodeEvaluationService:
             )
             metrics = dict(macro)
             metrics.update(self.compute_similarity_metrics(intra, inter))
+            metrics["can_true_class_score"] = float(np.mean(intra))
+            best_other_scores = []
+            for row_idx, truth in enumerate(y_true):
+                row_scores = np.array(similarity_scores[row_idx].numpy(), copy=True)
+                row_scores[int(truth)] = -np.inf
+                best_other_scores.append(float(np.max(row_scores)))
+            metrics["can_best_other_score"] = float(np.mean(best_other_scores))
+            metrics["can_score_margin"] = (
+                metrics["can_true_class_score"] - metrics["can_best_other_score"]
+            )
             metrics["task_loss"] = float(tf.reduce_mean(per_query_loss))
             metrics["contrastive_loss"] = 0.0
             metrics["triplet_loss"] = 0.0

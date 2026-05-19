@@ -46,7 +46,11 @@ class FewShotPainLearner:
         self.embedding_batch_size = max(
             1, int(getattr(config, "embedding_batch_size", 1))
         )
-        self.triplet_loss_weight = float(config.triplet_loss_weight)
+        self.triplet_loss_weight = (
+            0.0
+            if str(config.attention_mode).strip().lower() == "can"
+            else float(config.triplet_loss_weight)
+        )
         self.triplet_margin = float(config.triplet_margin)
         self.triplet_mining_strategy = str(config.triplet_mining_strategy)
         self.triplet_center_gradient_clip_norm = float(
@@ -54,7 +58,11 @@ class FewShotPainLearner:
         )
         self.attention_mode = str(config.attention_mode)
         self.can_local_loss_weight = float(config.can_local_loss_weight)
-        self.can_global_loss_weight = float(config.can_global_loss_weight)
+        self.can_global_loss_weight = (
+            0.0
+            if str(config.attention_mode).strip().lower() == "can"
+            else float(config.can_global_loss_weight)
+        )
         self.gaussian_noise_std = float(config.gaussian_noise_std)
         self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
         if self.gradient_clip_norm is not None:
@@ -195,6 +203,25 @@ class FewShotPainLearner:
             "sensor_idx": list(self.config.sensor_idx),
             "modality_names": list(self.config.modality_names),
         }
+        if self.attention_mode == "can":
+            run_config.update(
+                {
+                    "embedding_projection_enabled": False,
+                    "can_global_loss_weight": 0.0,
+                }
+            )
+            for key in (
+                "can_global_loss_weight",
+                "embedding_dim",
+                "embedding_batch_size",
+                "triplet_loss_weight",
+                "triplet_margin",
+                "triplet_mining_strategy",
+                "triplet_center_gradient_clip_norm",
+            ):
+                run_config.pop(key, None)
+        else:
+            run_config["embedding_projection_enabled"] = True
         self.logger.info(f"Run config: {json.dumps(run_config, sort_keys=True)}")
         if self.config.clear_session_per_fold:
             self.logger.info(
@@ -845,17 +872,53 @@ class FewShotPainLearner:
                 f"{np.mean(cv_results['k_shot_transductive_accuracies']):.4f} "
                 f"(±{np.std(cv_results['k_shot_transductive_accuracies']):.4f})"
             )
-        self.logger.info(
-            "Average Zero-shot Similarities: "
-            f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
-            f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
-        )
-        self.logger.info(
-            "Average K-shot Similarities: "
-            f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
-            f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
-        )
+        if cv_results.get("zero_shot_can_score_margins"):
+            self.logger.info(
+                "Average Zero-shot CAN Scores: "
+                f"true_class={np.mean(cv_results['zero_shot_can_true_class_scores']):.4f}, "
+                f"best_other={np.mean(cv_results['zero_shot_can_best_other_scores']):.4f}, "
+                f"margin={np.mean(cv_results['zero_shot_can_score_margins']):.4f}"
+            )
+            self.logger.info(
+                "Average K-shot CAN Scores: "
+                f"true_class={np.mean(cv_results['k_shot_can_true_class_scores']):.4f}, "
+                f"best_other={np.mean(cv_results['k_shot_can_best_other_scores']):.4f}, "
+                f"margin={np.mean(cv_results['k_shot_can_score_margins']):.4f}"
+            )
+        elif cv_results.get("zero_shot_intra_class_similarities"):
+            self.logger.info(
+                "Average Zero-shot Similarities: "
+                f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
+                f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
+            )
+            self.logger.info(
+                "Average K-shot Similarities: "
+                f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
+                f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
+            )
         self.logger.info(f"{'=' * 60}\n")
+
+    @staticmethod
+    def _append_evaluation_diagnostics(
+        bucket: dict,
+        prefix: str,
+        metrics: dict,
+    ) -> None:
+        if "can_score_margin" in metrics:
+            bucket[f"{prefix}_can_true_class_scores"].append(
+                metrics["can_true_class_score"]
+            )
+            bucket[f"{prefix}_can_best_other_scores"].append(
+                metrics["can_best_other_score"]
+            )
+            bucket[f"{prefix}_can_score_margins"].append(metrics["can_score_margin"])
+        else:
+            bucket[f"{prefix}_intra_class_similarities"].append(
+                metrics["intra_class_similarity"]
+            )
+            bucket[f"{prefix}_inter_class_similarities"].append(
+                metrics["inter_class_similarity"]
+            )
 
     def train(
         self,
@@ -912,6 +975,9 @@ class FewShotPainLearner:
             "zero_shot_f1s": [],
             "zero_shot_intra_class_similarities": [],
             "zero_shot_inter_class_similarities": [],
+            "zero_shot_can_true_class_scores": [],
+            "zero_shot_can_best_other_scores": [],
+            "zero_shot_can_score_margins": [],
             "zero_shot_transductive_losses": [],
             "zero_shot_transductive_accuracies": [],
             "zero_shot_transductive_precisions": [],
@@ -924,6 +990,9 @@ class FewShotPainLearner:
             "k_shot_f1s": [],
             "k_shot_intra_class_similarities": [],
             "k_shot_inter_class_similarities": [],
+            "k_shot_can_true_class_scores": [],
+            "k_shot_can_best_other_scores": [],
+            "k_shot_can_score_margins": [],
             "k_shot_transductive_losses": [],
             "k_shot_transductive_accuracies": [],
             "k_shot_transductive_precisions": [],
@@ -944,6 +1013,9 @@ class FewShotPainLearner:
                     "zero_shot_f1s": [],
                     "zero_shot_intra_class_similarities": [],
                     "zero_shot_inter_class_similarities": [],
+                    "zero_shot_can_true_class_scores": [],
+                    "zero_shot_can_best_other_scores": [],
+                    "zero_shot_can_score_margins": [],
                     "zero_shot_transductive_losses": [],
                     "zero_shot_transductive_accuracies": [],
                     "zero_shot_transductive_precisions": [],
@@ -956,6 +1028,9 @@ class FewShotPainLearner:
                     "k_shot_f1s": [],
                     "k_shot_intra_class_similarities": [],
                     "k_shot_inter_class_similarities": [],
+                    "k_shot_can_true_class_scores": [],
+                    "k_shot_can_best_other_scores": [],
+                    "k_shot_can_score_margins": [],
                     "k_shot_transductive_losses": [],
                     "k_shot_transductive_accuracies": [],
                     "k_shot_transductive_precisions": [],
@@ -1102,6 +1177,7 @@ class FewShotPainLearner:
                         processed_batches % train_progress_write_every_n_batches == 0
                         or processed_tasks == tasks_per_epoch
                     ):
+                        can_mode = self.attention_mode == "can"
                         csv_writer.write_event(
                             fold_idx=fold + 1,
                             test_subject=test_subject,
@@ -1112,11 +1188,23 @@ class FewShotPainLearner:
                             step_total=tasks_per_epoch,
                             loss=float(loss),
                             task_loss=float(task_loss),
-                            contrastive_loss=float(contrastive_loss),
-                            triplet_loss=float(triplet_loss),
+                            contrastive_loss=None if can_mode else float(contrastive_loss),
+                            triplet_loss=None if can_mode else float(triplet_loss),
                             can_local_loss=float(can_local_loss),
-                            can_global_loss=float(can_global_loss),
+                            can_global_loss=None if can_mode else float(can_global_loss),
                             accuracy=float(acc),
+                        )
+                    train_extra_metrics = {
+                        "task_loss": float(task_loss),
+                        "can_local_loss": float(can_local_loss),
+                    }
+                    if self.attention_mode != "can":
+                        train_extra_metrics.update(
+                            {
+                                "contrastive_loss": float(contrastive_loss),
+                                "triplet_loss": float(triplet_loss),
+                                "can_global_loss": float(can_global_loss),
+                            }
                         )
                     progress.log_step(
                         stage="Train task",
@@ -1129,31 +1217,37 @@ class FewShotPainLearner:
                         loss=float(loss),
                         metric_value=float(acc),
                         metric_name="accuracy",
-                        extra_metrics={
-                            "task_loss": float(task_loss),
-                            "contrastive_loss": float(contrastive_loss),
-                            "triplet_loss": float(triplet_loss),
-                            "can_local_loss": float(can_local_loss),
-                            "can_global_loss": float(can_global_loss),
-                        },
+                        extra_metrics=train_extra_metrics,
                         log_every=train_log_every,
                     )
                     if self.logging_verbosity >= 1 and (
                         processed_batches % train_log_every == 0
                         or processed_tasks == tasks_per_epoch
                     ):
-                        self.logger.info(
-                            f"[Fold {fold + 1}/{num_subjects}] "
-                            f"[Epoch {epoch + 1}/{num_epochs}] "
-                            f"[Train {processed_tasks}/{tasks_per_epoch} tasks] "
-                            f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
-                            f"accuracy={float(acc):.4f}, contrastive_loss={float(contrastive_loss):.4f}, "
-                            f"triplet_loss={float(triplet_loss):.4f}, "
-                            f"can_local_loss={float(can_local_loss):.4f}, "
-                            f"can_global_loss={float(can_global_loss):.4f}, "
-                            f"elapsed={self._format_seconds(elapsed)}, "
-                            f"eta={self._format_seconds(eta_seconds)}"
-                        )
+                        if self.attention_mode == "can":
+                            self.logger.info(
+                                f"[Fold {fold + 1}/{num_subjects}] "
+                                f"[Epoch {epoch + 1}/{num_epochs}] "
+                                f"[Train {processed_tasks}/{tasks_per_epoch} tasks] "
+                                f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
+                                f"accuracy={float(acc):.4f}, "
+                                f"can_local_loss={float(can_local_loss):.4f}, "
+                                f"elapsed={self._format_seconds(elapsed)}, "
+                                f"eta={self._format_seconds(eta_seconds)}"
+                            )
+                        else:
+                            self.logger.info(
+                                f"[Fold {fold + 1}/{num_subjects}] "
+                                f"[Epoch {epoch + 1}/{num_epochs}] "
+                                f"[Train {processed_tasks}/{tasks_per_epoch} tasks] "
+                                f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
+                                f"accuracy={float(acc):.4f}, contrastive_loss={float(contrastive_loss):.4f}, "
+                                f"triplet_loss={float(triplet_loss):.4f}, "
+                                f"can_local_loss={float(can_local_loss):.4f}, "
+                                f"can_global_loss={float(can_global_loss):.4f}, "
+                                f"elapsed={self._format_seconds(elapsed)}, "
+                                f"eta={self._format_seconds(eta_seconds)}"
+                            )
 
                     should_run_validation = (
                         processed_batches % val_every_n_train_steps == 0
@@ -1174,6 +1268,9 @@ class FewShotPainLearner:
                     validation_can_global_losses = []
                     validation_intra_class_similarities = []
                     validation_inter_class_similarities = []
+                    validation_can_true_class_scores = []
+                    validation_can_best_other_scores = []
+                    validation_can_score_margins = []
                     for val_task_start in range(0, val_tasks, val_batch_size):
                         current_val_batch_size = min(
                             val_batch_size, val_tasks - val_task_start
@@ -1209,6 +1306,16 @@ class FewShotPainLearner:
                         validation_inter_class_similarities.append(
                             val_metrics["inter_class_similarity"]
                         )
+                        if "can_score_margin" in val_metrics:
+                            validation_can_true_class_scores.append(
+                                val_metrics["can_true_class_score"]
+                            )
+                            validation_can_best_other_scores.append(
+                                val_metrics["can_best_other_score"]
+                            )
+                            validation_can_score_margins.append(
+                                val_metrics["can_score_margin"]
+                            )
 
                     mean_val_loss = float(np.mean(validation_losses))
                     mean_val_acc = float(np.mean(validation_accs))
@@ -1236,6 +1343,21 @@ class FewShotPainLearner:
                         mean_val_intra_class_similarity
                         - mean_val_inter_class_similarity
                     )
+                    mean_val_can_true_class_score = (
+                        float(np.mean(validation_can_true_class_scores))
+                        if validation_can_true_class_scores
+                        else None
+                    )
+                    mean_val_can_best_other_score = (
+                        float(np.mean(validation_can_best_other_scores))
+                        if validation_can_best_other_scores
+                        else None
+                    )
+                    mean_val_can_score_margin = (
+                        float(np.mean(validation_can_score_margins))
+                        if validation_can_score_margins
+                        else None
+                    )
                     epoch_val_losses.append(mean_val_loss)
                     epoch_val_accs.append(mean_val_acc)
                     validation_checkpoint_metrics = {
@@ -1253,6 +1375,14 @@ class FewShotPainLearner:
                         "inter_class_similarity": mean_val_inter_class_similarity,
                         "similarity_margin": mean_val_similarity_margin,
                     }
+                    if mean_val_can_score_margin is not None:
+                        validation_checkpoint_metrics.update(
+                            {
+                                "can_true_class_score": mean_val_can_true_class_score,
+                                "can_best_other_score": mean_val_can_best_other_score,
+                                "can_score_margin": mean_val_can_score_margin,
+                            }
+                        )
                     checkpoint_value = validation_checkpoint_metrics[
                         validation_checkpoint.metric
                     ]
@@ -1274,21 +1404,63 @@ class FewShotPainLearner:
                         step_total=tasks_per_epoch,
                         loss=mean_val_loss,
                         task_loss=mean_val_task_loss,
-                        contrastive_loss=mean_val_contrastive_loss,
-                        triplet_loss=mean_val_triplet_loss,
+                        contrastive_loss=None
+                        if mean_val_can_score_margin is not None
+                        else mean_val_contrastive_loss,
+                        triplet_loss=None
+                        if mean_val_can_score_margin is not None
+                        else mean_val_triplet_loss,
                         can_local_loss=mean_val_can_local_loss,
-                        can_global_loss=mean_val_can_global_loss,
+                        can_global_loss=None
+                        if mean_val_can_score_margin is not None
+                        else mean_val_can_global_loss,
                         accuracy=mean_val_acc,
                         precision=mean_val_precision,
                         recall=mean_val_recall,
                         f1=mean_val_f1,
-                        intra_class_similarity=mean_val_intra_class_similarity,
-                        inter_class_similarity=mean_val_inter_class_similarity,
-                        similarity_margin=mean_val_similarity_margin,
+                        intra_class_similarity=None
+                        if mean_val_can_score_margin is not None
+                        else mean_val_intra_class_similarity,
+                        inter_class_similarity=None
+                        if mean_val_can_score_margin is not None
+                        else mean_val_inter_class_similarity,
+                        similarity_margin=None
+                        if mean_val_can_score_margin is not None
+                        else mean_val_similarity_margin,
+                        can_true_class_score=mean_val_can_true_class_score,
+                        can_best_other_score=mean_val_can_best_other_score,
+                        can_score_margin=mean_val_can_score_margin,
                         checkpoint_metric=validation_checkpoint.metric,
                         checkpoint_value=checkpoint_value,
                         checkpoint_is_best=checkpoint_improved,
                     )
+                    validation_extra_metrics = {
+                        "task_loss": mean_val_task_loss,
+                        "precision": mean_val_precision,
+                        "recall": mean_val_recall,
+                        "f1": mean_val_f1,
+                    }
+                    if mean_val_can_score_margin is not None:
+                        validation_extra_metrics.update(
+                            {
+                                "can_local_loss": mean_val_can_local_loss,
+                                "can_true_class_score": mean_val_can_true_class_score,
+                                "can_best_other_score": mean_val_can_best_other_score,
+                                "can_score_margin": mean_val_can_score_margin,
+                            }
+                        )
+                    else:
+                        validation_extra_metrics.update(
+                            {
+                                "contrastive_loss": mean_val_contrastive_loss,
+                                "triplet_loss": mean_val_triplet_loss,
+                                "can_local_loss": mean_val_can_local_loss,
+                                "can_global_loss": mean_val_can_global_loss,
+                                "intra_class_similarity": mean_val_intra_class_similarity,
+                                "inter_class_similarity": mean_val_inter_class_similarity,
+                                "similarity_margin": mean_val_similarity_margin,
+                            }
+                        )
                     progress.log_step(
                         stage="Validation",
                         fold_idx=fold + 1,
@@ -1298,42 +1470,50 @@ class FewShotPainLearner:
                         loss=mean_val_loss,
                         metric_value=mean_val_acc,
                         metric_name="accuracy",
-                        extra_metrics={
-                            "task_loss": mean_val_task_loss,
-                            "contrastive_loss": mean_val_contrastive_loss,
-                            "triplet_loss": mean_val_triplet_loss,
-                            "can_local_loss": mean_val_can_local_loss,
-                            "can_global_loss": mean_val_can_global_loss,
-                            "precision": mean_val_precision,
-                            "recall": mean_val_recall,
-                            "f1": mean_val_f1,
-                            "intra_class_similarity": mean_val_intra_class_similarity,
-                            "inter_class_similarity": mean_val_inter_class_similarity,
-                            "similarity_margin": mean_val_similarity_margin,
-                        },
+                        extra_metrics=validation_extra_metrics,
                         log_every=eval_log_every,
                     )
-                    self.logger.info(
-                        f"[Fold {fold + 1}/{num_subjects}] "
-                        f"[Epoch {epoch + 1}/{num_epochs}] "
-                        f"[Validation @ train_batch {processed_batches}] "
-                        f"[train_task {processed_tasks}/{tasks_per_epoch}] "
-                        f"mean_loss={mean_val_loss:.4f}, "
-                        f"mean_task_loss={mean_val_task_loss:.4f}, "
-                        f"mean_accuracy={mean_val_acc:.4f}, "
-                        f"mean_f1={mean_val_f1:.4f}, "
-                        f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
-                        f"triplet_loss={mean_val_triplet_loss:.4f}, "
-                        f"can_local_loss={mean_val_can_local_loss:.4f}, "
-                        f"can_global_loss={mean_val_can_global_loss:.4f}, "
-                        f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
-                        f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
-                        f"similarity_margin={mean_val_similarity_margin:.4f}, "
-                        f"checkpoint_metric={validation_checkpoint.metric}, "
-                        f"checkpoint_value={checkpoint_value:.4f}, "
-                        f"checkpoint_is_best={checkpoint_improved}, "
-                        f"validation_elapsed={self._format_seconds(time.perf_counter() - validation_start)}"
-                    )
+                    if mean_val_can_score_margin is not None:
+                        self.logger.info(
+                            f"[Fold {fold + 1}/{num_subjects}] "
+                            f"[Epoch {epoch + 1}/{num_epochs}] "
+                            f"[Validation @ train_batch {processed_batches}] "
+                            f"[train_task {processed_tasks}/{tasks_per_epoch}] "
+                            f"mean_loss={mean_val_loss:.4f}, "
+                            f"mean_task_loss={mean_val_task_loss:.4f}, "
+                            f"mean_accuracy={mean_val_acc:.4f}, "
+                            f"mean_f1={mean_val_f1:.4f}, "
+                            f"can_local_loss={mean_val_can_local_loss:.4f}, "
+                            f"can_true_class_score={mean_val_can_true_class_score:.4f}, "
+                            f"can_best_other_score={mean_val_can_best_other_score:.4f}, "
+                            f"can_score_margin={mean_val_can_score_margin:.4f}, "
+                            f"checkpoint_metric={validation_checkpoint.metric}, "
+                            f"checkpoint_value={checkpoint_value:.4f}, "
+                            f"checkpoint_is_best={checkpoint_improved}, "
+                            f"validation_elapsed={self._format_seconds(time.perf_counter() - validation_start)}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"[Fold {fold + 1}/{num_subjects}] "
+                            f"[Epoch {epoch + 1}/{num_epochs}] "
+                            f"[Validation @ train_batch {processed_batches}] "
+                            f"[train_task {processed_tasks}/{tasks_per_epoch}] "
+                            f"mean_loss={mean_val_loss:.4f}, "
+                            f"mean_task_loss={mean_val_task_loss:.4f}, "
+                            f"mean_accuracy={mean_val_acc:.4f}, "
+                            f"mean_f1={mean_val_f1:.4f}, "
+                            f"contrastive_loss={mean_val_contrastive_loss:.4f}, "
+                            f"triplet_loss={mean_val_triplet_loss:.4f}, "
+                            f"can_local_loss={mean_val_can_local_loss:.4f}, "
+                            f"can_global_loss={mean_val_can_global_loss:.4f}, "
+                            f"intra_class_similarity={mean_val_intra_class_similarity:.4f}, "
+                            f"inter_class_similarity={mean_val_inter_class_similarity:.4f}, "
+                            f"similarity_margin={mean_val_similarity_margin:.4f}, "
+                            f"checkpoint_metric={validation_checkpoint.metric}, "
+                            f"checkpoint_value={checkpoint_value:.4f}, "
+                            f"checkpoint_is_best={checkpoint_improved}, "
+                            f"validation_elapsed={self._format_seconds(time.perf_counter() - validation_start)}"
+                        )
 
                 avg_train_loss = np.mean(epoch_train_losses)
                 avg_train_acc = np.mean(epoch_train_accs)
@@ -1457,7 +1637,6 @@ class FewShotPainLearner:
                     phase_task_losses = []
                     phase_accs = []
                     phase_can_local_losses = []
-                    phase_can_global_losses = []
                     log_every = max(
                         1,
                         min(
@@ -1488,7 +1667,7 @@ class FewShotPainLearner:
                             _phase_contrastive_loss,
                             _phase_triplet_loss,
                             phase_can_local_loss,
-                            phase_can_global_loss,
+                            _phase_can_global_loss,
                         ) = self._train_prototype_memory_batch_step_tensors(
                             support_x_batch=tf.convert_to_tensor(
                                 prototype_task["support_X"][tf.newaxis, ...],
@@ -1511,7 +1690,6 @@ class FewShotPainLearner:
                         phase_task_losses.append(float(phase_task_loss))
                         phase_accs.append(float(phase_acc))
                         phase_can_local_losses.append(float(phase_can_local_loss))
-                        phase_can_global_losses.append(float(phase_can_global_loss))
                         completed_steps = prototype_step + 1
                         should_log_step = (
                             completed_steps == 1
@@ -1537,8 +1715,7 @@ class FewShotPainLearner:
                                 f"loss={float(np.mean(phase_losses)):.4f}, "
                                 f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
                                 f"acc={float(np.mean(phase_accs)):.4f}, "
-                                f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
-                                f"can_global={float(np.mean(phase_can_global_losses)):.4f}"
+                                f"can_local={float(np.mean(phase_can_local_losses)):.4f}"
                             )
                             last_log_time = time.perf_counter()
                     if phase_losses:
@@ -1550,7 +1727,6 @@ class FewShotPainLearner:
                             f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
                             f"accuracy={float(np.mean(phase_accs)):.4f}, "
                             f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
-                            f"can_global={float(np.mean(phase_can_global_losses)):.4f}, "
                             f"elapsed_seconds={epoch_elapsed:.2f}, "
                             f"seconds_per_update={epoch_elapsed / max(1, len(phase_losses)):.2f}"
                         )
@@ -1594,11 +1770,8 @@ class FewShotPainLearner:
                 )
                 size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
                 size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
-                size_results["zero_shot_intra_class_similarities"].append(
-                    zero_shot_metrics["intra_class_similarity"]
-                )
-                size_results["zero_shot_inter_class_similarities"].append(
-                    zero_shot_metrics["inter_class_similarity"]
+                self._append_evaluation_diagnostics(
+                    size_results, "zero_shot", zero_shot_metrics
                 )
                 if "transductive_accuracy" in zero_shot_metrics:
                     size_results["zero_shot_transductive_losses"].append(
@@ -1621,11 +1794,8 @@ class FewShotPainLearner:
                 size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
                 size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
                 size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-                size_results["k_shot_intra_class_similarities"].append(
-                    k_shot_metrics["intra_class_similarity"]
-                )
-                size_results["k_shot_inter_class_similarities"].append(
-                    k_shot_metrics["inter_class_similarity"]
+                self._append_evaluation_diagnostics(
+                    size_results, "k_shot", k_shot_metrics
                 )
                 if "transductive_accuracy" in k_shot_metrics:
                     size_results["k_shot_transductive_losses"].append(
@@ -1689,16 +1859,33 @@ class FewShotPainLearner:
                     event_type=f"zero_shot_summary_{size_key}",
                     loss=zero_shot_loss,
                     task_loss=zero_shot_metrics["task_loss"],
-                    contrastive_loss=zero_shot_metrics["contrastive_loss"],
-                    triplet_loss=zero_shot_metrics["triplet_loss"],
+                    contrastive_loss=None
+                    if "can_score_margin" in zero_shot_metrics
+                    else zero_shot_metrics["contrastive_loss"],
+                    triplet_loss=None
+                    if "can_score_margin" in zero_shot_metrics
+                    else zero_shot_metrics["triplet_loss"],
                     can_local_loss=zero_shot_metrics["can_local_loss"],
-                    can_global_loss=zero_shot_metrics["can_global_loss"],
+                    can_global_loss=None
+                    if "can_score_margin" in zero_shot_metrics
+                    else zero_shot_metrics["can_global_loss"],
                     accuracy=zero_shot_metrics["accuracy"],
                     precision=zero_shot_metrics["precision"],
                     recall=zero_shot_metrics["recall"],
                     f1=zero_shot_metrics["f1"],
-                    intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
-                    inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
+                    intra_class_similarity=None
+                    if "can_score_margin" in zero_shot_metrics
+                    else zero_shot_metrics["intra_class_similarity"],
+                    inter_class_similarity=None
+                    if "can_score_margin" in zero_shot_metrics
+                    else zero_shot_metrics["inter_class_similarity"],
+                    can_true_class_score=zero_shot_metrics.get(
+                        "can_true_class_score"
+                    ),
+                    can_best_other_score=zero_shot_metrics.get(
+                        "can_best_other_score"
+                    ),
+                    can_score_margin=zero_shot_metrics.get("can_score_margin"),
                 )
                 if (eval_k_shot, eval_q_query) == configured_eval_pair:
                     if k_shot_adaptation_steps > 0:
@@ -1745,16 +1932,29 @@ class FewShotPainLearner:
                     event_type=f"k_shot_summary_{size_key}",
                     loss=k_shot_loss,
                     task_loss=k_shot_metrics["task_loss"],
-                    contrastive_loss=k_shot_metrics["contrastive_loss"],
-                    triplet_loss=k_shot_metrics["triplet_loss"],
+                    contrastive_loss=None
+                    if "can_score_margin" in k_shot_metrics
+                    else k_shot_metrics["contrastive_loss"],
+                    triplet_loss=None
+                    if "can_score_margin" in k_shot_metrics
+                    else k_shot_metrics["triplet_loss"],
                     can_local_loss=k_shot_metrics["can_local_loss"],
-                    can_global_loss=k_shot_metrics["can_global_loss"],
+                    can_global_loss=None
+                    if "can_score_margin" in k_shot_metrics
+                    else k_shot_metrics["can_global_loss"],
                     accuracy=k_shot_metrics["accuracy"],
                     precision=k_shot_metrics["precision"],
                     recall=k_shot_metrics["recall"],
                     f1=k_shot_metrics["f1"],
-                    intra_class_similarity=k_shot_metrics["intra_class_similarity"],
-                    inter_class_similarity=k_shot_metrics["inter_class_similarity"],
+                    intra_class_similarity=None
+                    if "can_score_margin" in k_shot_metrics
+                    else k_shot_metrics["intra_class_similarity"],
+                    inter_class_similarity=None
+                    if "can_score_margin" in k_shot_metrics
+                    else k_shot_metrics["inter_class_similarity"],
+                    can_true_class_score=k_shot_metrics.get("can_true_class_score"),
+                    can_best_other_score=k_shot_metrics.get("can_best_other_score"),
+                    can_score_margin=k_shot_metrics.get("can_score_margin"),
                 )
 
                 sweep_metrics_by_size[size_key] = {
@@ -1776,11 +1976,8 @@ class FewShotPainLearner:
                 )
                 size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
                 size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
-                size_results["zero_shot_intra_class_similarities"].append(
-                    zero_shot_metrics["intra_class_similarity"]
-                )
-                size_results["zero_shot_inter_class_similarities"].append(
-                    zero_shot_metrics["inter_class_similarity"]
+                self._append_evaluation_diagnostics(
+                    size_results, "zero_shot", zero_shot_metrics
                 )
                 if "transductive_accuracy" in zero_shot_metrics:
                     size_results["zero_shot_transductive_losses"].append(
@@ -1803,11 +2000,8 @@ class FewShotPainLearner:
                 size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
                 size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
                 size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-                size_results["k_shot_intra_class_similarities"].append(
-                    k_shot_metrics["intra_class_similarity"]
-                )
-                size_results["k_shot_inter_class_similarities"].append(
-                    k_shot_metrics["inter_class_similarity"]
+                self._append_evaluation_diagnostics(
+                    size_results, "k_shot", k_shot_metrics
                 )
                 if "transductive_accuracy" in k_shot_metrics:
                     size_results["k_shot_transductive_losses"].append(
@@ -1847,16 +2041,29 @@ class FewShotPainLearner:
                 event_type="zero_shot_summary",
                 loss=zero_shot_loss,
                 task_loss=zero_shot_metrics["task_loss"],
-                contrastive_loss=zero_shot_metrics["contrastive_loss"],
-                triplet_loss=zero_shot_metrics["triplet_loss"],
+                contrastive_loss=None
+                if "can_score_margin" in zero_shot_metrics
+                else zero_shot_metrics["contrastive_loss"],
+                triplet_loss=None
+                if "can_score_margin" in zero_shot_metrics
+                else zero_shot_metrics["triplet_loss"],
                 can_local_loss=zero_shot_metrics["can_local_loss"],
-                can_global_loss=zero_shot_metrics["can_global_loss"],
+                can_global_loss=None
+                if "can_score_margin" in zero_shot_metrics
+                else zero_shot_metrics["can_global_loss"],
                 accuracy=zero_shot_metrics["accuracy"],
                 precision=zero_shot_metrics["precision"],
                 recall=zero_shot_metrics["recall"],
                 f1=zero_shot_metrics["f1"],
-                intra_class_similarity=zero_shot_metrics["intra_class_similarity"],
-                inter_class_similarity=zero_shot_metrics["inter_class_similarity"],
+                intra_class_similarity=None
+                if "can_score_margin" in zero_shot_metrics
+                else zero_shot_metrics["intra_class_similarity"],
+                inter_class_similarity=None
+                if "can_score_margin" in zero_shot_metrics
+                else zero_shot_metrics["inter_class_similarity"],
+                can_true_class_score=zero_shot_metrics.get("can_true_class_score"),
+                can_best_other_score=zero_shot_metrics.get("can_best_other_score"),
+                can_score_margin=zero_shot_metrics.get("can_score_margin"),
             )
             if run_adaptation:
                 csv_writer.write_event(
@@ -1871,16 +2078,29 @@ class FewShotPainLearner:
                 event_type="k_shot_summary",
                 loss=k_shot_loss,
                 task_loss=k_shot_metrics["task_loss"],
-                contrastive_loss=k_shot_metrics["contrastive_loss"],
-                triplet_loss=k_shot_metrics["triplet_loss"],
+                contrastive_loss=None
+                if "can_score_margin" in k_shot_metrics
+                else k_shot_metrics["contrastive_loss"],
+                triplet_loss=None
+                if "can_score_margin" in k_shot_metrics
+                else k_shot_metrics["triplet_loss"],
                 can_local_loss=k_shot_metrics["can_local_loss"],
-                can_global_loss=k_shot_metrics["can_global_loss"],
+                can_global_loss=None
+                if "can_score_margin" in k_shot_metrics
+                else k_shot_metrics["can_global_loss"],
                 accuracy=k_shot_metrics["accuracy"],
                 precision=k_shot_metrics["precision"],
                 recall=k_shot_metrics["recall"],
                 f1=k_shot_metrics["f1"],
-                intra_class_similarity=k_shot_metrics["intra_class_similarity"],
-                inter_class_similarity=k_shot_metrics["inter_class_similarity"],
+                intra_class_similarity=None
+                if "can_score_margin" in k_shot_metrics
+                else k_shot_metrics["intra_class_similarity"],
+                inter_class_similarity=None
+                if "can_score_margin" in k_shot_metrics
+                else k_shot_metrics["inter_class_similarity"],
+                can_true_class_score=k_shot_metrics.get("can_true_class_score"),
+                can_best_other_score=k_shot_metrics.get("can_best_other_score"),
+                can_score_margin=k_shot_metrics.get("can_score_margin"),
             )
 
             progress.log_subject_summary(
@@ -1913,11 +2133,8 @@ class FewShotPainLearner:
             cv_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
             cv_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
             cv_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
-            cv_results["zero_shot_intra_class_similarities"].append(
-                zero_shot_metrics["intra_class_similarity"]
-            )
-            cv_results["zero_shot_inter_class_similarities"].append(
-                zero_shot_metrics["inter_class_similarity"]
+            self._append_evaluation_diagnostics(
+                cv_results, "zero_shot", zero_shot_metrics
             )
             if "transductive_accuracy" in zero_shot_metrics:
                 cv_results["zero_shot_transductive_losses"].append(
@@ -1940,11 +2157,8 @@ class FewShotPainLearner:
             cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
             cv_results["k_shot_recalls"].append(k_shot_metrics["recall"])
             cv_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-            cv_results["k_shot_intra_class_similarities"].append(
-                k_shot_metrics["intra_class_similarity"]
-            )
-            cv_results["k_shot_inter_class_similarities"].append(
-                k_shot_metrics["inter_class_similarity"]
+            self._append_evaluation_diagnostics(
+                cv_results, "k_shot", k_shot_metrics
             )
             if "transductive_accuracy" in k_shot_metrics:
                 cv_results["k_shot_transductive_losses"].append(

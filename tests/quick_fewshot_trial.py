@@ -43,12 +43,18 @@ def _evaluate_bank(
     learner: FewShotPainLearner, tasks: list[dict[str, np.ndarray]]
 ) -> dict[str, float]:
     loss, accuracy, contrastive_loss, triplet_loss = learner.evaluate_batch_step(tasks)
-    return {
+    metrics = {
         "loss": float(loss.numpy()),
         "accuracy": float(accuracy.numpy()),
-        "contrastive_loss": float(contrastive_loss.numpy()),
-        "triplet_loss": float(triplet_loss.numpy()),
     }
+    if getattr(learner, "attention_mode", "none") != "can":
+        metrics.update(
+            {
+                "contrastive_loss": float(contrastive_loss.numpy()),
+                "triplet_loss": float(triplet_loss.numpy()),
+            }
+        )
+    return metrics
 
 
 def _log_trial_summary(
@@ -250,13 +256,18 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
                 "loss": float(loss.numpy()),
                 "task_loss": float(task_loss.numpy()),
                 "accuracy": float(accuracy.numpy()),
-                "contrastive_loss": float(contrastive_loss.numpy()),
-                "triplet_loss": float(triplet_loss.numpy()),
                 "can_local_loss": float(can_local_loss.numpy()),
-                "can_global_loss": float(can_global_loss.numpy()),
                 "elapsed_seconds": float(time.perf_counter() - update_start),
             }
         )
+        if str(config.attention_mode).lower() != "can":
+            update_history[-1].update(
+                {
+                    "contrastive_loss": float(contrastive_loss.numpy()),
+                    "triplet_loss": float(triplet_loss.numpy()),
+                    "can_global_loss": float(can_global_loss.numpy()),
+                }
+            )
 
         if (update_idx + 1) % summary_every == 0 or (update_idx + 1) == total_updates:
             after_train = _evaluate_bank(learner, train_eval_tasks)
@@ -374,6 +385,26 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
             after_heldout["accuracy"] - before_heldout["accuracy"]
         ),
     }
+
+    if str(config.attention_mode).lower() == "can":
+        payload.update(
+            {
+                "embedding_projection_enabled": False,
+                "can_global_loss_weight": 0.0,
+            }
+        )
+        for key in (
+            "can_global_loss_weight",
+            "embedding_batch_size",
+            "embedding_dim",
+            "triplet_loss_weight",
+            "triplet_margin",
+            "triplet_mining_strategy",
+            "triplet_center_gradient_clip_norm",
+        ):
+            payload.pop(key, None)
+    else:
+        payload["embedding_projection_enabled"] = True
 
     _log_trial_summary(
         logger,

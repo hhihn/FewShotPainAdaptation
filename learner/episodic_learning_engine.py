@@ -296,6 +296,7 @@ class EpisodicLearningEngine:
         if (
             self.triplet_mining_strategy == "triplet_center"
             and self.triplet_center_gradient_clip_norm > 0
+            and getattr(self.model, "triplet_centers", None) is not None
         ):
             center_clip_norm = tf.cast(
                 self.triplet_center_gradient_clip_norm,
@@ -328,8 +329,6 @@ class EpisodicLearningEngine:
             variables.extend(self.model.prototype_memory.trainable_variables)
         if getattr(self.model, "cross_attention", None) is not None:
             variables.extend(self.model.cross_attention.trainable_variables)
-        if getattr(self.model, "global_classifier", None) is not None:
-            variables.extend(self.model.global_classifier.trainable_variables)
         seen = set()
         unique_variables = []
         for variable in variables:
@@ -443,7 +442,10 @@ class EpisodicLearningEngine:
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
         """Compute Triplet-Center Loss with trainable per-class centers."""
-        if self.triplet_loss_weight <= 0:
+        if (
+            self.triplet_loss_weight <= 0
+            or getattr(self.model, "triplet_centers", None) is None
+        ):
             return tf.constant(0.0, dtype=embeddings.dtype)
 
         centers = tf.cast(self.model.triplet_centers, embeddings.dtype)
@@ -488,7 +490,10 @@ class EpisodicLearningEngine:
         labels_batch: tf.Tensor,
     ) -> tf.Tensor:
         """Compute Triplet-Center Loss for a batch of independent episodes."""
-        if self.triplet_loss_weight <= 0:
+        if (
+            self.triplet_loss_weight <= 0
+            or getattr(self.model, "triplet_centers", None) is None
+        ):
             return tf.zeros(tf.shape(labels_batch)[0], dtype=embeddings_batch.dtype)
 
         centers = tf.cast(self.model.triplet_centers, embeddings_batch.dtype)
@@ -563,6 +568,7 @@ class EpisodicLearningEngine:
         )
         task_losses = tf.reduce_mean(per_query_loss, axis=1)
         model_aux_loss = self.compute_model_aux_loss(dtype=task_losses.dtype)
+        can_mode = getattr(self.config, "attention_mode", "none") == "can"
         can_local_losses = tf.zeros_like(task_losses)
         if (
             getattr(self.config, "attention_mode", "none") == "can"
@@ -586,35 +592,18 @@ class EpisodicLearningEngine:
             ) * tf.reduce_mean(per_local_loss, axis=[1, 2])
 
         can_global_losses = tf.zeros_like(task_losses)
-        if (
-            getattr(self.config, "attention_mode", "none") == "can"
-            and float(getattr(self.config, "can_global_loss_weight", 0.0)) > 0
-            and "can_global_logits" in episode_outputs
-        ):
-            global_logits = tf.cast(
-                episode_outputs["can_global_logits"],
-                task_losses.dtype,
-            )
-            per_global_loss = keras.losses.sparse_categorical_crossentropy(
-                query_y_batch,
-                global_logits,
-                from_logits=True,
-            )
-            can_global_losses = tf.cast(
-                self.config.can_global_loss_weight,
-                task_losses.dtype,
-            ) * tf.reduce_mean(per_global_loss, axis=1)
-
-        embeddings_batch = tf.concat(
-            [
-                episode_outputs["support_embeddings"],
-                episode_outputs["query_embeddings"],
-            ],
-            axis=1,
-        )
-        labels_batch = tf.concat([support_y_batch, query_y_batch], axis=1)
         contrastive_losses = tf.zeros_like(task_losses)
-        if self.triplet_loss_weight > 0:
+        if can_mode:
+            triplet_losses = tf.zeros_like(task_losses)
+        elif self.triplet_loss_weight > 0:
+            embeddings_batch = tf.concat(
+                [
+                    episode_outputs["support_embeddings"],
+                    episode_outputs["query_embeddings"],
+                ],
+                axis=1,
+            )
+            labels_batch = tf.concat([support_y_batch, query_y_batch], axis=1)
             if self.triplet_mining_strategy == "triplet_center":
                 triplet_losses = tf.cast(
                     self.triplet_loss_weight,
@@ -676,13 +665,15 @@ class EpisodicLearningEngine:
         logits = episode_outputs["logits"]
         objective_inputs = {
             "logits": logits[tf.newaxis, ...],
-            "support_embeddings": episode_outputs["support_embeddings"][
-                tf.newaxis, ...
-            ],
-            "query_embeddings": episode_outputs["query_embeddings"][
-                tf.newaxis, ...
-            ],
         }
+        if "support_embeddings" in episode_outputs:
+            objective_inputs["support_embeddings"] = episode_outputs[
+                "support_embeddings"
+            ][tf.newaxis, ...]
+        if "query_embeddings" in episode_outputs:
+            objective_inputs["query_embeddings"] = episode_outputs[
+                "query_embeddings"
+            ][tf.newaxis, ...]
         if "can_local_logits" in episode_outputs:
             objective_inputs["can_local_logits"] = episode_outputs["can_local_logits"][
                 tf.newaxis, ...
@@ -706,10 +697,16 @@ class EpisodicLearningEngine:
             "can_local_loss": objective["can_local_losses"][0],
             "can_global_loss": objective["can_global_losses"][0],
             "model_aux_loss": objective["model_aux_loss"],
-            "support_embeddings": episode_outputs["support_embeddings"],
-            "query_embeddings": episode_outputs["query_embeddings"],
-            "prototypes": episode_outputs["prototypes"],
         }
+        for key in (
+            "support_embeddings",
+            "query_embeddings",
+            "prototypes",
+            "can_proto_attention",
+            "can_query_attention",
+        ):
+            if key in episode_outputs:
+                outputs[key] = episode_outputs[key]
         if return_similarity_scores:
             outputs["similarity_scores"] = episode_outputs["similarity_scores"]
         return outputs
@@ -745,10 +742,16 @@ class EpisodicLearningEngine:
             "can_local_losses": objective["can_local_losses"],
             "can_global_losses": objective["can_global_losses"],
             "model_aux_loss": objective["model_aux_loss"],
-            "support_embeddings": episode_outputs["support_embeddings"],
-            "query_embeddings": episode_outputs["query_embeddings"],
-            "prototypes": episode_outputs["prototypes"],
         }
+        for key in (
+            "support_embeddings",
+            "query_embeddings",
+            "prototypes",
+            "can_proto_attention",
+            "can_query_attention",
+        ):
+            if key in episode_outputs:
+                outputs[key] = episode_outputs[key]
         if return_similarity_scores:
             outputs["similarity_scores"] = episode_outputs["similarity_scores"]
         return outputs
@@ -832,6 +835,15 @@ class EpisodicLearningEngine:
         inter_scores = tf.TensorArray(
             tf.float32, size=0, dynamic_size=True, infer_shape=False
         )
+        can_true_scores = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        can_best_other_scores = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
+        can_score_margins = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
 
         total_tasks = tf.shape(support_x_batch)[0]
         chunk_size = tf.minimum(
@@ -855,6 +867,9 @@ class EpisodicLearningEngine:
             y_pred,
             intra_scores,
             inter_scores,
+            can_true_scores,
+            can_best_other_scores,
+            can_score_margins,
         ):
             task_end = tf.minimum(task_start + chunk_size, total_tasks)
             task_outputs = self.forward_task_batch(
@@ -876,6 +891,9 @@ class EpisodicLearningEngine:
                 chunk_y_pred,
                 chunk_intra_scores,
                 chunk_inter_scores,
+                chunk_can_true_scores,
+                chunk_can_best_other_scores,
+                chunk_can_score_margins,
             ) = self.eval_metric_tensors_from_chunk_outputs(
                 task_outputs,
                 query_y_batch[task_start:task_end],
@@ -893,6 +911,9 @@ class EpisodicLearningEngine:
                 y_pred.write(chunk_index, chunk_y_pred),
                 intra_scores.write(chunk_index, chunk_intra_scores),
                 inter_scores.write(chunk_index, chunk_inter_scores),
+                can_true_scores.write(chunk_index, chunk_can_true_scores),
+                can_best_other_scores.write(chunk_index, chunk_can_best_other_scores),
+                can_score_margins.write(chunk_index, chunk_can_score_margins),
             )
 
         (
@@ -908,6 +929,9 @@ class EpisodicLearningEngine:
             y_pred,
             intra_scores,
             inter_scores,
+            can_true_scores,
+            can_best_other_scores,
+            can_score_margins,
         ) = tf.while_loop(
             _condition,
             _body,
@@ -924,6 +948,9 @@ class EpisodicLearningEngine:
                 y_pred,
                 intra_scores,
                 inter_scores,
+                can_true_scores,
+                can_best_other_scores,
+                can_score_margins,
             ),
         )
 
@@ -938,6 +965,9 @@ class EpisodicLearningEngine:
             y_pred.concat(),
             intra_scores.concat(),
             inter_scores.concat(),
+            can_true_scores.concat(),
+            can_best_other_scores.concat(),
+            can_score_margins.concat(),
         )
 
     def _train_batch_step_compiled_impl(
@@ -1129,12 +1159,16 @@ class EpisodicLearningEngine:
                 "can_local_losses": tf.reshape(task_outputs["can_local_loss"], [1]),
                 "can_global_losses": tf.reshape(task_outputs["can_global_loss"], [1]),
                 "model_aux_loss": task_outputs["model_aux_loss"],
-                "support_embeddings": task_outputs["support_embeddings"][
-                    tf.newaxis, ...
-                ],
-                "query_embeddings": task_outputs["query_embeddings"][tf.newaxis, ...],
-                "prototypes": task_outputs["prototypes"][tf.newaxis, ...],
             }
+            for key in (
+                "support_embeddings",
+                "query_embeddings",
+                "prototypes",
+                "can_proto_attention",
+                "can_query_attention",
+            ):
+                if key in task_outputs:
+                    outputs[key] = task_outputs[key][tf.newaxis, ...]
             if return_similarity_scores:
                 outputs["similarity_scores"] = task_outputs["similarity_scores"][
                     tf.newaxis, ...
@@ -1213,6 +1247,11 @@ class EpisodicLearningEngine:
             chunk_outputs["similarity_scores"],
             query_y_chunk,
         )
+        can_true_scores, can_best_other_scores = self.split_batched_can_scores(
+            chunk_outputs["similarity_scores"],
+            query_y_chunk,
+        )
+        can_score_margins = can_true_scores - can_best_other_scores
         return (
             tf.reshape(tf.cast(chunk_outputs["losses"], tf.float32), [-1]),
             tf.reshape(tf.cast(chunk_outputs["task_losses"], tf.float32), [-1]),
@@ -1224,7 +1263,46 @@ class EpisodicLearningEngine:
             tf.reshape(pred, [-1]),
             tf.reshape(intra_scores, [-1]),
             tf.reshape(inter_scores, [-1]),
+            tf.reshape(can_true_scores, [-1]),
+            tf.reshape(can_best_other_scores, [-1]),
+            tf.reshape(can_score_margins, [-1]),
         )
+
+    def split_batched_can_scores(
+        self,
+        similarity_scores: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Return true-class and strongest competing CAN scores."""
+        query_y_batch = tf.cast(query_y_batch, tf.int32)
+        task_count = tf.shape(query_y_batch)[0]
+        query_size = tf.shape(query_y_batch)[1]
+        row_indices = tf.tile(
+            tf.range(query_size, dtype=tf.int32)[tf.newaxis, :],
+            [task_count, 1],
+        )
+        task_indices = tf.tile(
+            tf.range(task_count, dtype=tf.int32)[:, tf.newaxis],
+            [1, query_size],
+        )
+        true_scores = tf.gather_nd(
+            similarity_scores,
+            tf.stack([task_indices, row_indices, query_y_batch], axis=2),
+        )
+        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)
+        other_mask = tf.not_equal(
+            class_ids[tf.newaxis, tf.newaxis, :],
+            query_y_batch[:, :, tf.newaxis],
+        )
+        best_other_scores = tf.reduce_max(
+            tf.where(
+                other_mask,
+                similarity_scores,
+                tf.fill(tf.shape(similarity_scores), tf.cast(-1e9, similarity_scores.dtype)),
+            ),
+            axis=2,
+        )
+        return true_scores, best_other_scores
 
     def train_batch_step_eager_tensors(
         self,
@@ -1411,6 +1489,9 @@ class EpisodicLearningEngine:
         pred_labels = []
         intra_scores = []
         inter_scores = []
+        can_true_scores = []
+        can_best_other_scores = []
+        can_score_margins = []
 
         for (
             support_x_chunk,
@@ -1442,6 +1523,9 @@ class EpisodicLearningEngine:
                 chunk_pred_labels,
                 chunk_intra_scores,
                 chunk_inter_scores,
+                chunk_can_true_scores,
+                chunk_can_best_other_scores,
+                chunk_can_score_margins,
             ) = self.eval_metric_tensors_from_chunk_outputs(
                 task_outputs,
                 query_y_chunk,
@@ -1456,6 +1540,9 @@ class EpisodicLearningEngine:
             pred_labels.append(chunk_pred_labels)
             intra_scores.append(chunk_intra_scores)
             inter_scores.append(chunk_inter_scores)
+            can_true_scores.append(chunk_can_true_scores)
+            can_best_other_scores.append(chunk_can_best_other_scores)
+            can_score_margins.append(chunk_can_score_margins)
 
         return (
             tf.concat(losses, axis=0),
@@ -1468,6 +1555,9 @@ class EpisodicLearningEngine:
             tf.concat(pred_labels, axis=0),
             tf.concat(intra_scores, axis=0),
             tf.concat(inter_scores, axis=0),
+            tf.concat(can_true_scores, axis=0),
+            tf.concat(can_best_other_scores, axis=0),
+            tf.concat(can_score_margins, axis=0),
         )
 
     def eval_task_batch_step_tensors(
@@ -1491,6 +1581,9 @@ class EpisodicLearningEngine:
                     y_pred_batch,
                     intra_class_scores_batch,
                     inter_class_scores_batch,
+                    can_true_scores_batch,
+                    can_best_other_scores_batch,
+                    can_score_margins_batch,
                 ) = self._compiled_eval_batch_step(
                     support_x_batch,
                     support_y_batch,
@@ -1508,6 +1601,9 @@ class EpisodicLearningEngine:
                     tf.reshape(y_pred_batch, [-1]),
                     tf.reshape(intra_class_scores_batch, [-1]),
                     tf.reshape(inter_class_scores_batch, [-1]),
+                    tf.reshape(can_true_scores_batch, [-1]),
+                    tf.reshape(can_best_other_scores_batch, [-1]),
+                    tf.reshape(can_score_margins_batch, [-1]),
                 )
             except Exception as exc:  # pragma: no cover - defensive fallback
                 self.logger.warning(

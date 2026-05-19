@@ -324,10 +324,17 @@ class ContractTests(unittest.TestCase):
         )
 
         self.assertEqual(outputs["logits"].shape, (2, 4, 2))
-        self.assertEqual(outputs["can_global_logits"].shape, (2, 4, 2))
         self.assertEqual(outputs["can_local_logits"].shape, (2, 4, 8, 2))
         self.assertEqual(outputs["can_proto_attention"].shape, (2, 4, 2, 8))
         self.assertEqual(outputs["can_query_attention"].shape, (2, 4, 2, 8))
+        self.assertFalse(model.encoder.enable_embedding_projection)
+        self.assertIsNone(model.encoder.embedding_dense)
+        self.assertIsNone(model.encoder.embedding_norm)
+        self.assertIsNone(model.triplet_centers)
+        self.assertNotIn("support_embeddings", outputs)
+        self.assertNotIn("query_embeddings", outputs)
+        self.assertNotIn("prototypes", outputs)
+        self.assertNotIn("can_global_logits", outputs)
         np.testing.assert_allclose(
             tf.reduce_sum(outputs["can_proto_attention"], axis=-1).numpy(),
             np.ones((2, 4, 2)),
@@ -357,6 +364,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(outputs["slot_similarity_scores"].shape, (2, 4, 6))
         self.assertEqual(outputs["support_feature_maps"].shape[1], 6)
         self.assertEqual(outputs["prototype_support_y"].shape, (2, 6))
+        self.assertNotIn("support_embeddings", outputs)
+        self.assertNotIn("query_embeddings", outputs)
+        self.assertNotIn("prototypes", outputs)
 
     def test_learned_prototype_memory_gradients_reach_memory_and_can(self):
         model = self._small_can_model(
@@ -422,7 +432,7 @@ class ContractTests(unittest.TestCase):
             atol=1e-5,
         )
 
-    def test_can_gradients_reach_cam_and_global_classifier_variables(self):
+    def test_can_gradients_reach_cam_variables(self):
         model = self._small_can_model()
         support_x, support_y, query_x, query_y = self._small_episode_batch()
 
@@ -451,24 +461,48 @@ class ContractTests(unittest.TestCase):
                     from_logits=True,
                 )
             )
-            global_loss = tf.reduce_mean(
-                tf.keras.losses.sparse_categorical_crossentropy(
-                    query_y,
-                    outputs["can_global_logits"],
-                    from_logits=True,
-                )
-            )
-            loss = task_loss + local_loss + 0.1 * global_loss
+            loss = task_loss + local_loss
 
-        variables = model.cross_attention.trainable_variables + (
-            model.global_classifier.trainable_variables
-        )
+        variables = model.cross_attention.trainable_variables
         gradients = tape.gradient(loss, variables)
-        cam_gradients = gradients[: len(model.cross_attention.trainable_variables)]
-        global_gradients = gradients[len(model.cross_attention.trainable_variables) :]
 
-        self.assertTrue(any(gradient is not None for gradient in cam_gradients))
-        self.assertTrue(any(gradient is not None for gradient in global_gradients))
+        self.assertTrue(any(gradient is not None for gradient in gradients))
+
+    def test_can_objective_does_not_require_embedding_outputs(self):
+        model = self._small_can_model()
+        support_x, support_y, query_x, query_y = self._small_episode_batch()
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            classifier_mode="prototype",
+            can_local_loss_weight=1.0,
+        )
+        learner.model = model
+        learner.triplet_loss_weight = 1.0
+        learner.triplet_margin = 0.1
+        learner.triplet_mining_strategy = "triplet_center"
+        learner.engine = EpisodicLearningEngine(learner)
+
+        episode_outputs = model.forward_episode_batch(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+        self.assertNotIn("support_embeddings", episode_outputs)
+        self.assertNotIn("query_embeddings", episode_outputs)
+
+        objective = learner.engine.compute_task_batch_objective(
+            episode_outputs,
+            support_y,
+            query_y,
+        )
+
+        np.testing.assert_allclose(objective["triplet_losses"].numpy(), np.zeros(2))
+        np.testing.assert_allclose(objective["can_global_losses"].numpy(), np.zeros(2))
+        self.assertTrue(np.all(np.isfinite(objective["losses"].numpy())))
 
     def test_can_transductive_outputs_are_reported_separately(self):
         model = self._small_can_model()

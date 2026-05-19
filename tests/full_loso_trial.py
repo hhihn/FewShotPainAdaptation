@@ -231,84 +231,97 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     logger.info("Stage 4/5: Aggregating fold metrics")
     summary = _build_summary(cv_results)
 
+    can_mode = str(config.attention_mode).lower() == "can"
+    config_payload = {
+        "seed": int(config.seed),
+        "dataset_source": str(config.dataset_source),
+        "data_variant": str(config.data_variant),
+        "task_class_ids": list(config.task_class_ids),
+        "k_shot": int(config.k_shot),
+        "q_query": int(config.q_query),
+        "task_construction_mode": str(config.task_construction_mode),
+        "normalize_mode": str(config.task_normalize_mode),
+        "classifier_mode": str(config.classifier_mode),
+        "attention_mode": str(config.attention_mode),
+        "can_attention_temperature": float(config.can_attention_temperature),
+        "can_meta_hidden_dim": int(config.can_meta_hidden_dim),
+        "can_local_loss_weight": float(config.can_local_loss_weight),
+        "can_global_loss_weight": 0.0
+        if can_mode
+        else float(config.can_global_loss_weight),
+        "can_transductive_iterations": int(config.can_transductive_iterations),
+        "can_transductive_top_k_per_class": int(
+            config.can_transductive_top_k_per_class
+        ),
+        "can_transductive_min_confidence": float(
+            config.can_transductive_min_confidence
+        ),
+        "can_support_mode": str(config.can_support_mode),
+        "learned_prototype_slots_per_class": int(
+            config.learned_prototype_slots_per_class
+        ),
+        "prototype_finetune_epochs": int(config.prototype_finetune_epochs),
+        "prototype_finetune_tasks_per_epoch": (
+            int(config.prototype_finetune_tasks_per_epoch)
+            if config.prototype_finetune_tasks_per_epoch is not None
+            else None
+        ),
+        "prototype_phase2_loss_mode": str(config.prototype_phase2_loss_mode),
+        "learning_rate": float(args.learning_rate),
+        "lr_schedule": str(config.lr_schedule),
+        "lr_decay_alpha": float(config.lr_decay_alpha),
+        "embedding_projection_enabled": not can_mode,
+        "encoder": "eegnet",
+        "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
+        "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
+        "eegnet_separable_filters": int(config.eegnet_separable_filters),
+        "eegnet_temporal_kernel_size": int(config.eegnet_temporal_kernel_size),
+        "eegnet_separable_kernel_size": int(config.eegnet_separable_kernel_size),
+        "eegnet_pool_size_1": int(config.eegnet_pool_size_1),
+        "eegnet_pool_size_2": int(config.eegnet_pool_size_2),
+        "eegnet_dropout_rate": float(config.eegnet_dropout_rate),
+        "eegnet_l2_weight": float(config.eegnet_l2_weight),
+        "num_epochs": int(config.num_epochs),
+        "tasks_per_epoch": int(config.tasks_per_epoch),
+        "train_batch_size": int(config.train_batch_size),
+        "val_tasks": int(config.val_tasks),
+        "heldout_eval_tasks": int(config.heldout_eval_tasks),
+        "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
+        "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
+        "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
+        "window_shift_enabled": bool(config.enable_window_shift_augmentation),
+        "gaussian_noise_std": float(config.gaussian_noise_std),
+        "deterministic_ops": bool(config.deterministic_ops),
+        "train_progress_write_every_n_batches": int(
+            config.train_progress_write_every_n_batches
+        ),
+        "csv_flush_every_events": int(config.csv_flush_every_events),
+        "train_prefetch_batches": int(config.train_prefetch_batches),
+        "loso_start_index": config.loso_start_index,
+        "loso_stop_index": config.loso_stop_index,
+        "max_folds": int(args.max_folds) if args.max_folds is not None else None,
+    }
+    if not can_mode:
+        config_payload.update(
+            {
+                "embedding_dim": int(config.embedding_dim),
+                "embedding_batch_size": int(config.embedding_batch_size),
+                "triplet_loss_weight": float(config.triplet_loss_weight),
+                "triplet_margin": float(config.triplet_margin),
+                "triplet_mining_strategy": str(config.triplet_mining_strategy),
+                "triplet_center_gradient_clip_norm": float(
+                    config.triplet_center_gradient_clip_norm
+                ),
+            }
+        )
+    else:
+        config_payload.pop("can_global_loss_weight", None)
+
     payload: dict[str, Any] = {
         "script": "tests/full_loso_trial.py",
         "elapsed_seconds": float(time.perf_counter() - start_time),
         "data_dir": args.data_dir,
-        "config": {
-            "seed": int(config.seed),
-            "dataset_source": str(config.dataset_source),
-            "data_variant": str(config.data_variant),
-            "task_class_ids": list(config.task_class_ids),
-            "k_shot": int(config.k_shot),
-            "q_query": int(config.q_query),
-            "task_construction_mode": str(config.task_construction_mode),
-            "normalize_mode": str(config.task_normalize_mode),
-            "classifier_mode": str(config.classifier_mode),
-            "attention_mode": str(config.attention_mode),
-            "can_attention_temperature": float(config.can_attention_temperature),
-            "can_meta_hidden_dim": int(config.can_meta_hidden_dim),
-            "can_local_loss_weight": float(config.can_local_loss_weight),
-            "can_global_loss_weight": float(config.can_global_loss_weight),
-            "can_transductive_iterations": int(config.can_transductive_iterations),
-            "can_transductive_top_k_per_class": int(
-                config.can_transductive_top_k_per_class
-            ),
-            "can_transductive_min_confidence": float(
-                config.can_transductive_min_confidence
-            ),
-            "can_support_mode": str(config.can_support_mode),
-            "learned_prototype_slots_per_class": int(
-                config.learned_prototype_slots_per_class
-            ),
-            "prototype_finetune_epochs": int(config.prototype_finetune_epochs),
-            "prototype_finetune_tasks_per_epoch": (
-                int(config.prototype_finetune_tasks_per_epoch)
-                if config.prototype_finetune_tasks_per_epoch is not None
-                else None
-            ),
-            "prototype_phase2_loss_mode": str(config.prototype_phase2_loss_mode),
-            "learning_rate": float(args.learning_rate),
-            "lr_schedule": str(config.lr_schedule),
-            "lr_decay_alpha": float(config.lr_decay_alpha),
-            "embedding_dim": int(config.embedding_dim),
-            "encoder": "eegnet",
-            "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
-            "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
-            "eegnet_separable_filters": int(config.eegnet_separable_filters),
-            "eegnet_temporal_kernel_size": int(config.eegnet_temporal_kernel_size),
-            "eegnet_separable_kernel_size": int(config.eegnet_separable_kernel_size),
-            "eegnet_pool_size_1": int(config.eegnet_pool_size_1),
-            "eegnet_pool_size_2": int(config.eegnet_pool_size_2),
-            "eegnet_dropout_rate": float(config.eegnet_dropout_rate),
-            "eegnet_l2_weight": float(config.eegnet_l2_weight),
-            "num_epochs": int(config.num_epochs),
-            "tasks_per_epoch": int(config.tasks_per_epoch),
-            "train_batch_size": int(config.train_batch_size),
-            "embedding_batch_size": int(config.embedding_batch_size),
-            "val_tasks": int(config.val_tasks),
-            "heldout_eval_tasks": int(config.heldout_eval_tasks),
-            "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
-            "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
-            "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
-            "window_shift_enabled": bool(config.enable_window_shift_augmentation),
-            "gaussian_noise_std": float(config.gaussian_noise_std),
-            "triplet_loss_weight": float(config.triplet_loss_weight),
-            "triplet_margin": float(config.triplet_margin),
-            "triplet_mining_strategy": str(config.triplet_mining_strategy),
-            "triplet_center_gradient_clip_norm": float(
-                config.triplet_center_gradient_clip_norm
-            ),
-            "deterministic_ops": bool(config.deterministic_ops),
-            "train_progress_write_every_n_batches": int(
-                config.train_progress_write_every_n_batches
-            ),
-            "csv_flush_every_events": int(config.csv_flush_every_events),
-            "train_prefetch_batches": int(config.train_prefetch_batches),
-            "loso_start_index": config.loso_start_index,
-            "loso_stop_index": config.loso_stop_index,
-            "max_folds": int(args.max_folds) if args.max_folds is not None else None,
-        },
+        "config": config_payload,
         "summary": summary,
         "cv_results": cv_results,
     }

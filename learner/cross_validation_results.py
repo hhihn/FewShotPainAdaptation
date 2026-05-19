@@ -44,6 +44,9 @@ class CrossValidationResultRecorder:
             "zero_shot_f1s": [],
             "zero_shot_intra_class_similarities": [],
             "zero_shot_inter_class_similarities": [],
+            "zero_shot_can_true_class_scores": [],
+            "zero_shot_can_best_other_scores": [],
+            "zero_shot_can_score_margins": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
@@ -51,6 +54,9 @@ class CrossValidationResultRecorder:
             "k_shot_f1s": [],
             "k_shot_intra_class_similarities": [],
             "k_shot_inter_class_similarities": [],
+            "k_shot_can_true_class_scores": [],
+            "k_shot_can_best_other_scores": [],
+            "k_shot_can_score_margins": [],
             "heldout_eval_task_sizes": [
                 {"k_shot": int(k_shot), "q_query": int(q_query)}
                 for k_shot, q_query in self.heldout_eval_pairs
@@ -82,6 +88,9 @@ class CrossValidationResultRecorder:
             "zero_shot_f1s": [],
             "zero_shot_intra_class_similarities": [],
             "zero_shot_inter_class_similarities": [],
+            "zero_shot_can_true_class_scores": [],
+            "zero_shot_can_best_other_scores": [],
+            "zero_shot_can_score_margins": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
@@ -89,6 +98,9 @@ class CrossValidationResultRecorder:
             "k_shot_f1s": [],
             "k_shot_intra_class_similarities": [],
             "k_shot_inter_class_similarities": [],
+            "k_shot_can_true_class_scores": [],
+            "k_shot_can_best_other_scores": [],
+            "k_shot_can_score_margins": [],
         }
 
     @staticmethod
@@ -97,20 +109,50 @@ class CrossValidationResultRecorder:
         *,
         include_similarity_margin: bool = False,
     ) -> dict:
+        can_mode = "can_score_margin" in metrics
         event_kwargs = {
             "task_loss": metrics.get("task_loss"),
-            "contrastive_loss": metrics.get("contrastive_loss"),
-            "triplet_loss": metrics.get("triplet_loss"),
+            "contrastive_loss": None if can_mode else metrics.get("contrastive_loss"),
+            "triplet_loss": None if can_mode else metrics.get("triplet_loss"),
             "accuracy": metrics.get("accuracy"),
             "precision": metrics.get("precision"),
             "recall": metrics.get("recall"),
             "f1": metrics.get("f1"),
-            "intra_class_similarity": metrics.get("intra_class_similarity"),
-            "inter_class_similarity": metrics.get("inter_class_similarity"),
+            "intra_class_similarity": None
+            if can_mode
+            else metrics.get("intra_class_similarity"),
+            "inter_class_similarity": None
+            if can_mode
+            else metrics.get("inter_class_similarity"),
+            "can_local_loss": metrics.get("can_local_loss"),
+            "can_global_loss": None if can_mode else metrics.get("can_global_loss"),
+            "can_true_class_score": metrics.get("can_true_class_score"),
+            "can_best_other_score": metrics.get("can_best_other_score"),
+            "can_score_margin": metrics.get("can_score_margin"),
         }
         if include_similarity_margin:
-            event_kwargs["similarity_margin"] = metrics.get("similarity_margin")
+            event_kwargs["similarity_margin"] = (
+                None if can_mode else metrics.get("similarity_margin")
+            )
         return event_kwargs
+
+    @staticmethod
+    def _append_eval_diagnostics(bucket: dict, prefix: str, metrics: dict) -> None:
+        if "can_score_margin" in metrics:
+            bucket[f"{prefix}_can_true_class_scores"].append(
+                metrics["can_true_class_score"]
+            )
+            bucket[f"{prefix}_can_best_other_scores"].append(
+                metrics["can_best_other_score"]
+            )
+            bucket[f"{prefix}_can_score_margins"].append(metrics["can_score_margin"])
+        else:
+            bucket[f"{prefix}_intra_class_similarities"].append(
+                metrics["intra_class_similarity"]
+            )
+            bucket[f"{prefix}_inter_class_similarities"].append(
+                metrics["inter_class_similarity"]
+            )
 
     @staticmethod
     def _append_eval_result(
@@ -125,11 +167,10 @@ class CrossValidationResultRecorder:
         bucket[f"{prefix}_precisions"].append(metrics["precision"])
         bucket[f"{prefix}_recalls"].append(metrics["recall"])
         bucket[f"{prefix}_f1s"].append(metrics["f1"])
-        bucket[f"{prefix}_intra_class_similarities"].append(
-            metrics["intra_class_similarity"]
-        )
-        bucket[f"{prefix}_inter_class_similarities"].append(
-            metrics["inter_class_similarity"]
+        CrossValidationResultRecorder._append_eval_diagnostics(
+            bucket,
+            prefix,
+            metrics,
         )
 
     def start_fold(self, *, fold_idx: int, test_subject: int) -> str:
@@ -394,14 +435,28 @@ class CrossValidationResultRecorder:
         self.logger.info(
             f"Average K-shot Loss: {np.mean(self.cv_results['k_shot_losses']):.4f}"
         )
-        self.logger.info(
-            "Average Zero-shot Similarities: "
-            f"intra_class={np.mean(self.cv_results['zero_shot_intra_class_similarities']):.4f}, "
-            f"inter_class={np.mean(self.cv_results['zero_shot_inter_class_similarities']):.4f}"
-        )
-        self.logger.info(
-            "Average K-shot Similarities: "
-            f"intra_class={np.mean(self.cv_results['k_shot_intra_class_similarities']):.4f}, "
-            f"inter_class={np.mean(self.cv_results['k_shot_inter_class_similarities']):.4f}"
-        )
+        if self.cv_results.get("zero_shot_can_score_margins"):
+            self.logger.info(
+                "Average Zero-shot CAN Scores: "
+                f"true_class={np.mean(self.cv_results['zero_shot_can_true_class_scores']):.4f}, "
+                f"best_other={np.mean(self.cv_results['zero_shot_can_best_other_scores']):.4f}, "
+                f"margin={np.mean(self.cv_results['zero_shot_can_score_margins']):.4f}"
+            )
+            self.logger.info(
+                "Average K-shot CAN Scores: "
+                f"true_class={np.mean(self.cv_results['k_shot_can_true_class_scores']):.4f}, "
+                f"best_other={np.mean(self.cv_results['k_shot_can_best_other_scores']):.4f}, "
+                f"margin={np.mean(self.cv_results['k_shot_can_score_margins']):.4f}"
+            )
+        elif self.cv_results.get("zero_shot_intra_class_similarities"):
+            self.logger.info(
+                "Average Zero-shot Similarities: "
+                f"intra_class={np.mean(self.cv_results['zero_shot_intra_class_similarities']):.4f}, "
+                f"inter_class={np.mean(self.cv_results['zero_shot_inter_class_similarities']):.4f}"
+            )
+            self.logger.info(
+                "Average K-shot Similarities: "
+                f"intra_class={np.mean(self.cv_results['k_shot_intra_class_similarities']):.4f}, "
+                f"inter_class={np.mean(self.cv_results['k_shot_inter_class_similarities']):.4f}"
+            )
         self.logger.info(f"{'=' * 60}\n")

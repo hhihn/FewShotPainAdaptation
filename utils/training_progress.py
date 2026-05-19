@@ -170,7 +170,13 @@ class TrainingProgressReporter:
             f"recall={metrics['recall']:.4f}, "
             f"f1={metrics['f1']:.4f}"
         )
-        if "intra_class_similarity" in metrics and "inter_class_similarity" in metrics:
+        if "can_score_margin" in metrics:
+            message += (
+                f", can_true_class_score={metrics['can_true_class_score']:.4f}, "
+                f"can_best_other_score={metrics['can_best_other_score']:.4f}, "
+                f"can_score_margin={metrics['can_score_margin']:.4f}"
+            )
+        elif "intra_class_similarity" in metrics and "inter_class_similarity" in metrics:
             message += (
                 f", intra_class_similarity={metrics['intra_class_similarity']:.4f}, "
                 f"inter_class_similarity={metrics['inter_class_similarity']:.4f}"
