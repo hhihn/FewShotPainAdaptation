@@ -182,14 +182,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         eegnet_pool_size_2=args.eegnet_pool_size_2,
         eegnet_dropout_rate=args.eegnet_dropout_rate,
         eegnet_l2_weight=args.eegnet_l2_weight,
-        triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
-        triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
-        triplet_mining_strategy=str(
-            getattr(args, "triplet_mining_strategy", "batch_hard")
-        ),
-        triplet_center_gradient_clip_norm=float(
-            getattr(args, "triplet_center_gradient_clip_norm", 0.01)
-        ),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -310,12 +302,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             {
                 "embedding_dim": int(config.embedding_dim),
                 "embedding_batch_size": int(config.embedding_batch_size),
-                "triplet_loss_weight": float(config.triplet_loss_weight),
-                "triplet_margin": float(config.triplet_margin),
-                "triplet_mining_strategy": str(config.triplet_mining_strategy),
-                "triplet_center_gradient_clip_norm": float(
-                    config.triplet_center_gradient_clip_norm
-                ),
             }
         )
     else:
@@ -440,15 +426,6 @@ def main() -> None:
     parser.add_argument("--eegnet-pool-size-2", type=int, default=8)
     parser.add_argument("--eegnet-dropout-rate", type=float, default=0.25)
     parser.add_argument("--eegnet-l2-weight", type=float, default=1e-4)
-    parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
-    parser.add_argument("--triplet-margin", type=float, default=0.1)
-    parser.add_argument(
-        "--triplet-mining-strategy",
-        type=str,
-        default="batch_hard",
-        choices=("batch_hard", "batch_all", "triplet_center"),
-    )
-    parser.add_argument("--triplet-center-gradient-clip-norm", type=float, default=0.01)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument(
         "--deterministic-ops",
