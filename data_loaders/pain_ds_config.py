@@ -9,6 +9,7 @@ SUPPORTED_VALIDATION_CHECKPOINT_METRICS = (
     "triplet_loss",
     "can_local_loss",
     "can_global_loss",
+    "can_margin_loss",
     "accuracy",
     "precision",
     "recall",
@@ -93,6 +94,8 @@ class PainDatasetConfig:
     can_meta_hidden_dim: int = 32
     can_local_loss_weight: float = 1.0
     can_global_loss_weight: float = 0.1
+    can_margin_loss_weight: float = 0.2
+    can_margin_target: float = 0.3
     can_transductive_iterations: int = 3
     can_transductive_top_k_per_class: int = 1
     can_transductive_min_confidence: float = 0.0
@@ -236,6 +239,12 @@ class PainDatasetConfig:
         self.can_global_loss_weight = float(self.can_global_loss_weight)
         if self.can_global_loss_weight < 0:
             raise ValueError("can_global_loss_weight must be non-negative")
+        self.can_margin_loss_weight = float(self.can_margin_loss_weight)
+        if self.can_margin_loss_weight < 0:
+            raise ValueError("can_margin_loss_weight must be non-negative")
+        self.can_margin_target = float(self.can_margin_target)
+        if self.can_margin_target < 0:
+            raise ValueError("can_margin_target must be non-negative")
         self.can_transductive_iterations = int(self.can_transductive_iterations)
         if self.can_transductive_iterations < 0:
             raise ValueError("can_transductive_iterations must be non-negative")

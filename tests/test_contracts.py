@@ -191,6 +191,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(config.can_meta_hidden_dim, 32)
         self.assertEqual(config.can_local_loss_weight, 1.0)
         self.assertEqual(config.can_global_loss_weight, 0.1)
+        self.assertEqual(config.can_margin_loss_weight, 0.2)
+        self.assertEqual(config.can_margin_target, 0.3)
 
         with self.assertRaisesRegex(ValueError, "requires classifier_mode"):
             PainDatasetConfig(
@@ -211,6 +213,20 @@ class ContractTests(unittest.TestCase):
                 task_class_ids=(0, 5),
                 attention_mode="can",
                 can_attention_temperature=0.0,
+            )
+        with self.assertRaisesRegex(ValueError, "can_margin_loss_weight"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                can_margin_loss_weight=-0.1,
+            )
+        with self.assertRaisesRegex(ValueError, "can_margin_target"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                can_margin_target=-0.1,
             )
 
     def test_learned_prototype_memory_config_validation(self):
@@ -502,7 +518,97 @@ class ContractTests(unittest.TestCase):
 
         np.testing.assert_allclose(objective["triplet_losses"].numpy(), np.zeros(2))
         np.testing.assert_allclose(objective["can_global_losses"].numpy(), np.zeros(2))
+        self.assertTrue(np.all(np.isfinite(objective["can_margin_losses"].numpy())))
         self.assertTrue(np.all(np.isfinite(objective["losses"].numpy())))
+
+    def test_can_margin_loss_uses_true_minus_best_other_scores(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            classifier_mode="prototype",
+            can_local_loss_weight=0.0,
+            can_margin_loss_weight=0.2,
+            can_margin_target=0.3,
+        )
+        learner.triplet_loss_weight = 1.0
+        learner.model = type("DummyModel", (), {"losses": []})()
+        learner.engine = EpisodicLearningEngine(learner)
+        logits = tf.zeros((2, 3, 2), dtype=tf.float32)
+        query_y = tf.constant([[0, 1, 0], [1, 0, 1]], dtype=tf.int32)
+        support_y = tf.constant([[0, 1], [0, 1]], dtype=tf.int32)
+        similarity_scores = tf.constant(
+            [
+                [[0.8, 0.4], [0.6, 0.7], [0.2, 0.4]],
+                [[0.1, 0.6], [0.4, 0.3], [0.5, 0.55]],
+            ],
+            dtype=tf.float32,
+        )
+
+        objective = learner.engine.compute_task_batch_objective(
+            {
+                "logits": logits,
+                "similarity_scores": similarity_scores,
+            },
+            support_y,
+            query_y,
+        )
+
+        expected_unweighted = np.array(
+            [
+                np.mean([0.0, 0.2, 0.5]),
+                np.mean([0.0, 0.2, 0.25]),
+            ],
+            dtype=np.float32,
+        )
+        expected_weighted = 0.2 * expected_unweighted
+        np.testing.assert_allclose(
+            objective["can_margin_losses"].numpy(),
+            expected_weighted,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        expected_task_loss = np.log(2.0)
+        np.testing.assert_allclose(
+            objective["losses"].numpy(),
+            expected_task_loss + expected_weighted,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+
+    def test_can_margin_loss_is_zero_when_target_is_satisfied(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            classifier_mode="prototype",
+            can_local_loss_weight=0.0,
+            can_margin_loss_weight=0.2,
+            can_margin_target=0.3,
+        )
+        learner.triplet_loss_weight = 1.0
+        learner.model = type("DummyModel", (), {"losses": []})()
+        learner.engine = EpisodicLearningEngine(learner)
+        logits = tf.zeros((1, 2, 2), dtype=tf.float32)
+        query_y = tf.constant([[0, 1]], dtype=tf.int32)
+        support_y = tf.constant([[0, 1]], dtype=tf.int32)
+        similarity_scores = tf.constant(
+            [[[0.9, 0.1], [0.2, 0.8]]],
+            dtype=tf.float32,
+        )
+
+        objective = learner.engine.compute_task_batch_objective(
+            {
+                "logits": logits,
+                "similarity_scores": similarity_scores,
+            },
+            support_y,
+            query_y,
+        )
+
+        np.testing.assert_allclose(objective["can_margin_losses"].numpy(), [0.0])
 
     def test_can_transductive_outputs_are_reported_separately(self):
         model = self._small_can_model()

@@ -16,6 +16,7 @@ VALIDATION_CHECKPOINT_MINIMIZE_METRICS = {
     "triplet_loss",
     "can_local_loss",
     "can_global_loss",
+    "can_margin_loss",
     "inter_class_similarity",
 }
 

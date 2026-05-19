@@ -119,6 +119,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         can_meta_hidden_dim=int(getattr(args, "can_meta_hidden_dim", 32)),
         can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
         can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
+        can_margin_loss_weight=float(getattr(args, "can_margin_loss_weight", 0.2)),
+        can_margin_target=float(getattr(args, "can_margin_target", 0.3)),
         can_transductive_iterations=int(
             getattr(args, "can_transductive_iterations", 1)
         ),
@@ -249,6 +251,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "can_global_loss_weight": 0.0
         if can_mode
         else float(config.can_global_loss_weight),
+        "can_margin_loss_weight": float(config.can_margin_loss_weight),
+        "can_margin_target": float(config.can_margin_target),
         "can_transductive_iterations": int(config.can_transductive_iterations),
         "can_transductive_top_k_per_class": int(
             config.can_transductive_top_k_per_class
@@ -386,6 +390,8 @@ def main() -> None:
     parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
     parser.add_argument("--can-local-loss-weight", type=float, default=1.0)
     parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
+    parser.add_argument("--can-margin-loss-weight", type=float, default=0.2)
+    parser.add_argument("--can-margin-target", type=float, default=0.3)
     parser.add_argument("--can-transductive-iterations", type=int, default=1)
     parser.add_argument("--can-transductive-top-k-per-class", type=int, default=1)
     parser.add_argument("--can-transductive-min-confidence", type=float, default=0.0)

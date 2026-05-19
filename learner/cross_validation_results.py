@@ -126,6 +126,7 @@ class CrossValidationResultRecorder:
             else metrics.get("inter_class_similarity"),
             "can_local_loss": metrics.get("can_local_loss"),
             "can_global_loss": None if can_mode else metrics.get("can_global_loss"),
+            "can_margin_loss": metrics.get("can_margin_loss"),
             "can_true_class_score": metrics.get("can_true_class_score"),
             "can_best_other_score": metrics.get("can_best_other_score"),
             "can_score_margin": metrics.get("can_score_margin"),
@@ -205,6 +206,7 @@ class CrossValidationResultRecorder:
         contrastive_loss: float,
         triplet_loss: float,
         accuracy: float,
+        can_margin_loss: float | None = None,
     ) -> None:
         self.csv_writer.write_event(
             fold_idx=fold_idx,
@@ -218,6 +220,7 @@ class CrossValidationResultRecorder:
             task_loss=task_loss,
             contrastive_loss=contrastive_loss,
             triplet_loss=triplet_loss,
+            can_margin_loss=can_margin_loss,
             accuracy=accuracy,
         )
 

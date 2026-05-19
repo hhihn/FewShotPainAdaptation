@@ -592,6 +592,26 @@ class EpisodicLearningEngine:
             ) * tf.reduce_mean(per_local_loss, axis=[1, 2])
 
         can_global_losses = tf.zeros_like(task_losses)
+        can_margin_losses = tf.zeros_like(task_losses)
+        if (
+            can_mode
+            and float(getattr(self.config, "can_margin_loss_weight", 0.0)) > 0
+            and "similarity_scores" in episode_outputs
+        ):
+            true_scores, best_other_scores = self.split_batched_can_scores(
+                tf.cast(episode_outputs["similarity_scores"], task_losses.dtype),
+                query_y_batch,
+            )
+            can_score_margins = true_scores - best_other_scores
+            per_query_margin_loss = tf.maximum(
+                tf.cast(self.config.can_margin_target, task_losses.dtype)
+                - can_score_margins,
+                tf.constant(0.0, dtype=task_losses.dtype),
+            )
+            can_margin_losses = tf.cast(
+                self.config.can_margin_loss_weight,
+                task_losses.dtype,
+            ) * tf.reduce_mean(per_query_margin_loss, axis=1)
         contrastive_losses = tf.zeros_like(task_losses)
         if can_mode:
             triplet_losses = tf.zeros_like(task_losses)
@@ -637,12 +657,14 @@ class EpisodicLearningEngine:
                 + triplet_losses
                 + can_local_losses
                 + can_global_losses
+                + can_margin_losses
             ),
             "task_losses": task_losses,
             "contrastive_losses": contrastive_losses,
             "triplet_losses": triplet_losses,
             "can_local_losses": can_local_losses,
             "can_global_losses": can_global_losses,
+            "can_margin_losses": can_margin_losses,
             "model_aux_loss": model_aux_loss,
         }
 
@@ -682,6 +704,10 @@ class EpisodicLearningEngine:
             objective_inputs["can_global_logits"] = episode_outputs[
                 "can_global_logits"
             ][tf.newaxis, ...]
+        if "similarity_scores" in episode_outputs:
+            objective_inputs["similarity_scores"] = episode_outputs[
+                "similarity_scores"
+            ][tf.newaxis, ...]
         objective = self.compute_task_batch_objective(
             objective_inputs,
             support_y[tf.newaxis, ...],
@@ -696,6 +722,7 @@ class EpisodicLearningEngine:
             "triplet_loss": objective["triplet_losses"][0],
             "can_local_loss": objective["can_local_losses"][0],
             "can_global_loss": objective["can_global_losses"][0],
+            "can_margin_loss": objective["can_margin_losses"][0],
             "model_aux_loss": objective["model_aux_loss"],
         }
         for key in (
@@ -741,6 +768,7 @@ class EpisodicLearningEngine:
             "triplet_losses": objective["triplet_losses"],
             "can_local_losses": objective["can_local_losses"],
             "can_global_losses": objective["can_global_losses"],
+            "can_margin_losses": objective["can_margin_losses"],
             "model_aux_loss": objective["model_aux_loss"],
         }
         for key in (
@@ -823,6 +851,9 @@ class EpisodicLearningEngine:
         can_global_losses = tf.TensorArray(
             tf.float32, size=0, dynamic_size=True, infer_shape=False
         )
+        can_margin_losses = tf.TensorArray(
+            tf.float32, size=0, dynamic_size=True, infer_shape=False
+        )
         y_true = tf.TensorArray(
             tf.int32, size=0, dynamic_size=True, infer_shape=False
         )
@@ -863,6 +894,7 @@ class EpisodicLearningEngine:
             triplet_losses,
             can_local_losses,
             can_global_losses,
+            can_margin_losses,
             y_true,
             y_pred,
             intra_scores,
@@ -887,6 +919,7 @@ class EpisodicLearningEngine:
                 chunk_triplet_losses,
                 chunk_can_local_losses,
                 chunk_can_global_losses,
+                chunk_can_margin_losses,
                 chunk_y_true,
                 chunk_y_pred,
                 chunk_intra_scores,
@@ -907,6 +940,7 @@ class EpisodicLearningEngine:
                 triplet_losses.write(chunk_index, chunk_triplet_losses),
                 can_local_losses.write(chunk_index, chunk_can_local_losses),
                 can_global_losses.write(chunk_index, chunk_can_global_losses),
+                can_margin_losses.write(chunk_index, chunk_can_margin_losses),
                 y_true.write(chunk_index, chunk_y_true),
                 y_pred.write(chunk_index, chunk_y_pred),
                 intra_scores.write(chunk_index, chunk_intra_scores),
@@ -925,6 +959,7 @@ class EpisodicLearningEngine:
             triplet_losses,
             can_local_losses,
             can_global_losses,
+            can_margin_losses,
             y_true,
             y_pred,
             intra_scores,
@@ -944,6 +979,7 @@ class EpisodicLearningEngine:
                 triplet_losses,
                 can_local_losses,
                 can_global_losses,
+                can_margin_losses,
                 y_true,
                 y_pred,
                 intra_scores,
@@ -961,6 +997,7 @@ class EpisodicLearningEngine:
             triplet_losses.concat(),
             can_local_losses.concat(),
             can_global_losses.concat(),
+            can_margin_losses.concat(),
             y_true.concat(),
             y_pred.concat(),
             intra_scores.concat(),
@@ -1000,6 +1037,9 @@ class EpisodicLearningEngine:
             can_global_losses = tf.TensorArray(
                 tf.float32, size=0, dynamic_size=True, infer_shape=False
             )
+            can_margin_losses = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, infer_shape=False
+            )
 
             total_tasks = tf.shape(support_x_batch)[0]
             chunk_size = tf.minimum(
@@ -1020,6 +1060,7 @@ class EpisodicLearningEngine:
                 triplet_losses,
                 can_local_losses,
                 can_global_losses,
+                can_margin_losses,
             ):
                 task_end = tf.minimum(task_start + chunk_size, total_tasks)
                 support_x_chunk = self.augment_training_inputs(
@@ -1044,6 +1085,7 @@ class EpisodicLearningEngine:
                     chunk_triplet_losses,
                     chunk_can_local_losses,
                     chunk_can_global_losses,
+                    chunk_can_margin_losses,
                 ) = self.train_metric_tensors_from_chunk_outputs(
                     task_outputs,
                     query_y_chunk,
@@ -1058,6 +1100,7 @@ class EpisodicLearningEngine:
                     triplet_losses.write(chunk_index, chunk_triplet_losses),
                     can_local_losses.write(chunk_index, chunk_can_local_losses),
                     can_global_losses.write(chunk_index, chunk_can_global_losses),
+                    can_margin_losses.write(chunk_index, chunk_can_margin_losses),
                 )
 
             (
@@ -1070,6 +1113,7 @@ class EpisodicLearningEngine:
                 triplet_losses,
                 can_local_losses,
                 can_global_losses,
+                can_margin_losses,
             ) = tf.while_loop(
                 _condition,
                 _body,
@@ -1083,6 +1127,7 @@ class EpisodicLearningEngine:
                     triplet_losses,
                     can_local_losses,
                     can_global_losses,
+                    can_margin_losses,
                 ),
             )
 
@@ -1093,6 +1138,7 @@ class EpisodicLearningEngine:
             batch_triplet_loss = tf.reduce_mean(triplet_losses.concat())
             batch_can_local_loss = tf.reduce_mean(can_local_losses.concat())
             batch_can_global_loss = tf.reduce_mean(can_global_losses.concat())
+            batch_can_margin_loss = tf.reduce_mean(can_margin_losses.concat())
 
         batch_loss = self.apply_gradients(batch_loss, tape)
         return (
@@ -1103,6 +1149,7 @@ class EpisodicLearningEngine:
             batch_triplet_loss,
             batch_can_local_loss,
             batch_can_global_loss,
+            batch_can_margin_loss,
         )
 
     @staticmethod
@@ -1156,9 +1203,10 @@ class EpisodicLearningEngine:
                     task_outputs["contrastive_loss"], [1]
                 ),
                 "triplet_losses": tf.reshape(task_outputs["triplet_loss"], [1]),
-                "can_local_losses": tf.reshape(task_outputs["can_local_loss"], [1]),
-                "can_global_losses": tf.reshape(task_outputs["can_global_loss"], [1]),
-                "model_aux_loss": task_outputs["model_aux_loss"],
+            "can_local_losses": tf.reshape(task_outputs["can_local_loss"], [1]),
+            "can_global_losses": tf.reshape(task_outputs["can_global_loss"], [1]),
+            "can_margin_losses": tf.reshape(task_outputs["can_margin_loss"], [1]),
+            "model_aux_loss": task_outputs["model_aux_loss"],
             }
             for key in (
                 "support_embeddings",
@@ -1204,6 +1252,7 @@ class EpisodicLearningEngine:
             tf.reshape(tf.cast(chunk_outputs["triplet_losses"], tf.float32), [-1]),
             tf.reshape(tf.cast(chunk_outputs["can_local_losses"], tf.float32), [-1]),
             tf.reshape(tf.cast(chunk_outputs["can_global_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["can_margin_losses"], tf.float32), [-1]),
         )
 
     def split_batched_similarity_scores(
@@ -1259,6 +1308,7 @@ class EpisodicLearningEngine:
             tf.reshape(tf.cast(chunk_outputs["triplet_losses"], tf.float32), [-1]),
             tf.reshape(tf.cast(chunk_outputs["can_local_losses"], tf.float32), [-1]),
             tf.reshape(tf.cast(chunk_outputs["can_global_losses"], tf.float32), [-1]),
+            tf.reshape(tf.cast(chunk_outputs["can_margin_losses"], tf.float32), [-1]),
             tf.reshape(tf.cast(query_y_chunk, tf.int32), [-1]),
             tf.reshape(pred, [-1]),
             tf.reshape(intra_scores, [-1]),
@@ -1320,6 +1370,7 @@ class EpisodicLearningEngine:
             triplet_losses = []
             can_local_losses = []
             can_global_losses = []
+            can_margin_losses = []
             for (
                 support_x_chunk,
                 support_y_chunk,
@@ -1350,6 +1401,7 @@ class EpisodicLearningEngine:
                     chunk_triplet_losses,
                     chunk_can_local_losses,
                     chunk_can_global_losses,
+                    chunk_can_margin_losses,
                 ) = self.train_metric_tensors_from_chunk_outputs(
                     chunk_outputs,
                     query_y_chunk,
@@ -1361,6 +1413,7 @@ class EpisodicLearningEngine:
                 triplet_losses.append(chunk_triplet_losses)
                 can_local_losses.append(chunk_can_local_losses)
                 can_global_losses.append(chunk_can_global_losses)
+                can_margin_losses.append(chunk_can_margin_losses)
 
             batch_loss = self.mean_concat(losses)
             batch_task_loss = self.mean_concat(task_losses)
@@ -1369,6 +1422,7 @@ class EpisodicLearningEngine:
             batch_triplet_loss = self.mean_concat(triplet_losses)
             batch_can_local_loss = self.mean_concat(can_local_losses)
             batch_can_global_loss = self.mean_concat(can_global_losses)
+            batch_can_margin_loss = self.mean_concat(can_margin_losses)
 
         batch_loss = self.apply_gradients(batch_loss, tape)
         return (
@@ -1379,6 +1433,7 @@ class EpisodicLearningEngine:
             batch_triplet_loss,
             batch_can_local_loss,
             batch_can_global_loss,
+            batch_can_margin_loss,
         )
 
     def train_batch_step_tensors(
@@ -1444,6 +1499,9 @@ class EpisodicLearningEngine:
                 batch_can_global_loss = tf.reduce_mean(
                     task_outputs["can_global_losses"]
                 )
+                batch_can_margin_loss = tf.reduce_mean(
+                    task_outputs["can_margin_losses"]
+                )
                 predictions = tf.argmax(
                     task_outputs["logits"],
                     axis=2,
@@ -1465,6 +1523,7 @@ class EpisodicLearningEngine:
                 tf.constant(0.0, dtype=tf.float32),
                 batch_can_local_loss,
                 batch_can_global_loss,
+                batch_can_margin_loss,
             )
         finally:
             self.model.encoder.trainable = original_encoder_trainable
@@ -1485,6 +1544,7 @@ class EpisodicLearningEngine:
         triplet_losses = []
         can_local_losses = []
         can_global_losses = []
+        can_margin_losses = []
         true_labels = []
         pred_labels = []
         intra_scores = []
@@ -1519,6 +1579,7 @@ class EpisodicLearningEngine:
                 chunk_triplet_losses,
                 chunk_can_local_losses,
                 chunk_can_global_losses,
+                chunk_can_margin_losses,
                 chunk_true_labels,
                 chunk_pred_labels,
                 chunk_intra_scores,
@@ -1536,6 +1597,7 @@ class EpisodicLearningEngine:
             triplet_losses.append(chunk_triplet_losses)
             can_local_losses.append(chunk_can_local_losses)
             can_global_losses.append(chunk_can_global_losses)
+            can_margin_losses.append(chunk_can_margin_losses)
             true_labels.append(chunk_true_labels)
             pred_labels.append(chunk_pred_labels)
             intra_scores.append(chunk_intra_scores)
@@ -1551,6 +1613,7 @@ class EpisodicLearningEngine:
             tf.concat(triplet_losses, axis=0),
             tf.concat(can_local_losses, axis=0),
             tf.concat(can_global_losses, axis=0),
+            tf.concat(can_margin_losses, axis=0),
             tf.concat(true_labels, axis=0),
             tf.concat(pred_labels, axis=0),
             tf.concat(intra_scores, axis=0),
@@ -1577,6 +1640,7 @@ class EpisodicLearningEngine:
                     triplet_losses,
                     can_local_losses,
                     can_global_losses,
+                    can_margin_losses,
                     y_true_batch,
                     y_pred_batch,
                     intra_class_scores_batch,
@@ -1597,6 +1661,7 @@ class EpisodicLearningEngine:
                     tf.reshape(triplet_losses, [-1]),
                     tf.reshape(can_local_losses, [-1]),
                     tf.reshape(can_global_losses, [-1]),
+                    tf.reshape(can_margin_losses, [-1]),
                     tf.reshape(y_true_batch, [-1]),
                     tf.reshape(y_pred_batch, [-1]),
                     tf.reshape(intra_class_scores_batch, [-1]),

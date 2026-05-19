@@ -167,6 +167,7 @@ class EpisodeEvaluationService:
         triplet_losses = []
         can_local_losses = []
         can_global_losses = []
+        can_margin_losses = []
         all_true_tensors = []
         all_pred_tensors = []
         all_intra_class_scores = []
@@ -198,6 +199,7 @@ class EpisodeEvaluationService:
                     batch_triplet_losses,
                     batch_can_local_losses,
                     batch_can_global_losses,
+                    batch_can_margin_losses,
                     batch_y_true,
                     batch_y_pred,
                     batch_intra_scores,
@@ -217,6 +219,7 @@ class EpisodeEvaluationService:
                 triplet_losses.append(tf.reshape(batch_triplet_losses, [-1]))
                 can_local_losses.append(tf.reshape(batch_can_local_losses, [-1]))
                 can_global_losses.append(tf.reshape(batch_can_global_losses, [-1]))
+                can_margin_losses.append(tf.reshape(batch_can_margin_losses, [-1]))
                 all_true_tensors.append(tf.reshape(batch_y_true, [-1]))
                 all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(batch_intra_scores, [-1]))
@@ -312,6 +315,11 @@ class EpisodeEvaluationService:
                         tf.cast(task_outputs["can_global_loss"], tf.float32), [1]
                     )
                 )
+                can_margin_losses.append(
+                    tf.reshape(
+                        tf.cast(task_outputs["can_margin_loss"], tf.float32), [1]
+                    )
+                )
                 all_true_tensors.append(tf.reshape(query_y, [-1]))
                 all_pred_tensors.append(tf.reshape(pred, [-1]))
                 all_intra_class_scores.append(tf.reshape(intra_class_scores, [-1]))
@@ -347,6 +355,9 @@ class EpisodeEvaluationService:
         )
         metrics["can_global_loss"] = float(
             tf.reduce_mean(tf.concat(can_global_losses, axis=0))
+        )
+        metrics["can_margin_loss"] = float(
+            tf.reduce_mean(tf.concat(can_margin_losses, axis=0))
         )
         if getattr(self.config, "attention_mode", "none") == "can":
             metrics["can_true_class_score"] = float(
@@ -464,6 +475,9 @@ class EpisodeEvaluationService:
             )
             metrics["can_global_loss"] = float(
                 tf.reduce_mean(outputs["can_global_losses"])
+            )
+            metrics["can_margin_loss"] = float(
+                tf.reduce_mean(outputs["can_margin_losses"])
             )
 
             if (

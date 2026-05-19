@@ -65,6 +65,8 @@ class FewShotPainLearner:
             if str(config.attention_mode).strip().lower() == "can"
             else float(config.can_global_loss_weight)
         )
+        self.can_margin_loss_weight = float(config.can_margin_loss_weight)
+        self.can_margin_target = float(config.can_margin_target)
         self.gaussian_noise_std = float(config.gaussian_noise_std)
         self.gradient_clip_norm = getattr(config, "gradient_clip_norm", 1.0)
         if self.gradient_clip_norm is not None:
@@ -157,6 +159,8 @@ class FewShotPainLearner:
             "can_meta_hidden_dim": self.config.can_meta_hidden_dim,
             "can_local_loss_weight": self.config.can_local_loss_weight,
             "can_global_loss_weight": self.config.can_global_loss_weight,
+            "can_margin_loss_weight": self.config.can_margin_loss_weight,
+            "can_margin_target": self.config.can_margin_target,
             "can_transductive_iterations": self.config.can_transductive_iterations,
             "can_transductive_top_k_per_class": self.config.can_transductive_top_k_per_class,
             "can_transductive_min_confidence": self.config.can_transductive_min_confidence,
@@ -664,7 +668,7 @@ class FewShotPainLearner:
 
     def train_batch_step(
         self, task_batch: list[dict]
-    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, ...]:
         """Single optimizer update using a batch of tasks."""
         (
             support_x_batch,
@@ -1319,6 +1323,7 @@ class FewShotPainLearner:
                         triplet_loss,
                         can_local_loss,
                         can_global_loss,
+                        can_margin_loss,
                     ) = self._train_batch_step_tensors(
                         support_x_batch=tf.convert_to_tensor(
                             support_x_np,
@@ -1366,12 +1371,15 @@ class FewShotPainLearner:
                             triplet_loss=None if can_mode else float(triplet_loss),
                             can_local_loss=float(can_local_loss),
                             can_global_loss=None if can_mode else float(can_global_loss),
+                            can_margin_loss=float(can_margin_loss) if can_mode else None,
                             accuracy=float(acc),
                         )
                     train_extra_metrics = {
                         "task_loss": float(task_loss),
                         "can_local_loss": float(can_local_loss),
                     }
+                    if self.attention_mode == "can":
+                        train_extra_metrics["can_margin_loss"] = float(can_margin_loss)
                     if self.attention_mode != "can":
                         train_extra_metrics.update(
                             {
@@ -1406,6 +1414,7 @@ class FewShotPainLearner:
                                 f"loss={float(loss):.4f}, task_loss={float(task_loss):.4f}, "
                                 f"accuracy={float(acc):.4f}, "
                                 f"can_local_loss={float(can_local_loss):.4f}, "
+                                f"can_margin_loss={float(can_margin_loss):.4f}, "
                                 f"elapsed={self._format_seconds(elapsed)}, "
                                 f"eta={self._format_seconds(eta_seconds)}"
                             )
@@ -1440,6 +1449,7 @@ class FewShotPainLearner:
                     validation_triplet_losses = []
                     validation_can_local_losses = []
                     validation_can_global_losses = []
+                    validation_can_margin_losses = []
                     validation_intra_class_similarities = []
                     validation_inter_class_similarities = []
                     validation_can_true_class_scores = []
@@ -1474,6 +1484,9 @@ class FewShotPainLearner:
                         validation_can_global_losses.append(
                             val_metrics["can_global_loss"]
                         )
+                        validation_can_margin_losses.append(
+                            val_metrics["can_margin_loss"]
+                        )
                         validation_intra_class_similarities.append(
                             val_metrics["intra_class_similarity"]
                         )
@@ -1506,6 +1519,9 @@ class FewShotPainLearner:
                     )
                     mean_val_can_global_loss = float(
                         np.mean(validation_can_global_losses)
+                    )
+                    mean_val_can_margin_loss = float(
+                        np.mean(validation_can_margin_losses)
                     )
                     mean_val_intra_class_similarity = float(
                         np.mean(validation_intra_class_similarities)
@@ -1541,6 +1557,7 @@ class FewShotPainLearner:
                         "triplet_loss": mean_val_triplet_loss,
                         "can_local_loss": mean_val_can_local_loss,
                         "can_global_loss": mean_val_can_global_loss,
+                        "can_margin_loss": mean_val_can_margin_loss,
                         "accuracy": mean_val_acc,
                         "precision": mean_val_precision,
                         "recall": mean_val_recall,
@@ -1588,6 +1605,9 @@ class FewShotPainLearner:
                         can_global_loss=None
                         if mean_val_can_score_margin is not None
                         else mean_val_can_global_loss,
+                        can_margin_loss=mean_val_can_margin_loss
+                        if mean_val_can_score_margin is not None
+                        else None,
                         accuracy=mean_val_acc,
                         precision=mean_val_precision,
                         recall=mean_val_recall,
@@ -1618,6 +1638,7 @@ class FewShotPainLearner:
                         validation_extra_metrics.update(
                             {
                                 "can_local_loss": mean_val_can_local_loss,
+                                "can_margin_loss": mean_val_can_margin_loss,
                                 "can_true_class_score": mean_val_can_true_class_score,
                                 "can_best_other_score": mean_val_can_best_other_score,
                                 "can_score_margin": mean_val_can_score_margin,
@@ -1658,6 +1679,7 @@ class FewShotPainLearner:
                             f"mean_accuracy={mean_val_acc:.4f}, "
                             f"mean_f1={mean_val_f1:.4f}, "
                             f"can_local_loss={mean_val_can_local_loss:.4f}, "
+                            f"can_margin_loss={mean_val_can_margin_loss:.4f}, "
                             f"can_true_class_score={mean_val_can_true_class_score:.4f}, "
                             f"can_best_other_score={mean_val_can_best_other_score:.4f}, "
                             f"can_score_margin={mean_val_can_score_margin:.4f}, "
@@ -1811,6 +1833,7 @@ class FewShotPainLearner:
                     phase_task_losses = []
                     phase_accs = []
                     phase_can_local_losses = []
+                    phase_can_margin_losses = []
                     log_every = max(
                         1,
                         min(
@@ -1842,6 +1865,7 @@ class FewShotPainLearner:
                             _phase_triplet_loss,
                             phase_can_local_loss,
                             _phase_can_global_loss,
+                            phase_can_margin_loss,
                         ) = self._train_prototype_memory_batch_step_tensors(
                             support_x_batch=tf.convert_to_tensor(
                                 prototype_task["support_X"][tf.newaxis, ...],
@@ -1864,6 +1888,7 @@ class FewShotPainLearner:
                         phase_task_losses.append(float(phase_task_loss))
                         phase_accs.append(float(phase_acc))
                         phase_can_local_losses.append(float(phase_can_local_loss))
+                        phase_can_margin_losses.append(float(phase_can_margin_loss))
                         completed_steps = prototype_step + 1
                         should_log_step = (
                             completed_steps == 1
@@ -1889,7 +1914,8 @@ class FewShotPainLearner:
                                 f"loss={float(np.mean(phase_losses)):.4f}, "
                                 f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
                                 f"acc={float(np.mean(phase_accs)):.4f}, "
-                                f"can_local={float(np.mean(phase_can_local_losses)):.4f}"
+                                f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
+                                f"can_margin={float(np.mean(phase_can_margin_losses)):.4f}"
                             )
                             last_log_time = time.perf_counter()
                     if phase_losses:
@@ -1901,6 +1927,7 @@ class FewShotPainLearner:
                             f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
                             f"accuracy={float(np.mean(phase_accs)):.4f}, "
                             f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
+                            f"can_margin={float(np.mean(phase_can_margin_losses)):.4f}, "
                             f"elapsed_seconds={epoch_elapsed:.2f}, "
                             f"seconds_per_update={epoch_elapsed / max(1, len(phase_losses)):.2f}"
                         )
@@ -2048,6 +2075,9 @@ class FewShotPainLearner:
                     can_global_loss=None
                     if "can_score_margin" in zero_shot_metrics
                     else zero_shot_metrics["can_global_loss"],
+                    can_margin_loss=zero_shot_metrics.get("can_margin_loss")
+                    if "can_score_margin" in zero_shot_metrics
+                    else None,
                     accuracy=zero_shot_metrics["accuracy"],
                     precision=zero_shot_metrics["precision"],
                     recall=zero_shot_metrics["recall"],
@@ -2125,6 +2155,9 @@ class FewShotPainLearner:
                     can_global_loss=None
                     if "can_score_margin" in k_shot_metrics
                     else k_shot_metrics["can_global_loss"],
+                    can_margin_loss=k_shot_metrics.get("can_margin_loss")
+                    if "can_score_margin" in k_shot_metrics
+                    else None,
                     accuracy=k_shot_metrics["accuracy"],
                     precision=k_shot_metrics["precision"],
                     recall=k_shot_metrics["recall"],
@@ -2238,6 +2271,9 @@ class FewShotPainLearner:
                 can_global_loss=None
                 if "can_score_margin" in zero_shot_metrics
                 else zero_shot_metrics["can_global_loss"],
+                can_margin_loss=zero_shot_metrics.get("can_margin_loss")
+                if "can_score_margin" in zero_shot_metrics
+                else None,
                 accuracy=zero_shot_metrics["accuracy"],
                 precision=zero_shot_metrics["precision"],
                 recall=zero_shot_metrics["recall"],
@@ -2275,6 +2311,9 @@ class FewShotPainLearner:
                 can_global_loss=None
                 if "can_score_margin" in k_shot_metrics
                 else k_shot_metrics["can_global_loss"],
+                can_margin_loss=k_shot_metrics.get("can_margin_loss")
+                if "can_score_margin" in k_shot_metrics
+                else None,
                 accuracy=k_shot_metrics["accuracy"],
                 precision=k_shot_metrics["precision"],
                 recall=k_shot_metrics["recall"],
