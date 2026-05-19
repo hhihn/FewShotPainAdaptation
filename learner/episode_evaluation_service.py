@@ -327,10 +327,12 @@ class EpisodeEvaluationService:
             tf.concat(all_pred_tensors, axis=0).numpy().astype(np.int32, copy=False)
         )
         metrics = self.compute_macro_metrics(y_true, y_pred)
+        intra_scores = tf.concat(all_intra_class_scores, axis=0)
+        inter_scores = tf.concat(all_inter_class_scores, axis=0)
         metrics.update(
             self.compute_similarity_metrics(
-                tf.concat(all_intra_class_scores, axis=0).numpy(),
-                tf.concat(all_inter_class_scores, axis=0).numpy(),
+                intra_scores.numpy(),
+                inter_scores.numpy(),
             )
         )
         metrics["task_loss"] = float(tf.reduce_mean(tf.concat(task_losses, axis=0)))
@@ -355,6 +357,9 @@ class EpisodeEvaluationService:
             )
             metrics["can_score_margin"] = float(
                 tf.reduce_mean(tf.concat(all_can_score_margins, axis=0))
+            )
+            metrics["can_mean_alignment"] = float(
+                tf.reduce_mean(tf.concat([intra_scores, inter_scores], axis=0))
             )
         metrics.update(self.evaluate_transductive_task_batch_metrics(task_batch))
         return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
@@ -450,6 +455,7 @@ class EpisodeEvaluationService:
             metrics["can_score_margin"] = (
                 metrics["can_true_class_score"] - metrics["can_best_other_score"]
             )
+            metrics["can_mean_alignment"] = float(tf.reduce_mean(similarity_scores))
             metrics["task_loss"] = float(tf.reduce_mean(per_query_loss))
             metrics["contrastive_loss"] = 0.0
             metrics["triplet_loss"] = 0.0
@@ -526,6 +532,96 @@ class EpisodeEvaluationService:
                     }
                 )
             return float(tf.reduce_mean(per_query_loss)), metrics
+        finally:
+            self.engine.triplet_loss_weight = original_triplet_weight
+            self.engine.model.can_support_mode = original_support_mode
+
+    def collect_can_sample_statistics(
+        self,
+        task_batch: list[dict],
+        *,
+        phase: str,
+        can_support_mode: str | None = None,
+    ) -> list[dict]:
+        """Return one diagnostic row per evaluated query sample for CAN folds."""
+        if getattr(self.config, "attention_mode", "none") != "can":
+            return []
+
+        original_support_mode = self.engine.model.can_support_mode
+        original_triplet_weight = self.engine.triplet_loss_weight
+        if can_support_mode is not None:
+            self.engine.model.can_support_mode = can_support_mode
+        self.engine.triplet_loss_weight = 0.0
+        try:
+            rows = []
+            for task_index, task_dict in enumerate(task_batch):
+                support_x = tf.convert_to_tensor(
+                    task_dict["support_X"],
+                    dtype=tf.float32,
+                )
+                support_y = tf.convert_to_tensor(
+                    task_dict["support_y"],
+                    dtype=tf.int32,
+                )
+                query_x = tf.convert_to_tensor(
+                    task_dict["query_X"],
+                    dtype=tf.float32,
+                )
+                query_y = tf.convert_to_tensor(
+                    task_dict["query_y"],
+                    dtype=tf.int32,
+                )
+                outputs = self.engine.forward_task(
+                    support_x=support_x,
+                    support_y=support_y,
+                    query_x=query_x,
+                    query_y=query_y,
+                    training=False,
+                    return_similarity_scores=True,
+                )
+                logits = outputs["logits"]
+                similarity_scores = outputs["similarity_scores"]
+                pred = tf.argmax(logits, axis=1, output_type=tf.int32)
+                losses = tf.keras.losses.sparse_categorical_crossentropy(
+                    query_y,
+                    logits,
+                    from_logits=True,
+                )
+
+                query_y_np = query_y.numpy().astype(np.int32, copy=False)
+                pred_np = pred.numpy().astype(np.int32, copy=False)
+                losses_np = losses.numpy()
+                logits_np = logits.numpy()
+                scores_np = similarity_scores.numpy()
+
+                for sample_index, truth in enumerate(query_y_np):
+                    sample_scores = np.asarray(scores_np[sample_index], dtype=np.float64)
+                    true_score = float(sample_scores[int(truth)])
+                    other_scores = sample_scores.copy()
+                    other_scores[int(truth)] = -np.inf
+                    best_other_score = float(np.max(other_scores))
+                    row = {
+                        "phase": phase,
+                        "task_index": task_index,
+                        "sample_index": sample_index,
+                        "true_label": int(truth),
+                        "pred_label": int(pred_np[sample_index]),
+                        "correct": int(pred_np[sample_index] == int(truth)),
+                        "loss": float(losses_np[sample_index]),
+                        "can_mean_alignment": float(np.mean(sample_scores)),
+                        "can_true_class_score": true_score,
+                        "can_best_other_score": best_other_score,
+                        "can_score_margin": true_score - best_other_score,
+                    }
+                    for class_index in range(int(self.config.n_way)):
+                        row[f"logit_class_{class_index}"] = float(
+                            logits_np[sample_index, class_index]
+                        )
+                        row[f"can_score_class_{class_index}"] = float(
+                            scores_np[sample_index, class_index]
+                        )
+                    rows.append(row)
+            return rows
         finally:
             self.engine.triplet_loss_weight = original_triplet_weight
             self.engine.model.can_support_mode = original_support_mode

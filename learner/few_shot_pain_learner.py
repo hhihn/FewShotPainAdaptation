@@ -1,8 +1,10 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+import csv
 import json
 import time
+from pathlib import Path
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -772,6 +774,27 @@ class FewShotPainLearner:
             forward_batch_size=forward_batch_size,
         )
 
+    def _sample_tasks_at_task_size(
+        self,
+        sampler,
+        *,
+        num_tasks: int,
+        k_shot: int,
+        q_query: int,
+    ) -> list[dict]:
+        """Sample held-out tasks with a temporary k-shot/q-query override."""
+        original_k = int(sampler.k_shot)
+        original_q = int(sampler.q_query)
+        self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
+        try:
+            return [sampler.get_task() for _ in range(num_tasks)]
+        finally:
+            self._set_sampler_task_size(
+                sampler,
+                k_shot=original_k,
+                q_query=original_q,
+            )
+
     def _adapt_on_sampler_at_task_size(
         self,
         sampler,
@@ -920,6 +943,155 @@ class FewShotPainLearner:
                 metrics["inter_class_similarity"]
             )
 
+    def _write_can_alignment_summary(
+        self,
+        *,
+        progress_file: str,
+        fold_idx: int,
+        test_subject: int,
+        k_shot: int,
+        q_query: int,
+        zero_shot_metrics: dict,
+        k_shot_metrics: dict,
+    ) -> str | None:
+        if getattr(self.config, "attention_mode", "none") != "can":
+            return None
+        if "can_mean_alignment" not in zero_shot_metrics:
+            return None
+
+        progress_path = Path(progress_file)
+        output_path = progress_path.with_name(
+            progress_path.name.replace(
+                "_training_progress.csv",
+                "_can_alignment_summary.csv",
+            )
+        )
+        fieldnames = [
+            "fold",
+            "test_subject",
+            "phase",
+            "k_shot",
+            "q_query",
+            "accuracy",
+            "precision",
+            "recall",
+            "f1",
+            "can_mean_alignment",
+            "can_true_class_score",
+            "can_best_other_score",
+            "can_score_margin",
+            "can_support_mode",
+        ]
+        rows = [
+            ("zero_shot", zero_shot_metrics),
+            ("k_shot", k_shot_metrics),
+        ]
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for phase, metrics in rows:
+                writer.writerow(
+                    {
+                        "fold": fold_idx,
+                        "test_subject": int(test_subject),
+                        "phase": phase,
+                        "k_shot": int(k_shot),
+                        "q_query": int(q_query),
+                        "accuracy": metrics.get("accuracy"),
+                        "precision": metrics.get("precision"),
+                        "recall": metrics.get("recall"),
+                        "f1": metrics.get("f1"),
+                        "can_mean_alignment": metrics.get("can_mean_alignment"),
+                        "can_true_class_score": metrics.get("can_true_class_score"),
+                        "can_best_other_score": metrics.get("can_best_other_score"),
+                        "can_score_margin": metrics.get("can_score_margin"),
+                        "can_support_mode": getattr(
+                            self.config,
+                            "can_support_mode",
+                            "sampled",
+                        ),
+                    }
+                )
+        return str(output_path)
+
+    def _write_can_sample_statistics(
+        self,
+        *,
+        progress_file: str,
+        fold_idx: int,
+        test_subject: int,
+        k_shot: int,
+        q_query: int,
+        zero_shot_task_batch: list[dict],
+        k_shot_task_batch: list[dict],
+    ) -> str | None:
+        if getattr(self.config, "attention_mode", "none") != "can":
+            return None
+
+        can_support_mode = getattr(self.config, "can_support_mode", "sampled")
+        rows = []
+        rows.extend(
+            self.evaluator.collect_can_sample_statistics(
+                zero_shot_task_batch,
+                phase="zero_shot",
+                can_support_mode=can_support_mode,
+            )
+        )
+        rows.extend(
+            self.evaluator.collect_can_sample_statistics(
+                k_shot_task_batch,
+                phase="k_shot",
+                can_support_mode=can_support_mode,
+            )
+        )
+        if not rows:
+            return None
+
+        progress_path = Path(progress_file)
+        output_path = progress_path.with_name(
+            progress_path.name.replace(
+                "_training_progress.csv",
+                "_can_sample_statistics.csv",
+            )
+        )
+        class_fields = []
+        for class_index in range(int(self.config.n_way)):
+            class_fields.extend(
+                [f"logit_class_{class_index}", f"can_score_class_{class_index}"]
+            )
+        fieldnames = [
+            "fold",
+            "test_subject",
+            "phase",
+            "k_shot",
+            "q_query",
+            "task_index",
+            "sample_index",
+            "true_label",
+            "pred_label",
+            "correct",
+            "loss",
+            "can_mean_alignment",
+            "can_true_class_score",
+            "can_best_other_score",
+            "can_score_margin",
+            *class_fields,
+        ]
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {
+                        "fold": fold_idx,
+                        "test_subject": int(test_subject),
+                        "k_shot": int(k_shot),
+                        "q_query": int(q_query),
+                        **row,
+                    }
+                )
+        return str(output_path)
+
     def train(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
@@ -1040,6 +1212,8 @@ class FewShotPainLearner:
                 for k_shot, q_query in heldout_eval_pairs
             },
             "training_progress_files": [],
+            "can_alignment_summary_files": [],
+            "can_sample_statistics_files": [],
             "model_architecture_file": None,
             "validation_checkpoint_metric": self.config.validation_checkpoint_metric,
             "validation_checkpoint_mode": self.config.validation_checkpoint_mode,
@@ -1756,9 +1930,11 @@ class FewShotPainLearner:
                 sweep_metrics_by_size[fixed_size_key] = {
                     "zero_shot_loss": zero_shot_loss,
                     "zero_shot_metrics": zero_shot_metrics,
+                    "zero_shot_task_batch": [query_task],
                     "adaptation_mean_loss": 0.0,
                     "k_shot_loss": k_shot_loss,
                     "k_shot_metrics": k_shot_metrics,
+                    "k_shot_task_batch": [query_task],
                 }
                 size_results = cv_results["heldout_eval_by_task_size"][fixed_size_key]
                 size_results["zero_shot_losses"].append(zero_shot_loss)
@@ -1836,12 +2012,15 @@ class FewShotPainLearner:
                     label="pre-heldout optimizer variables",
                 )
                 try:
+                    zero_shot_task_batch = self._sample_tasks_at_task_size(
+                        test_sampler,
+                        num_tasks=heldout_eval_tasks,
+                        k_shot=eval_k_shot,
+                        q_query=eval_q_query,
+                    )
                     zero_shot_loss, zero_shot_metrics = (
-                        self._evaluate_sampler_loss_and_metrics_at_task_size(
-                            test_sampler,
-                            num_tasks=heldout_eval_tasks,
-                            k_shot=eval_k_shot,
-                            q_query=eval_q_query,
+                        self._evaluate_task_batch_loss_and_metrics(
+                            zero_shot_task_batch,
                             forward_batch_size=self.train_batch_size,
                         )
                     )
@@ -1911,12 +2090,15 @@ class FewShotPainLearner:
                         if adaptation_losses
                         else 0.0,
                     )
+                    k_shot_task_batch = self._sample_tasks_at_task_size(
+                        test_sampler,
+                        num_tasks=heldout_eval_tasks,
+                        k_shot=eval_k_shot,
+                        q_query=eval_q_query,
+                    )
                     k_shot_loss, k_shot_metrics = (
-                        self._evaluate_sampler_loss_and_metrics_at_task_size(
-                            test_sampler,
-                            num_tasks=heldout_eval_tasks,
-                            k_shot=eval_k_shot,
-                            q_query=eval_q_query,
+                        self._evaluate_task_batch_loss_and_metrics(
+                            k_shot_task_batch,
                             forward_batch_size=self.train_batch_size,
                         )
                     )
@@ -1925,6 +2107,7 @@ class FewShotPainLearner:
                     # With zero adaptation steps, k-shot reflects the zero-shot state.
                     k_shot_loss = float(zero_shot_loss)
                     k_shot_metrics = dict(zero_shot_metrics)
+                    k_shot_task_batch = zero_shot_task_batch
 
                 csv_writer.write_event(
                     fold_idx=fold + 1,
@@ -1960,11 +2143,13 @@ class FewShotPainLearner:
                 sweep_metrics_by_size[size_key] = {
                     "zero_shot_loss": zero_shot_loss,
                     "zero_shot_metrics": zero_shot_metrics,
+                    "zero_shot_task_batch": zero_shot_task_batch,
                     "adaptation_mean_loss": (
                         float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
                     ),
                     "k_shot_loss": k_shot_loss,
                     "k_shot_metrics": k_shot_metrics,
+                    "k_shot_task_batch": k_shot_task_batch,
                 }
                 size_results = cv_results["heldout_eval_by_task_size"][size_key]
                 size_results["zero_shot_losses"].append(zero_shot_loss)
@@ -2033,6 +2218,8 @@ class FewShotPainLearner:
             fixed_adaptation_mean_loss = fixed_size_metrics["adaptation_mean_loss"]
             k_shot_loss = fixed_size_metrics["k_shot_loss"]
             k_shot_metrics = fixed_size_metrics["k_shot_metrics"]
+            zero_shot_task_batch = fixed_size_metrics.get("zero_shot_task_batch", [])
+            k_shot_task_batch = fixed_size_metrics.get("k_shot_task_batch", [])
 
             # Keep legacy fixed-size event names for downstream tooling compatibility.
             csv_writer.write_event(
@@ -2183,6 +2370,38 @@ class FewShotPainLearner:
                 loss=zero_shot_loss,
                 accuracy=zero_shot_metrics["accuracy"],
             )
+            can_alignment_file = self._write_can_alignment_summary(
+                progress_file=progress_file,
+                fold_idx=fold + 1,
+                test_subject=int(test_subject),
+                k_shot=configured_eval_pair[0],
+                q_query=configured_eval_pair[1],
+                zero_shot_metrics=zero_shot_metrics,
+                k_shot_metrics=k_shot_metrics,
+            )
+            if can_alignment_file is not None:
+                cv_results["can_alignment_summary_files"].append(can_alignment_file)
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    f"Saved CAN alignment summary to {can_alignment_file}"
+                )
+            can_sample_statistics_file = self._write_can_sample_statistics(
+                progress_file=progress_file,
+                fold_idx=fold + 1,
+                test_subject=int(test_subject),
+                k_shot=configured_eval_pair[0],
+                q_query=configured_eval_pair[1],
+                zero_shot_task_batch=zero_shot_task_batch,
+                k_shot_task_batch=k_shot_task_batch,
+            )
+            if can_sample_statistics_file is not None:
+                cv_results["can_sample_statistics_files"].append(
+                    can_sample_statistics_file
+                )
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    f"Saved CAN sample statistics to {can_sample_statistics_file}"
+                )
             csv_writer.close()
             cv_results["training_progress_files"].append(progress_file)
             progress.log_fold_complete(
