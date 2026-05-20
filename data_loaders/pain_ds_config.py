@@ -55,6 +55,21 @@ class PainDatasetConfig:
     eegnet_pool_size_2: int = 8
     eegnet_dropout_rate: float = 0.25
     eegnet_l2_weight: float = 1e-4
+    encoder_backend: str = "eegnet"
+    crossmod_frontend_temporal_filters: int = 8
+    crossmod_frontend_separable_filters: int = 16
+    crossmod_frontend_temporal_kernel_size: int = 64
+    crossmod_frontend_separable_kernel_size: int = 16
+    crossmod_frontend_pool_size_1: int = 4
+    crossmod_frontend_pool_size_2: int = 8
+    crossmod_frontend_dropout_rate: float = 0.25
+    crossmod_frontend_l2_weight: float = 1e-4
+    crossmod_num_heads: int = 8
+    crossmod_hidden_dim: int = 128
+    crossmod_num_layers: int = 2
+    crossmod_positional_base: float = 10000.0
+    crossmod_attention_dropout_rate: float = 0.0
+    crossmod_ff_activation: str = "relu"
     embedding_dim: int = 64  # Joint EEGNet encoder embedding dimension
     clear_session_per_fold: bool = True  # Legacy flag; LOSO folds now reuse one graph
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
@@ -70,7 +85,7 @@ class PainDatasetConfig:
         "EMG",  # idx 5
     )
     # Sensor to index mapping
-    sensor_idx = [1, 4, 5]
+    sensor_idx: Tuple[int, ...] = (1, 4, 5)
 
     # Meta-learning settings
     task_class_ids: Tuple[int, ...] = (
@@ -179,6 +194,16 @@ class PainDatasetConfig:
     def __post_init__(self) -> None:
         if self.subject_eval_tasks is not None:
             self.heldout_eval_tasks = int(self.subject_eval_tasks)
+        self.encoder_backend = str(self.encoder_backend).strip().lower()
+        if self.encoder_backend not in {"eegnet", "crossmod"}:
+            raise ValueError("encoder_backend must be one of: 'eegnet', 'crossmod'")
+        if self.encoder_backend == "crossmod":
+            if str(self.attention_mode).strip().lower() != "can":
+                raise ValueError("encoder_backend='crossmod' requires attention_mode='can'")
+            self.num_sensors = 2
+            self.sensor_idx = (1, 4)
+            self.modality_names = ("EDA", "ECG")
+            self.biovid_modalities = ("GSR", "ECG")
         if self.dataset_source not in {"painmonit", "biovid_part_a"}:
             raise ValueError(
                 "dataset_source must be one of: 'painmonit', 'biovid_part_a'"
@@ -332,6 +357,50 @@ class PainDatasetConfig:
             raise ValueError("eegnet_dropout_rate must be in [0, 1)")
         if self.eegnet_l2_weight < 0:
             raise ValueError("eegnet_l2_weight must be non-negative")
+        crossmod_positive_ints = {
+            "crossmod_frontend_temporal_filters": self.crossmod_frontend_temporal_filters,
+            "crossmod_frontend_separable_filters": self.crossmod_frontend_separable_filters,
+            "crossmod_frontend_temporal_kernel_size": self.crossmod_frontend_temporal_kernel_size,
+            "crossmod_frontend_separable_kernel_size": self.crossmod_frontend_separable_kernel_size,
+            "crossmod_frontend_pool_size_1": self.crossmod_frontend_pool_size_1,
+            "crossmod_frontend_pool_size_2": self.crossmod_frontend_pool_size_2,
+            "crossmod_num_heads": self.crossmod_num_heads,
+            "crossmod_hidden_dim": self.crossmod_hidden_dim,
+            "crossmod_num_layers": self.crossmod_num_layers,
+        }
+        for field_name, field_value in crossmod_positive_ints.items():
+            if int(field_value) <= 0:
+                raise ValueError(f"{field_name} must be > 0")
+        self.crossmod_frontend_dropout_rate = float(
+            self.crossmod_frontend_dropout_rate
+        )
+        if (
+            self.crossmod_frontend_dropout_rate < 0
+            or self.crossmod_frontend_dropout_rate >= 1
+        ):
+            raise ValueError("crossmod_frontend_dropout_rate must be in [0, 1)")
+        self.crossmod_attention_dropout_rate = float(
+            self.crossmod_attention_dropout_rate
+        )
+        if (
+            self.crossmod_attention_dropout_rate < 0
+            or self.crossmod_attention_dropout_rate >= 1
+        ):
+            raise ValueError("crossmod_attention_dropout_rate must be in [0, 1)")
+        self.crossmod_frontend_l2_weight = float(self.crossmod_frontend_l2_weight)
+        if self.crossmod_frontend_l2_weight < 0:
+            raise ValueError("crossmod_frontend_l2_weight must be non-negative")
+        self.crossmod_positional_base = float(self.crossmod_positional_base)
+        if self.crossmod_positional_base <= 0:
+            raise ValueError("crossmod_positional_base must be > 0")
+        if (
+            int(self.crossmod_frontend_separable_filters)
+            % int(self.crossmod_num_heads)
+            != 0
+        ):
+            raise ValueError(
+                "crossmod_frontend_separable_filters must be divisible by crossmod_num_heads"
+            )
         if self.sampling_rate_hz <= 0:
             raise ValueError("sampling_rate_hz must be > 0")
         if self.window_shift_window_seconds <= 0:

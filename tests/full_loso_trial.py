@@ -182,6 +182,41 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         eegnet_pool_size_2=args.eegnet_pool_size_2,
         eegnet_dropout_rate=args.eegnet_dropout_rate,
         eegnet_l2_weight=args.eegnet_l2_weight,
+        encoder_backend=str(getattr(args, "encoder_backend", "eegnet")),
+        crossmod_frontend_temporal_filters=int(
+            getattr(args, "crossmod_frontend_temporal_filters", 8)
+        ),
+        crossmod_frontend_separable_filters=int(
+            getattr(args, "crossmod_frontend_separable_filters", 16)
+        ),
+        crossmod_frontend_temporal_kernel_size=int(
+            getattr(args, "crossmod_frontend_temporal_kernel_size", 64)
+        ),
+        crossmod_frontend_separable_kernel_size=int(
+            getattr(args, "crossmod_frontend_separable_kernel_size", 16)
+        ),
+        crossmod_frontend_pool_size_1=int(
+            getattr(args, "crossmod_frontend_pool_size_1", 4)
+        ),
+        crossmod_frontend_pool_size_2=int(
+            getattr(args, "crossmod_frontend_pool_size_2", 8)
+        ),
+        crossmod_frontend_dropout_rate=float(
+            getattr(args, "crossmod_frontend_dropout_rate", 0.25)
+        ),
+        crossmod_frontend_l2_weight=float(
+            getattr(args, "crossmod_frontend_l2_weight", 1e-4)
+        ),
+        crossmod_num_heads=int(getattr(args, "crossmod_num_heads", 8)),
+        crossmod_hidden_dim=int(getattr(args, "crossmod_hidden_dim", 128)),
+        crossmod_num_layers=int(getattr(args, "crossmod_num_layers", 2)),
+        crossmod_positional_base=float(
+            getattr(args, "crossmod_positional_base", 10000.0)
+        ),
+        crossmod_attention_dropout_rate=float(
+            getattr(args, "crossmod_attention_dropout_rate", 0.0)
+        ),
+        crossmod_ff_activation=str(getattr(args, "crossmod_ff_activation", "relu")),
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
@@ -267,7 +302,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "lr_schedule": str(config.lr_schedule),
         "lr_decay_alpha": float(config.lr_decay_alpha),
         "embedding_projection_enabled": not can_mode,
-        "encoder": "eegnet",
+        "encoder_backend": str(config.encoder_backend),
         "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
         "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
         "eegnet_separable_filters": int(config.eegnet_separable_filters),
@@ -277,6 +312,32 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "eegnet_pool_size_2": int(config.eegnet_pool_size_2),
         "eegnet_dropout_rate": float(config.eegnet_dropout_rate),
         "eegnet_l2_weight": float(config.eegnet_l2_weight),
+        "crossmod_frontend_temporal_filters": int(
+            config.crossmod_frontend_temporal_filters
+        ),
+        "crossmod_frontend_separable_filters": int(
+            config.crossmod_frontend_separable_filters
+        ),
+        "crossmod_frontend_temporal_kernel_size": int(
+            config.crossmod_frontend_temporal_kernel_size
+        ),
+        "crossmod_frontend_separable_kernel_size": int(
+            config.crossmod_frontend_separable_kernel_size
+        ),
+        "crossmod_frontend_pool_size_1": int(config.crossmod_frontend_pool_size_1),
+        "crossmod_frontend_pool_size_2": int(config.crossmod_frontend_pool_size_2),
+        "crossmod_frontend_dropout_rate": float(
+            config.crossmod_frontend_dropout_rate
+        ),
+        "crossmod_frontend_l2_weight": float(config.crossmod_frontend_l2_weight),
+        "crossmod_num_heads": int(config.crossmod_num_heads),
+        "crossmod_hidden_dim": int(config.crossmod_hidden_dim),
+        "crossmod_num_layers": int(config.crossmod_num_layers),
+        "crossmod_positional_base": float(config.crossmod_positional_base),
+        "crossmod_attention_dropout_rate": float(
+            config.crossmod_attention_dropout_rate
+        ),
+        "crossmod_ff_activation": str(config.crossmod_ff_activation),
         "num_epochs": int(config.num_epochs),
         "tasks_per_epoch": int(config.tasks_per_epoch),
         "train_batch_size": int(config.train_batch_size),
@@ -426,6 +487,31 @@ def main() -> None:
     parser.add_argument("--eegnet-pool-size-2", type=int, default=8)
     parser.add_argument("--eegnet-dropout-rate", type=float, default=0.25)
     parser.add_argument("--eegnet-l2-weight", type=float, default=1e-4)
+    parser.add_argument(
+        "--encoder-backend",
+        type=str,
+        default="crossmod",
+        choices=("eegnet", "crossmod"),
+        help="Encoder backend. 'crossmod' is a CAN-only EDA/ECG feature-map encoder.",
+    )
+    parser.add_argument("--crossmod-frontend-temporal-filters", type=int, default=8)
+    parser.add_argument("--crossmod-frontend-separable-filters", type=int, default=16)
+    parser.add_argument(
+        "--crossmod-frontend-temporal-kernel-size", type=int, default=64
+    )
+    parser.add_argument(
+        "--crossmod-frontend-separable-kernel-size", type=int, default=16
+    )
+    parser.add_argument("--crossmod-frontend-pool-size-1", type=int, default=4)
+    parser.add_argument("--crossmod-frontend-pool-size-2", type=int, default=8)
+    parser.add_argument("--crossmod-frontend-dropout-rate", type=float, default=0.25)
+    parser.add_argument("--crossmod-frontend-l2-weight", type=float, default=1e-4)
+    parser.add_argument("--crossmod-num-heads", type=int, default=8)
+    parser.add_argument("--crossmod-hidden-dim", type=int, default=128)
+    parser.add_argument("--crossmod-num-layers", type=int, default=2)
+    parser.add_argument("--crossmod-positional-base", type=float, default=10000.0)
+    parser.add_argument("--crossmod-attention-dropout-rate", type=float, default=0.0)
+    parser.add_argument("--crossmod-ff-activation", type=str, default="relu")
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument(
         "--deterministic-ops",

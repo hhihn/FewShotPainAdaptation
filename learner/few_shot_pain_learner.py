@@ -192,6 +192,7 @@ class FewShotPainLearner:
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
             "csv_flush_every_events": self.config.csv_flush_every_events,
             "embedding_dim": self.embedding_dim,
+            "encoder_backend": self.config.encoder_backend,
             "eegnet_temporal_filters": self.config.eegnet_temporal_filters,
             "eegnet_depth_multiplier": self.config.eegnet_depth_multiplier,
             "eegnet_separable_filters": self.config.eegnet_separable_filters,
@@ -201,6 +202,20 @@ class FewShotPainLearner:
             "eegnet_pool_size_2": self.config.eegnet_pool_size_2,
             "eegnet_dropout_rate": self.config.eegnet_dropout_rate,
             "eegnet_l2_weight": self.config.eegnet_l2_weight,
+            "crossmod_frontend_temporal_filters": self.config.crossmod_frontend_temporal_filters,
+            "crossmod_frontend_separable_filters": self.config.crossmod_frontend_separable_filters,
+            "crossmod_frontend_temporal_kernel_size": self.config.crossmod_frontend_temporal_kernel_size,
+            "crossmod_frontend_separable_kernel_size": self.config.crossmod_frontend_separable_kernel_size,
+            "crossmod_frontend_pool_size_1": self.config.crossmod_frontend_pool_size_1,
+            "crossmod_frontend_pool_size_2": self.config.crossmod_frontend_pool_size_2,
+            "crossmod_frontend_dropout_rate": self.config.crossmod_frontend_dropout_rate,
+            "crossmod_frontend_l2_weight": self.config.crossmod_frontend_l2_weight,
+            "crossmod_num_heads": self.config.crossmod_num_heads,
+            "crossmod_hidden_dim": self.config.crossmod_hidden_dim,
+            "crossmod_num_layers": self.config.crossmod_num_layers,
+            "crossmod_positional_base": self.config.crossmod_positional_base,
+            "crossmod_attention_dropout_rate": self.config.crossmod_attention_dropout_rate,
+            "crossmod_ff_activation": self.config.crossmod_ff_activation,
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "single_loso_fold": self.config.single_loso_fold,
             "single_loso_test_subject": self.config.single_loso_test_subject,
@@ -243,7 +258,10 @@ class FewShotPainLearner:
             f"Data shape: (sequence_length={config.sequence_length}, num_sensors={num_sensors})"
         )
         self.logger.info(f"Modalities: {config.modality_names}")
-        self.logger.info("Encoder: EEGNet-style joint sensor encoder")
+        if self.config.encoder_backend == "crossmod":
+            self.logger.info("Encoder: CrossMod EDA/ECG feature-map encoder")
+        else:
+            self.logger.info("Encoder: EEGNet-style joint sensor encoder")
         self.logger.info(
             f"Logging verbosity={self.logging_verbosity} (0=minimal, 1=standard, 2=detailed)"
         )

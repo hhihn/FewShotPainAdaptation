@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from architecture.cnn import EEGNetStyleEncoder
+from architecture.cnn import CrossModFeatureMapEncoder, EEGNetStyleEncoder
 from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.meta_ds_sampler import SixWayKShotSampler
@@ -231,6 +231,62 @@ class ContractTests(unittest.TestCase):
                 can_margin_target=-0.1,
             )
 
+    def test_crossmod_config_selects_eda_ecg_modalities(self):
+        painmonit_config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            encoder_backend="crossmod",
+        )
+
+        self.assertEqual(painmonit_config.encoder_backend, "crossmod")
+        self.assertEqual(painmonit_config.num_sensors, 2)
+        self.assertEqual(painmonit_config.sensor_idx, (1, 4))
+        self.assertEqual(painmonit_config.modality_names, ("EDA", "ECG"))
+
+        biovid_config = PainDatasetConfig(
+            dataset_source="biovid_part_a",
+            task_class_ids=(0, 4),
+            attention_mode="can",
+            encoder_backend="crossmod",
+        )
+        self.assertEqual(biovid_config.biovid_modalities, ("GSR", "ECG"))
+        self.assertEqual(biovid_config.num_sensors, 2)
+
+    def test_crossmod_hyperparameters_are_validated(self):
+        with self.assertRaisesRegex(ValueError, "requires attention_mode"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                encoder_backend="crossmod",
+                attention_mode="none",
+            )
+        with self.assertRaisesRegex(ValueError, "crossmod_num_heads must be > 0"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                encoder_backend="crossmod",
+                crossmod_num_heads=0,
+            )
+        with self.assertRaisesRegex(ValueError, "dropout_rate must be in"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                encoder_backend="crossmod",
+                crossmod_frontend_dropout_rate=1.0,
+            )
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                encoder_backend="crossmod",
+                crossmod_frontend_separable_filters=10,
+                crossmod_num_heads=8,
+            )
+
     def test_learned_prototype_memory_config_validation(self):
         config = PainDatasetConfig(
             dataset_source="painmonit",
@@ -296,15 +352,46 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(feature_map.shape, (2, 8, 4))
         self.assertEqual(embeddings.shape, (2, 8))
 
+    def test_crossmod_encoder_returns_fused_feature_maps_without_logits(self):
+        encoder = CrossModFeatureMapEncoder(
+            sequence_length=32,
+            num_sensors=2,
+            frontend_temporal_filters=2,
+            frontend_separable_filters=4,
+            frontend_temporal_kernel_size=8,
+            frontend_separable_kernel_size=4,
+            frontend_pool_size_1=2,
+            frontend_pool_size_2=2,
+            frontend_dropout_rate=0.0,
+            num_heads=2,
+            hidden_dim=8,
+            num_layers=1,
+        )
+
+        eda_features, ecg_features = encoder.extract_modality_feature_maps(
+            tf.zeros((2, 32, 2)),
+            training=False,
+        )
+        feature_map = encoder.extract_feature_map(tf.zeros((2, 32, 2)), training=False)
+
+        self.assertEqual(eda_features.shape, (2, 8, 4))
+        self.assertEqual(ecg_features.shape, (2, 8, 4))
+        self.assertEqual(feature_map.shape, (2, 8, 8))
+        self.assertFalse(hasattr(encoder, "fc4"))
+        with self.assertRaisesRegex(RuntimeError, "does not produce embeddings"):
+            encoder.embed_feature_map(feature_map, training=False)
+
     def _small_can_model(
         self,
         *,
         can_support_mode: str = "sampled",
         learned_prototype_slots_per_class: int = 1,
+        encoder_backend: str = "eegnet",
+        num_sensors: int = 3,
     ) -> MultimodalPrototypicalNetwork:
         return MultimodalPrototypicalNetwork(
             sequence_length=32,
-            num_sensors=3,
+            num_sensors=num_sensors,
             num_classes=2,
             embedding_dim=4,
             eegnet_temporal_filters=2,
@@ -320,6 +407,17 @@ class ContractTests(unittest.TestCase):
             can_transductive_iterations=2,
             can_support_mode=can_support_mode,
             learned_prototype_slots_per_class=learned_prototype_slots_per_class,
+            encoder_backend=encoder_backend,
+            crossmod_frontend_temporal_filters=2,
+            crossmod_frontend_separable_filters=4,
+            crossmod_frontend_temporal_kernel_size=8,
+            crossmod_frontend_separable_kernel_size=4,
+            crossmod_frontend_pool_size_1=2,
+            crossmod_frontend_pool_size_2=2,
+            crossmod_frontend_dropout_rate=0.0,
+            crossmod_num_heads=2,
+            crossmod_hidden_dim=8,
+            crossmod_num_layers=1,
         )
 
     def _small_episode_batch(self):
@@ -358,10 +456,73 @@ class ContractTests(unittest.TestCase):
             np.ones((2, 4, 2)),
             atol=1e-5,
         )
+
+    def test_crossmod_can_forward_outputs_attention_and_auxiliary_logits(self):
+        model = self._small_can_model(encoder_backend="crossmod", num_sensors=2)
+        rng = np.random.default_rng(314)
+        support_x = tf.constant(rng.normal(size=(2, 4, 32, 2)), dtype=tf.float32)
+        query_x = tf.constant(rng.normal(size=(2, 4, 32, 2)), dtype=tf.float32)
+        support_y = tf.constant([[0, 0, 1, 1], [1, 0, 1, 0]], dtype=tf.int32)
+
+        outputs = model.forward_episode_batch(
+            support_x=support_x,
+            support_y=support_y,
+            query_x=query_x,
+            training=False,
+        )
+
+        self.assertEqual(outputs["logits"].shape, (2, 4, 2))
+        self.assertEqual(outputs["can_local_logits"].shape, (2, 4, 8, 2))
+        self.assertEqual(outputs["can_proto_attention"].shape, (2, 4, 2, 8))
+        self.assertEqual(outputs["can_query_attention"].shape, (2, 4, 2, 8))
+        self.assertNotIn("support_embeddings", outputs)
+        self.assertNotIn("query_embeddings", outputs)
         np.testing.assert_allclose(
             tf.reduce_sum(outputs["can_query_attention"], axis=-1).numpy(),
             np.ones((2, 4, 2)),
             atol=1e-5,
+        )
+
+    def test_crossmod_can_loss_reaches_frontend_and_attention_variables(self):
+        model = self._small_can_model(encoder_backend="crossmod", num_sensors=2)
+        rng = np.random.default_rng(2027)
+        support_x = tf.constant(rng.normal(size=(1, 4, 32, 2)), dtype=tf.float32)
+        query_x = tf.constant(rng.normal(size=(1, 4, 32, 2)), dtype=tf.float32)
+        support_y = tf.constant([[0, 0, 1, 1]], dtype=tf.int32)
+        query_y = tf.constant([[0, 0, 1, 1]], dtype=tf.int32)
+
+        with tf.GradientTape() as tape:
+            logits = model.forward_episode_batch(
+                support_x=support_x,
+                support_y=support_y,
+                query_x=query_x,
+                training=True,
+            )["logits"]
+            loss = tf.reduce_mean(
+                tf.keras.losses.sparse_categorical_crossentropy(
+                    query_y,
+                    logits,
+                    from_logits=True,
+                )
+            )
+
+        gradients = tape.gradient(loss, model.trainable_variables)
+        gradients_by_name = {
+            getattr(variable, "path", variable.name): gradient
+            for variable, gradient in zip(model.trainable_variables, gradients)
+            if gradient is not None
+        }
+        self.assertTrue(
+            any("eda_frontend_temporal_conv" in name for name in gradients_by_name)
+        )
+        self.assertTrue(
+            any("ecg_frontend_temporal_conv" in name for name in gradients_by_name)
+        )
+        self.assertTrue(
+            any("crossmod_eda_to_ecg_attention" in name for name in gradients_by_name)
+        )
+        self.assertTrue(
+            any("crossmod_ecg_to_eda_attention" in name for name in gradients_by_name)
         )
 
     def test_learned_prototype_memory_can_forward_uses_configurable_slots(self):

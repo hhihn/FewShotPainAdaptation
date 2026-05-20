@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow import keras
 from utils.logger import setup_logger
 
-from architecture.cnn import EEGNetStyleEncoder
+from architecture.cnn import CrossModFeatureMapEncoder, EEGNetStyleEncoder
 
 
 class CrossAttentionModule(keras.layers.Layer):
@@ -246,6 +246,21 @@ class MultimodalPrototypicalNetwork(keras.Model):
         eegnet_pool_size_2: int = 8,
         eegnet_dropout_rate: float = 0.25,
         eegnet_l2_weight: float = 1e-4,
+        encoder_backend: str = "eegnet",
+        crossmod_frontend_temporal_filters: int = 8,
+        crossmod_frontend_separable_filters: int = 16,
+        crossmod_frontend_temporal_kernel_size: int = 64,
+        crossmod_frontend_separable_kernel_size: int = 16,
+        crossmod_frontend_pool_size_1: int = 4,
+        crossmod_frontend_pool_size_2: int = 8,
+        crossmod_frontend_dropout_rate: float = 0.25,
+        crossmod_frontend_l2_weight: float = 1e-4,
+        crossmod_num_heads: int = 8,
+        crossmod_hidden_dim: int = 128,
+        crossmod_num_layers: int = 2,
+        crossmod_positional_base: float = 10000.0,
+        crossmod_attention_dropout_rate: float = 0.0,
+        crossmod_ff_activation: str = "relu",
         distance_metric: str = "cosine",
         classifier_mode: str = "prototype",
         attention_mode: str = "none",
@@ -318,6 +333,35 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.eegnet_pool_size_2 = int(eegnet_pool_size_2)
         self.eegnet_dropout_rate = float(eegnet_dropout_rate)
         self.eegnet_l2_weight = float(eegnet_l2_weight)
+        self.encoder_backend = str(encoder_backend).strip().lower()
+        if self.encoder_backend not in {"eegnet", "crossmod"}:
+            raise ValueError("encoder_backend must be one of: eegnet, crossmod")
+        if self.encoder_backend == "crossmod" and not self.can_enabled:
+            raise ValueError("encoder_backend='crossmod' requires attention_mode='can'")
+        if self.encoder_backend == "crossmod" and self.num_sensors != 2:
+            raise ValueError("encoder_backend='crossmod' requires num_sensors=2")
+        self.crossmod_frontend_temporal_filters = int(
+            crossmod_frontend_temporal_filters
+        )
+        self.crossmod_frontend_separable_filters = int(
+            crossmod_frontend_separable_filters
+        )
+        self.crossmod_frontend_temporal_kernel_size = int(
+            crossmod_frontend_temporal_kernel_size
+        )
+        self.crossmod_frontend_separable_kernel_size = int(
+            crossmod_frontend_separable_kernel_size
+        )
+        self.crossmod_frontend_pool_size_1 = int(crossmod_frontend_pool_size_1)
+        self.crossmod_frontend_pool_size_2 = int(crossmod_frontend_pool_size_2)
+        self.crossmod_frontend_dropout_rate = float(crossmod_frontend_dropout_rate)
+        self.crossmod_frontend_l2_weight = float(crossmod_frontend_l2_weight)
+        self.crossmod_num_heads = int(crossmod_num_heads)
+        self.crossmod_hidden_dim = int(crossmod_hidden_dim)
+        self.crossmod_num_layers = int(crossmod_num_layers)
+        self.crossmod_positional_base = float(crossmod_positional_base)
+        self.crossmod_attention_dropout_rate = float(crossmod_attention_dropout_rate)
+        self.crossmod_ff_activation = str(crossmod_ff_activation)
         self.seed = int(seed)
         initial_logit_scale = 10.0 if distance_metric == "cosine" else 1.0
         self.logit_scale = self.add_weight(
@@ -337,22 +381,43 @@ class MultimodalPrototypicalNetwork(keras.Model):
             )
         self.logger = setup_logger(name="MultimodalPrototypicalNetwork")
 
-        self.encoder = EEGNetStyleEncoder(
-            name="eegnet_encoder",
-            sequence_length=self.sequence_length,
-            num_sensors=self.num_sensors,
-            embedding_dim=self.embedding_dim,
-            temporal_filters=self.eegnet_temporal_filters,
-            depth_multiplier=self.eegnet_depth_multiplier,
-            separable_filters=self.eegnet_separable_filters,
-            temporal_kernel_size=self.eegnet_temporal_kernel_size,
-            separable_kernel_size=self.eegnet_separable_kernel_size,
-            pool_size_1=self.eegnet_pool_size_1,
-            pool_size_2=self.eegnet_pool_size_2,
-            dropout_rate=self.eegnet_dropout_rate,
-            l2_weight=self.eegnet_l2_weight,
-            enable_embedding_projection=not self.can_enabled,
-        )
+        if self.encoder_backend == "crossmod":
+            self.encoder = CrossModFeatureMapEncoder(
+                name="crossmod_encoder",
+                sequence_length=self.sequence_length,
+                num_sensors=self.num_sensors,
+                frontend_temporal_filters=self.crossmod_frontend_temporal_filters,
+                frontend_separable_filters=self.crossmod_frontend_separable_filters,
+                frontend_temporal_kernel_size=self.crossmod_frontend_temporal_kernel_size,
+                frontend_separable_kernel_size=self.crossmod_frontend_separable_kernel_size,
+                frontend_pool_size_1=self.crossmod_frontend_pool_size_1,
+                frontend_pool_size_2=self.crossmod_frontend_pool_size_2,
+                frontend_dropout_rate=self.crossmod_frontend_dropout_rate,
+                frontend_l2_weight=self.crossmod_frontend_l2_weight,
+                num_heads=self.crossmod_num_heads,
+                hidden_dim=self.crossmod_hidden_dim,
+                num_layers=self.crossmod_num_layers,
+                positional_base=self.crossmod_positional_base,
+                attention_dropout_rate=self.crossmod_attention_dropout_rate,
+                ff_activation=self.crossmod_ff_activation,
+            )
+        else:
+            self.encoder = EEGNetStyleEncoder(
+                name="eegnet_encoder",
+                sequence_length=self.sequence_length,
+                num_sensors=self.num_sensors,
+                embedding_dim=self.embedding_dim,
+                temporal_filters=self.eegnet_temporal_filters,
+                depth_multiplier=self.eegnet_depth_multiplier,
+                separable_filters=self.eegnet_separable_filters,
+                temporal_kernel_size=self.eegnet_temporal_kernel_size,
+                separable_kernel_size=self.eegnet_separable_kernel_size,
+                pool_size_1=self.eegnet_pool_size_1,
+                pool_size_2=self.eegnet_pool_size_2,
+                dropout_rate=self.eegnet_dropout_rate,
+                l2_weight=self.eegnet_l2_weight,
+                enable_embedding_projection=not self.can_enabled,
+            )
         self.cross_attention = (
             CrossAttentionModule(
                 temperature=self.can_attention_temperature,
@@ -373,7 +438,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.global_classifier = None
 
         self.logger.debug(
-            "Initialized MultimodalPrototypicalNetwork with joint EEGNet encoder"
+            "Initialized MultimodalPrototypicalNetwork with encoder_backend=%s",
+            self.encoder_backend,
         )
         self.logger.debug(
             f"Classifier mode: {classifier_mode}, "
