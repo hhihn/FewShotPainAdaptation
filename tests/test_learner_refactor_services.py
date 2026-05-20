@@ -6,6 +6,7 @@ import tensorflow as tf
 
 from learner.episode_evaluation_service import EpisodeEvaluationService
 from learner.heldout_adaptation_service import HeldoutAdaptationService
+from learner.few_shot_pain_learner import FewShotPainLearner
 from learner.task_batch_pipeline import TaskBatchPipeline
 from data_loaders.meta_ds_sampler import SixWayKShotSampler
 
@@ -24,6 +25,39 @@ class _FakeSampler:
             "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(np.int32),
             "query_X": np.zeros((self.query_size, 3, 1), dtype=np.float32),
             "query_y": np.repeat(np.arange(self.n_way), self.q_query).astype(np.int32),
+        }
+
+
+class _CountingPhase2Sampler:
+    def __init__(self):
+        self.n_way = 2
+        self.k_shot = 2
+        self.q_query = 3
+        self.support_size = self.n_way * self.k_shot
+        self.query_size = self.n_way * self.q_query
+        self.active_subjects_array = np.array([1, 2, 3], dtype=np.int32)
+        self.data_split = "train"
+        self.calls = 0
+
+    def get_task(self):
+        self.calls += 1
+        return {
+            "support_X": np.full(
+                (self.support_size, 5, 2),
+                fill_value=self.calls,
+                dtype=np.float32,
+            ),
+            "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(
+                np.int32
+            ),
+            "query_X": np.full(
+                (self.query_size, 5, 2),
+                fill_value=self.calls + 100,
+                dtype=np.float32,
+            ),
+            "query_y": np.repeat(np.arange(self.n_way), self.q_query).astype(
+                np.int32
+            ),
         }
 
 
@@ -129,6 +163,32 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertTrue(
             all(arrays[0].shape[0] == batch_size for batch_size, arrays in batches)
         )
+
+    def test_phase2_prototype_updates_use_configured_task_batches(self):
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.train_batch_size = 3
+        learner.task_pipeline = TaskBatchPipeline(
+            train_batch_size=3,
+            embedding_batch_size=1,
+            train_prefetch_batches=1,
+        )
+        sampler = _CountingPhase2Sampler()
+
+        batches = list(
+            learner._iter_prototype_finetune_task_batches(
+                sampler,
+                prototype_updates_per_epoch=2,
+            )
+        )
+
+        self.assertEqual(sampler.calls, 6)
+        self.assertEqual([batch_size for batch_size, _ in batches], [3, 3])
+        for batch_size, (support_x, support_y, query_x, query_y) in batches:
+            self.assertEqual(batch_size, 3)
+            self.assertEqual(support_x.shape, (3, 4, 5, 2))
+            self.assertEqual(support_y.shape, (3, 4))
+            self.assertEqual(query_x.shape, (3, 6, 5, 2))
+            self.assertEqual(query_y.shape, (3, 6))
 
     def test_episode_evaluation_macro_and_similarity_metrics(self):
         evaluator = EpisodeEvaluationService(

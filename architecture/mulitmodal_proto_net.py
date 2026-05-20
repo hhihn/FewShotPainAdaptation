@@ -661,7 +661,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distances: [num_queries, num_classes]
         """
         if self.distance_metric == "euclidean":
-            distances = self.compute_cosine_sim(
+            distances = self.compute_euclidean_sim(
                 query_embeddings, prototype_embeddings, axis=2
             )
         elif self.distance_metric == "cosine":
@@ -685,7 +685,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             distances: [num_tasks, num_queries, num_classes]
         """
         if self.distance_metric == "euclidean":
-            distances = self.compute_cosine_sim(
+            distances = self.compute_euclidean_sim(
                 query_embeddings, prototype_embeddings, axis=3
             )
         elif self.distance_metric == "cosine":
