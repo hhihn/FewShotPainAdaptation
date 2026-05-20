@@ -14,6 +14,7 @@ class EpisodicLearningEngine:
         self.learner = learner
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
+        self._compiled_prototype_memory_batch_step = None
         self._initial_model_weights = None
         self._initial_optimizer_variables = None
 
@@ -53,8 +54,10 @@ class EpisodicLearningEngine:
         """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
+        self._compiled_prototype_memory_batch_step = None
         self.learner._compiled_train_batch_step = None
         self.learner._compiled_eval_batch_step = None
+        self.learner._compiled_prototype_memory_batch_step = None
         self._initial_model_weights = None
         self._initial_optimizer_variables = None
         self.model = None
@@ -122,6 +125,7 @@ class EpisodicLearningEngine:
         self.initialize_model_and_optimizer_variables()
         self.build_compiled_train_batch_step()
         self.build_compiled_eval_batch_step()
+        self.build_compiled_prototype_memory_batch_step()
         self.capture_initial_model_state()
 
     def build_learning_rate(self):
@@ -290,6 +294,38 @@ class EpisodicLearningEngine:
             ],
         )
         self.learner._compiled_eval_batch_step = self._compiled_eval_batch_step
+
+    def build_compiled_prototype_memory_batch_step(self) -> None:
+        """Build a compiled phase-2 learned-prototype update function."""
+        self._compiled_prototype_memory_batch_step = tf.function(
+            self._train_prototype_memory_batch_step_compiled_impl,
+            reduce_retracing=True,
+            input_signature=[
+                tf.TensorSpec(
+                    shape=(
+                        None,
+                        self.support_size,
+                        self.sequence_length,
+                        self.num_sensors,
+                    ),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, self.support_size), dtype=tf.int32),
+                tf.TensorSpec(
+                    shape=(
+                        None,
+                        self.query_size,
+                        self.sequence_length,
+                        self.num_sensors,
+                    ),
+                    dtype=tf.float32,
+                ),
+                tf.TensorSpec(shape=(None, self.query_size), dtype=tf.int32),
+            ],
+        )
+        self.learner._compiled_prototype_memory_batch_step = (
+            self._compiled_prototype_memory_batch_step
+        )
 
     def compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
         """Return regularization losses added by submodules, or zero if absent."""
@@ -1167,6 +1203,70 @@ class EpisodicLearningEngine:
             batch_can_margin_loss,
         )
 
+    def _train_prototype_memory_batch_step_compiled_impl(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Compiled phase-2 update using learned prototype memory as support."""
+        if not getattr(self.model, "can_enabled", False):
+            raise ValueError("Prototype-memory fine-tuning requires CAN to be enabled")
+        original_support_mode = self.model.can_support_mode
+        original_triplet_weight = self.triplet_loss_weight
+        original_encoder_trainable = self.model.encoder.trainable
+        self.model.can_support_mode = "learned_prototype_memory"
+        self.triplet_loss_weight = 0.0
+        self.model.encoder.trainable = False
+        try:
+            with tf.GradientTape() as tape:
+                task_outputs = self.forward_task_batch(
+                    support_x_batch=support_x_batch,
+                    support_y_batch=support_y_batch,
+                    query_x_batch=query_x_batch,
+                    query_y_batch=query_y_batch,
+                    training=True,
+                )
+                batch_loss = tf.reduce_mean(task_outputs["losses"])
+                batch_task_loss = tf.reduce_mean(task_outputs["task_losses"])
+                batch_can_local_loss = tf.reduce_mean(
+                    task_outputs["can_local_losses"]
+                )
+                batch_can_global_loss = tf.reduce_mean(
+                    task_outputs["can_global_losses"]
+                )
+                batch_can_margin_loss = tf.reduce_mean(
+                    task_outputs["can_margin_losses"]
+                )
+                predictions = tf.argmax(
+                    task_outputs["logits"],
+                    axis=2,
+                    output_type=tf.int32,
+                )
+                batch_acc = tf.reduce_mean(
+                    tf.cast(tf.equal(predictions, query_y_batch), tf.float32)
+                )
+            batch_loss = self.apply_gradients(
+                batch_loss,
+                tape,
+                variables=self.prototype_phase_trainable_variables(),
+            )
+            return (
+                batch_loss,
+                batch_task_loss,
+                batch_acc,
+                tf.constant(0.0, dtype=tf.float32),
+                tf.constant(0.0, dtype=tf.float32),
+                batch_can_local_loss,
+                batch_can_global_loss,
+                batch_can_margin_loss,
+            )
+        finally:
+            self.model.encoder.trainable = original_encoder_trainable
+            self.triplet_loss_weight = original_triplet_weight
+            self.model.can_support_mode = original_support_mode
+
     @staticmethod
     def mean_concat(tensor_parts: list[tf.Tensor]) -> tf.Tensor:
         """Mean over rank-1 tensors collected from task chunks."""
@@ -1482,6 +1582,36 @@ class EpisodicLearningEngine:
         )
 
     def train_prototype_memory_batch_step_tensors(
+        self,
+        support_x_batch: tf.Tensor,
+        support_y_batch: tf.Tensor,
+        query_x_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+    ):
+        """Run compiled phase-2 update, with eager fallback if compilation fails."""
+        if self._compiled_prototype_memory_batch_step is not None:
+            try:
+                return self._compiled_prototype_memory_batch_step(
+                    support_x_batch,
+                    support_y_batch,
+                    query_x_batch,
+                    query_y_batch,
+                )
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                self.logger.warning(
+                    "Compiled prototype-memory train step failed once; falling back "
+                    f"to eager for this batch. error={exc!r}"
+                )
+                self._compiled_prototype_memory_batch_step = None
+                self.learner._compiled_prototype_memory_batch_step = None
+        return self.train_prototype_memory_batch_step_eager_tensors(
+            support_x_batch=support_x_batch,
+            support_y_batch=support_y_batch,
+            query_x_batch=query_x_batch,
+            query_y_batch=query_y_batch,
+        )
+
+    def train_prototype_memory_batch_step_eager_tensors(
         self,
         support_x_batch: tf.Tensor,
         support_y_batch: tf.Tensor,

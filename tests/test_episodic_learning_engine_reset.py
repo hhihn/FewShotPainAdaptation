@@ -35,6 +35,8 @@ def _make_tiny_learner(
     *,
     train_batch_size: int = 1,
     embedding_batch_size: int = 1,
+    can_support_mode: str = "sampled",
+    learned_prototype_slots_per_class: int = 1,
 ) -> FewShotPainLearner:
     config = PainDatasetConfig(
         dataset_source="painmonit",
@@ -60,6 +62,9 @@ def _make_tiny_learner(
         eegnet_pool_size_2=2,
         eegnet_dropout_rate=0.0,
         triplet_loss_weight=0.0,
+        attention_mode="can",
+        can_support_mode=can_support_mode,
+        learned_prototype_slots_per_class=learned_prototype_slots_per_class,
         gaussian_noise_std=0.0,
         enable_window_shift_augmentation=False,
         deterministic_ops=False,
@@ -133,6 +138,7 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
 
         self.assertIs(engine._compiled_train_batch_step, train_fn)
         self.assertIs(engine._compiled_eval_batch_step, eval_fn)
+        self.assertIsNotNone(engine._compiled_prototype_memory_batch_step)
         self.assertIs(learner._compiled_train_batch_step, train_fn)
         self.assertIs(learner._compiled_eval_batch_step, eval_fn)
         for variable, expected in zip(engine.model.weights, initial_model_weights):
@@ -182,6 +188,31 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
         self.assertIsNotNone(engine._compiled_train_batch_step)
         for tensor in train_outputs:
             self.assertTrue(np.all(np.isfinite(tensor.numpy())))
+
+    def test_compiled_prototype_memory_step_updates_phase2_variables(self):
+        learner = _make_tiny_learner(
+            self.data_dir,
+            train_batch_size=2,
+            embedding_batch_size=2,
+            can_support_mode="learned_prototype_memory",
+            learned_prototype_slots_per_class=2,
+        )
+        engine = learner.engine
+        batch = _episode_batch(learner, task_count=2)
+        phase2_variables = engine.prototype_phase_trainable_variables()
+        before = [tf.identity(variable) for variable in phase2_variables]
+
+        outputs = engine.train_prototype_memory_batch_step_tensors(*batch)
+
+        self.assertIsNotNone(engine._compiled_prototype_memory_batch_step)
+        for tensor in outputs:
+            self.assertTrue(np.all(np.isfinite(tensor.numpy())))
+        self.assertTrue(
+            any(
+                not np.allclose(variable.numpy(), old_value.numpy())
+                for variable, old_value in zip(phase2_variables, before)
+            )
+        )
 
 
 if __name__ == "__main__":

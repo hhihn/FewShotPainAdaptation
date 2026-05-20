@@ -83,6 +83,7 @@ class FewShotPainLearner:
         )
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
+        self._compiled_prototype_memory_batch_step = None
         self.logging_verbosity = int(getattr(config, "logging_verbosity", 1))
         self.logger = setup_logger("few_shot_pain_learner")
         if self.logging_verbosity <= 0:
@@ -289,6 +290,10 @@ class FewShotPainLearner:
     def _build_compiled_eval_batch_step(self) -> None:
         """Build a compiled evaluation function for batches of episodic tasks."""
         self.engine.build_compiled_eval_batch_step()
+
+    def _build_compiled_prototype_memory_batch_step(self) -> None:
+        """Build a compiled phase-2 learned-prototype update function."""
+        self.engine.build_compiled_prototype_memory_batch_step()
 
     def _get_loso_fold_subjects(self) -> list[int]:
         """Return held-out subjects selected by single-fold and LOSO index config."""
@@ -1863,11 +1868,12 @@ class FewShotPainLearner:
                 for prototype_epoch in range(prototype_epochs):
                     epoch_start_time = time.perf_counter()
                     last_log_time = epoch_start_time
-                    phase_losses = []
-                    phase_task_losses = []
-                    phase_accs = []
-                    phase_can_local_losses = []
-                    phase_can_margin_losses = []
+                    phase_loss_sum = tf.constant(0.0, dtype=tf.float32)
+                    phase_task_loss_sum = tf.constant(0.0, dtype=tf.float32)
+                    phase_acc_sum = tf.constant(0.0, dtype=tf.float32)
+                    phase_can_local_loss_sum = tf.constant(0.0, dtype=tf.float32)
+                    phase_can_margin_loss_sum = tf.constant(0.0, dtype=tf.float32)
+                    phase_update_count = 0
                     log_every = max(
                         1,
                         min(
@@ -1924,12 +1930,19 @@ class FewShotPainLearner:
                                 dtype=tf.int32,
                             ),
                         )
-                        phase_losses.append(float(phase_loss))
-                        phase_task_losses.append(float(phase_task_loss))
-                        phase_accs.append(float(phase_acc))
-                        phase_can_local_losses.append(float(phase_can_local_loss))
-                        phase_can_margin_losses.append(float(phase_can_margin_loss))
                         completed_steps = prototype_step + 1
+                        phase_update_count = completed_steps
+                        phase_loss_sum += tf.cast(phase_loss, tf.float32)
+                        phase_task_loss_sum += tf.cast(phase_task_loss, tf.float32)
+                        phase_acc_sum += tf.cast(phase_acc, tf.float32)
+                        phase_can_local_loss_sum += tf.cast(
+                            phase_can_local_loss,
+                            tf.float32,
+                        )
+                        phase_can_margin_loss_sum += tf.cast(
+                            phase_can_margin_loss,
+                            tf.float32,
+                        )
                         should_log_step = (
                             completed_steps == 1
                             or completed_steps == prototype_updates_per_epoch
@@ -1944,6 +1957,23 @@ class FewShotPainLearner:
                             step_seconds = time.perf_counter() - step_start_time
                             support_count = int(support_x_np.shape[1])
                             query_count = int(query_x_np.shape[1])
+                            mean_denominator = tf.cast(
+                                completed_steps,
+                                tf.float32,
+                            )
+                            mean_phase_loss = float(
+                                phase_loss_sum / mean_denominator
+                            )
+                            mean_phase_task_loss = float(
+                                phase_task_loss_sum / mean_denominator
+                            )
+                            mean_phase_acc = float(phase_acc_sum / mean_denominator)
+                            mean_phase_can_local_loss = float(
+                                phase_can_local_loss_sum / mean_denominator
+                            )
+                            mean_phase_can_margin_loss = float(
+                                phase_can_margin_loss_sum / mean_denominator
+                            )
                             self.logger.info(
                                 f"[Fold {fold + 1}/{num_subjects}] "
                                 f"[Prototype phase {prototype_epoch + 1}/{prototype_epochs}] "
@@ -1954,25 +1984,37 @@ class FewShotPainLearner:
                                 f"step_seconds={step_seconds:.2f}, "
                                 f"elapsed={elapsed / 60.0:.1f}m, "
                                 f"eta={eta_seconds / 60.0:.1f}m, "
-                                f"loss={float(np.mean(phase_losses)):.4f}, "
-                                f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
-                                f"acc={float(np.mean(phase_accs)):.4f}, "
-                                f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
-                                f"can_margin={float(np.mean(phase_can_margin_losses)):.4f}"
+                                f"loss={mean_phase_loss:.4f}, "
+                                f"task_loss={mean_phase_task_loss:.4f}, "
+                                f"acc={mean_phase_acc:.4f}, "
+                                f"can_local={mean_phase_can_local_loss:.4f}, "
+                                f"can_margin={mean_phase_can_margin_loss:.4f}"
                             )
                             last_log_time = time.perf_counter()
-                    if phase_losses:
+                    if phase_update_count > 0:
                         epoch_elapsed = time.perf_counter() - epoch_start_time
+                        mean_denominator = tf.cast(phase_update_count, tf.float32)
+                        mean_phase_loss = float(phase_loss_sum / mean_denominator)
+                        mean_phase_task_loss = float(
+                            phase_task_loss_sum / mean_denominator
+                        )
+                        mean_phase_acc = float(phase_acc_sum / mean_denominator)
+                        mean_phase_can_local_loss = float(
+                            phase_can_local_loss_sum / mean_denominator
+                        )
+                        mean_phase_can_margin_loss = float(
+                            phase_can_margin_loss_sum / mean_denominator
+                        )
                         self.logger.info(
                             f"[Fold {fold + 1}/{num_subjects}] "
                             f"[Prototype phase {prototype_epoch + 1}/{prototype_epochs}] "
-                            f"loss={float(np.mean(phase_losses)):.4f}, "
-                            f"task_loss={float(np.mean(phase_task_losses)):.4f}, "
-                            f"accuracy={float(np.mean(phase_accs)):.4f}, "
-                            f"can_local={float(np.mean(phase_can_local_losses)):.4f}, "
-                            f"can_margin={float(np.mean(phase_can_margin_losses)):.4f}, "
+                            f"loss={mean_phase_loss:.4f}, "
+                            f"task_loss={mean_phase_task_loss:.4f}, "
+                            f"accuracy={mean_phase_acc:.4f}, "
+                            f"can_local={mean_phase_can_local_loss:.4f}, "
+                            f"can_margin={mean_phase_can_margin_loss:.4f}, "
                             f"elapsed_seconds={epoch_elapsed:.2f}, "
-                            f"seconds_per_update={epoch_elapsed / max(1, len(phase_losses)):.2f}"
+                            f"seconds_per_update={epoch_elapsed / max(1, phase_update_count):.2f}"
                         )
 
             # Held-out evaluation sweep across fixed and additional support/query sizes.
