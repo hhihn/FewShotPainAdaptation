@@ -27,14 +27,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         eegnet_dropout_rate: float = 0.25,
         eegnet_l2_weight: float = 1e-4,
         encoder_backend: str = "eegnet",
-        crossmod_frontend_temporal_filters: int = 8,
-        crossmod_frontend_separable_filters: int = 16,
-        crossmod_frontend_temporal_kernel_size: int = 64,
-        crossmod_frontend_separable_kernel_size: int = 16,
-        crossmod_frontend_pool_size_1: int = 4,
-        crossmod_frontend_pool_size_2: int = 8,
-        crossmod_frontend_dropout_rate: float = 0.25,
-        crossmod_frontend_l2_weight: float = 1e-4,
         crossmod_num_heads: int = 8,
         crossmod_hidden_dim: int = 128,
         crossmod_num_layers: int = 2,
@@ -120,22 +112,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
             raise ValueError("encoder_backend='crossmod' requires attention_mode='can'")
         if self.encoder_backend == "crossmod" and self.num_sensors != 2:
             raise ValueError("encoder_backend='crossmod' requires num_sensors=2")
-        self.crossmod_frontend_temporal_filters = int(
-            crossmod_frontend_temporal_filters
-        )
-        self.crossmod_frontend_separable_filters = int(
-            crossmod_frontend_separable_filters
-        )
-        self.crossmod_frontend_temporal_kernel_size = int(
-            crossmod_frontend_temporal_kernel_size
-        )
-        self.crossmod_frontend_separable_kernel_size = int(
-            crossmod_frontend_separable_kernel_size
-        )
-        self.crossmod_frontend_pool_size_1 = int(crossmod_frontend_pool_size_1)
-        self.crossmod_frontend_pool_size_2 = int(crossmod_frontend_pool_size_2)
-        self.crossmod_frontend_dropout_rate = float(crossmod_frontend_dropout_rate)
-        self.crossmod_frontend_l2_weight = float(crossmod_frontend_l2_weight)
         self.crossmod_num_heads = int(crossmod_num_heads)
         self.crossmod_hidden_dim = int(crossmod_hidden_dim)
         self.crossmod_num_layers = int(crossmod_num_layers)
@@ -166,14 +142,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 name="crossmod_encoder",
                 sequence_length=self.sequence_length,
                 num_sensors=self.num_sensors,
-                frontend_temporal_filters=self.crossmod_frontend_temporal_filters,
-                frontend_separable_filters=self.crossmod_frontend_separable_filters,
-                frontend_temporal_kernel_size=self.crossmod_frontend_temporal_kernel_size,
-                frontend_separable_kernel_size=self.crossmod_frontend_separable_kernel_size,
-                frontend_pool_size_1=self.crossmod_frontend_pool_size_1,
-                frontend_pool_size_2=self.crossmod_frontend_pool_size_2,
-                frontend_dropout_rate=self.crossmod_frontend_dropout_rate,
-                frontend_l2_weight=self.crossmod_frontend_l2_weight,
+                temporal_filters=self.eegnet_temporal_filters,
+                depth_multiplier=self.eegnet_depth_multiplier,
+                separable_filters=self.eegnet_separable_filters,
+                temporal_kernel_size=self.eegnet_temporal_kernel_size,
+                separable_kernel_size=self.eegnet_separable_kernel_size,
+                pool_size_1=self.eegnet_pool_size_1,
+                pool_size_2=self.eegnet_pool_size_2,
+                dropout_rate=self.eegnet_dropout_rate,
+                l2_weight=self.eegnet_l2_weight,
                 num_heads=self.crossmod_num_heads,
                 hidden_dim=self.crossmod_hidden_dim,
                 num_layers=self.crossmod_num_layers,

@@ -183,30 +183,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         eegnet_dropout_rate=args.eegnet_dropout_rate,
         eegnet_l2_weight=args.eegnet_l2_weight,
         encoder_backend=str(getattr(args, "encoder_backend", "eegnet")),
-        crossmod_frontend_temporal_filters=int(
-            getattr(args, "crossmod_frontend_temporal_filters", 8)
-        ),
-        crossmod_frontend_separable_filters=int(
-            getattr(args, "crossmod_frontend_separable_filters", 16)
-        ),
-        crossmod_frontend_temporal_kernel_size=int(
-            getattr(args, "crossmod_frontend_temporal_kernel_size", 64)
-        ),
-        crossmod_frontend_separable_kernel_size=int(
-            getattr(args, "crossmod_frontend_separable_kernel_size", 16)
-        ),
-        crossmod_frontend_pool_size_1=int(
-            getattr(args, "crossmod_frontend_pool_size_1", 4)
-        ),
-        crossmod_frontend_pool_size_2=int(
-            getattr(args, "crossmod_frontend_pool_size_2", 8)
-        ),
-        crossmod_frontend_dropout_rate=float(
-            getattr(args, "crossmod_frontend_dropout_rate", 0.25)
-        ),
-        crossmod_frontend_l2_weight=float(
-            getattr(args, "crossmod_frontend_l2_weight", 1e-4)
-        ),
         crossmod_num_heads=int(getattr(args, "crossmod_num_heads", 8)),
         crossmod_hidden_dim=int(getattr(args, "crossmod_hidden_dim", 128)),
         crossmod_num_layers=int(getattr(args, "crossmod_num_layers", 2)),
@@ -312,24 +288,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "eegnet_pool_size_2": int(config.eegnet_pool_size_2),
         "eegnet_dropout_rate": float(config.eegnet_dropout_rate),
         "eegnet_l2_weight": float(config.eegnet_l2_weight),
-        "crossmod_frontend_temporal_filters": int(
-            config.crossmod_frontend_temporal_filters
-        ),
-        "crossmod_frontend_separable_filters": int(
-            config.crossmod_frontend_separable_filters
-        ),
-        "crossmod_frontend_temporal_kernel_size": int(
-            config.crossmod_frontend_temporal_kernel_size
-        ),
-        "crossmod_frontend_separable_kernel_size": int(
-            config.crossmod_frontend_separable_kernel_size
-        ),
-        "crossmod_frontend_pool_size_1": int(config.crossmod_frontend_pool_size_1),
-        "crossmod_frontend_pool_size_2": int(config.crossmod_frontend_pool_size_2),
-        "crossmod_frontend_dropout_rate": float(
-            config.crossmod_frontend_dropout_rate
-        ),
-        "crossmod_frontend_l2_weight": float(config.crossmod_frontend_l2_weight),
         "crossmod_num_heads": int(config.crossmod_num_heads),
         "crossmod_hidden_dim": int(config.crossmod_hidden_dim),
         "crossmod_num_layers": int(config.crossmod_num_layers),
@@ -494,18 +452,6 @@ def main() -> None:
         choices=("eegnet", "crossmod"),
         help="Encoder backend. 'crossmod' is a CAN-only EDA/ECG feature-map encoder.",
     )
-    parser.add_argument("--crossmod-frontend-temporal-filters", type=int, default=8)
-    parser.add_argument("--crossmod-frontend-separable-filters", type=int, default=16)
-    parser.add_argument(
-        "--crossmod-frontend-temporal-kernel-size", type=int, default=64
-    )
-    parser.add_argument(
-        "--crossmod-frontend-separable-kernel-size", type=int, default=16
-    )
-    parser.add_argument("--crossmod-frontend-pool-size-1", type=int, default=4)
-    parser.add_argument("--crossmod-frontend-pool-size-2", type=int, default=8)
-    parser.add_argument("--crossmod-frontend-dropout-rate", type=float, default=0.25)
-    parser.add_argument("--crossmod-frontend-l2-weight", type=float, default=1e-4)
     parser.add_argument("--crossmod-num-heads", type=int, default=8)
     parser.add_argument("--crossmod-hidden-dim", type=int, default=128)
     parser.add_argument("--crossmod-num-layers", type=int, default=2)

@@ -275,7 +275,7 @@ class ContractTests(unittest.TestCase):
                 task_class_ids=(0, 5),
                 attention_mode="can",
                 encoder_backend="crossmod",
-                crossmod_frontend_dropout_rate=1.0,
+                eegnet_dropout_rate=1.0,
             )
         with self.assertRaisesRegex(ValueError, "divisible"):
             PainDatasetConfig(
@@ -283,7 +283,7 @@ class ContractTests(unittest.TestCase):
                 task_class_ids=(0, 5),
                 attention_mode="can",
                 encoder_backend="crossmod",
-                crossmod_frontend_separable_filters=10,
+                eegnet_separable_filters=10,
                 crossmod_num_heads=8,
             )
 
@@ -356,13 +356,14 @@ class ContractTests(unittest.TestCase):
         encoder = CrossModFeatureMapEncoder(
             sequence_length=32,
             num_sensors=2,
-            frontend_temporal_filters=2,
-            frontend_separable_filters=4,
-            frontend_temporal_kernel_size=8,
-            frontend_separable_kernel_size=4,
-            frontend_pool_size_1=2,
-            frontend_pool_size_2=2,
-            frontend_dropout_rate=0.0,
+            temporal_filters=2,
+            depth_multiplier=1,
+            separable_filters=4,
+            temporal_kernel_size=8,
+            separable_kernel_size=4,
+            pool_size_1=2,
+            pool_size_2=2,
+            dropout_rate=0.0,
             num_heads=2,
             hidden_dim=8,
             num_layers=1,
@@ -408,13 +409,6 @@ class ContractTests(unittest.TestCase):
             can_support_mode=can_support_mode,
             learned_prototype_slots_per_class=learned_prototype_slots_per_class,
             encoder_backend=encoder_backend,
-            crossmod_frontend_temporal_filters=2,
-            crossmod_frontend_separable_filters=4,
-            crossmod_frontend_temporal_kernel_size=8,
-            crossmod_frontend_separable_kernel_size=4,
-            crossmod_frontend_pool_size_1=2,
-            crossmod_frontend_pool_size_2=2,
-            crossmod_frontend_dropout_rate=0.0,
             crossmod_num_heads=2,
             crossmod_hidden_dim=8,
             crossmod_num_layers=1,

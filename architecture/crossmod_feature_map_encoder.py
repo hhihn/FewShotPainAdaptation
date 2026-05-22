@@ -3,6 +3,8 @@ from tensorflow import keras
 
 from architecture.fourier_positional_embedding import FourierPositionalEncoding1D
 from architecture.crossmod_encoder_layer import CrossModTransformerEncoderLayer
+from architecture.eegnet_style_encoder import EEGNetStyleEncoder
+
 
 class CrossModFeatureMapEncoder(keras.Model):
     """EDA/ECG EEGNet-1D frontends fused by CrossMod self/cross attention."""
@@ -11,14 +13,15 @@ class CrossModFeatureMapEncoder(keras.Model):
         self,
         sequence_length: int = 2500,
         num_sensors: int = 2,
-        frontend_temporal_filters: int = 8,
-        frontend_separable_filters: int = 16,
-        frontend_temporal_kernel_size: int = 64,
-        frontend_separable_kernel_size: int = 16,
-        frontend_pool_size_1: int = 4,
-        frontend_pool_size_2: int = 8,
-        frontend_dropout_rate: float = 0.25,
-        frontend_l2_weight: float = 1e-4,
+        temporal_filters: int = 8,
+        depth_multiplier: int = 2,
+        separable_filters: int = 16,
+        temporal_kernel_size: int = 64,
+        separable_kernel_size: int = 16,
+        pool_size_1: int = 4,
+        pool_size_2: int = 8,
+        dropout_rate: float = 0.25,
+        l2_weight: float = 1e-4,
         num_heads: int = 8,
         hidden_dim: int = 128,
         num_layers: int = 2,
@@ -30,14 +33,15 @@ class CrossModFeatureMapEncoder(keras.Model):
         super().__init__(name=name)
         self.sequence_length = int(sequence_length)
         self.num_sensors = int(num_sensors)
-        self.frontend_temporal_filters = int(frontend_temporal_filters)
-        self.frontend_separable_filters = int(frontend_separable_filters)
-        self.frontend_temporal_kernel_size = int(frontend_temporal_kernel_size)
-        self.frontend_separable_kernel_size = int(frontend_separable_kernel_size)
-        self.frontend_pool_size_1 = int(frontend_pool_size_1)
-        self.frontend_pool_size_2 = int(frontend_pool_size_2)
-        self.frontend_dropout_rate = float(frontend_dropout_rate)
-        self.frontend_l2_weight = float(frontend_l2_weight)
+        self.temporal_filters = int(temporal_filters)
+        self.depth_multiplier = int(depth_multiplier)
+        self.separable_filters = int(separable_filters)
+        self.temporal_kernel_size = int(temporal_kernel_size)
+        self.separable_kernel_size = int(separable_kernel_size)
+        self.pool_size_1 = int(pool_size_1)
+        self.pool_size_2 = int(pool_size_2)
+        self.dropout_rate = float(dropout_rate)
+        self.l2_weight = float(l2_weight)
         self.num_heads = int(num_heads)
         self.hidden_dim = int(hidden_dim)
         self.num_layers = int(num_layers)
@@ -50,27 +54,21 @@ class CrossModFeatureMapEncoder(keras.Model):
         self.embedding_norm = None
 
         self._validate_config()
-        regularizer = (
-            keras.regularizers.l2(self.frontend_l2_weight)
-            if self.frontend_l2_weight > 0
-            else None
-        )
-
-        self.eda_branch = self._build_frontend_branch("eda", regularizer=regularizer)
-        self.ecg_branch = self._build_frontend_branch("ecg", regularizer=regularizer)
+        self.eda_branch = self._build_frontend_branch("eda")
+        self.ecg_branch = self._build_frontend_branch("ecg")
         self.eda_position = FourierPositionalEncoding1D(
-            self.frontend_separable_filters,
+            self.separable_filters,
             base=self.positional_base,
             name="crossmod_eda_positional_encoding",
         )
         self.ecg_position = FourierPositionalEncoding1D(
-            self.frontend_separable_filters,
+            self.separable_filters,
             base=self.positional_base,
             name="crossmod_ecg_positional_encoding",
         )
         self.eda_transformer_layers = [
             CrossModTransformerEncoderLayer(
-                input_dim=self.frontend_separable_filters,
+                input_dim=self.separable_filters,
                 num_heads=self.num_heads,
                 hidden_dim=self.hidden_dim,
                 dropout_rate=self.attention_dropout_rate,
@@ -81,7 +79,7 @@ class CrossModFeatureMapEncoder(keras.Model):
         ]
         self.ecg_transformer_layers = [
             CrossModTransformerEncoderLayer(
-                input_dim=self.frontend_separable_filters,
+                input_dim=self.separable_filters,
                 num_heads=self.num_heads,
                 hidden_dim=self.hidden_dim,
                 dropout_rate=self.attention_dropout_rate,
@@ -91,18 +89,18 @@ class CrossModFeatureMapEncoder(keras.Model):
             for idx in range(self.num_layers)
         ]
         self.eda_to_ecg_projection = keras.layers.Dense(
-            self.frontend_separable_filters,
+            self.separable_filters,
             name="crossmod_eda_to_ecg_projection",
         )
         self.eda_to_ecg_attention = keras.layers.MultiHeadAttention(
             num_heads=self.num_heads,
-            key_dim=self.frontend_separable_filters // self.num_heads,
+            key_dim=self.separable_filters // self.num_heads,
             dropout=self.attention_dropout_rate,
             name="crossmod_eda_to_ecg_attention",
         )
         self.ecg_to_eda_attention = keras.layers.MultiHeadAttention(
             num_heads=self.num_heads,
-            key_dim=self.frontend_separable_filters // self.num_heads,
+            key_dim=self.separable_filters // self.num_heads,
             dropout=self.attention_dropout_rate,
             name="crossmod_ecg_to_eda_attention",
         )
@@ -111,12 +109,13 @@ class CrossModFeatureMapEncoder(keras.Model):
         positive_int_fields = {
             "sequence_length": self.sequence_length,
             "num_sensors": self.num_sensors,
-            "frontend_temporal_filters": self.frontend_temporal_filters,
-            "frontend_separable_filters": self.frontend_separable_filters,
-            "frontend_temporal_kernel_size": self.frontend_temporal_kernel_size,
-            "frontend_separable_kernel_size": self.frontend_separable_kernel_size,
-            "frontend_pool_size_1": self.frontend_pool_size_1,
-            "frontend_pool_size_2": self.frontend_pool_size_2,
+            "temporal_filters": self.temporal_filters,
+            "depth_multiplier": self.depth_multiplier,
+            "separable_filters": self.separable_filters,
+            "temporal_kernel_size": self.temporal_kernel_size,
+            "separable_kernel_size": self.separable_kernel_size,
+            "pool_size_1": self.pool_size_1,
+            "pool_size_2": self.pool_size_2,
             "num_heads": self.num_heads,
             "hidden_dim": self.hidden_dim,
             "num_layers": self.num_layers,
@@ -126,72 +125,35 @@ class CrossModFeatureMapEncoder(keras.Model):
                 raise ValueError(f"crossmod_{name} must be > 0")
         if self.num_sensors != 2:
             raise ValueError("CrossModFeatureMapEncoder requires num_sensors=2")
-        if self.frontend_dropout_rate < 0 or self.frontend_dropout_rate >= 1:
-            raise ValueError("crossmod_frontend_dropout_rate must be in [0, 1)")
+        if self.dropout_rate < 0 or self.dropout_rate >= 1:
+            raise ValueError("eegnet_dropout_rate must be in [0, 1)")
         if self.attention_dropout_rate < 0 or self.attention_dropout_rate >= 1:
             raise ValueError("crossmod_attention_dropout_rate must be in [0, 1)")
-        if self.frontend_l2_weight < 0:
-            raise ValueError("crossmod_frontend_l2_weight must be non-negative")
+        if self.l2_weight < 0:
+            raise ValueError("eegnet_l2_weight must be non-negative")
         if self.positional_base <= 0:
             raise ValueError("crossmod_positional_base must be > 0")
-        if self.frontend_separable_filters % self.num_heads != 0:
+        if self.separable_filters % self.num_heads != 0:
             raise ValueError(
-                "crossmod_frontend_separable_filters must be divisible by crossmod_num_heads"
+                "eegnet_separable_filters must be divisible by crossmod_num_heads"
             )
 
-    def _build_frontend_branch(self, prefix: str, regularizer):
-        return keras.Sequential(
-            [
-                keras.layers.Conv1D(
-                    self.frontend_temporal_filters,
-                    self.frontend_temporal_kernel_size,
-                    padding="same",
-                    use_bias=False,
-                    kernel_initializer="he_normal",
-                    kernel_regularizer=regularizer,
-                    name=f"{prefix}_frontend_temporal_conv",
-                ),
-                keras.layers.BatchNormalization(
-                    name=f"{prefix}_frontend_temporal_norm"
-                ),
-                keras.layers.Activation(
-                    "gelu", name=f"{prefix}_frontend_temporal_gelu"
-                ),
-                keras.layers.AveragePooling1D(
-                    pool_size=self.frontend_pool_size_1,
-                    name=f"{prefix}_frontend_pool_1",
-                ),
-                keras.layers.Dropout(
-                    self.frontend_dropout_rate,
-                    name=f"{prefix}_frontend_dropout_1",
-                ),
-                keras.layers.SeparableConv1D(
-                    self.frontend_separable_filters,
-                    self.frontend_separable_kernel_size,
-                    padding="same",
-                    use_bias=False,
-                    depthwise_initializer="he_normal",
-                    pointwise_initializer="he_normal",
-                    depthwise_regularizer=regularizer,
-                    pointwise_regularizer=regularizer,
-                    name=f"{prefix}_frontend_separable_conv",
-                ),
-                keras.layers.BatchNormalization(
-                    name=f"{prefix}_frontend_separable_norm"
-                ),
-                keras.layers.Activation(
-                    "gelu", name=f"{prefix}_frontend_separable_gelu"
-                ),
-                keras.layers.AveragePooling1D(
-                    pool_size=self.frontend_pool_size_2,
-                    name=f"{prefix}_frontend_pool_2",
-                ),
-                keras.layers.Dropout(
-                    self.frontend_dropout_rate,
-                    name=f"{prefix}_frontend_dropout_2",
-                ),
-            ],
-            name=f"{prefix}_eegnet_1d_frontend",
+    def _build_frontend_branch(self, prefix: str):
+        return EEGNetStyleEncoder(
+            sequence_length=self.sequence_length,
+            num_sensors=1,
+            embedding_dim=self.separable_filters,
+            temporal_filters=self.temporal_filters,
+            depth_multiplier=self.depth_multiplier,
+            separable_filters=self.separable_filters,
+            temporal_kernel_size=self.temporal_kernel_size,
+            separable_kernel_size=self.separable_kernel_size,
+            pool_size_1=self.pool_size_1,
+            pool_size_2=self.pool_size_2,
+            dropout_rate=self.dropout_rate,
+            l2_weight=self.l2_weight,
+            enable_embedding_projection=False,
+            name=f"{prefix}_eegnet_frontend",
         )
 
     def extract_modality_feature_maps(self, x, training=False):
@@ -201,8 +163,8 @@ class CrossModFeatureMapEncoder(keras.Model):
             raise ValueError("CrossMod input must contain exactly EDA and ECG channels")
         eda = x[:, :, 0:1]
         ecg = x[:, :, 1:2]
-        eda_features = self.eda_branch(eda, training=training)
-        ecg_features = self.ecg_branch(ecg, training=training)
+        eda_features = self.eda_branch.extract_feature_map(eda, training=training)
+        ecg_features = self.ecg_branch.extract_feature_map(ecg, training=training)
         tf.debugging.assert_equal(
             tf.shape(eda_features)[1],
             tf.shape(ecg_features)[1],
@@ -248,14 +210,15 @@ class CrossModFeatureMapEncoder(keras.Model):
         return {
             "sequence_length": self.sequence_length,
             "num_sensors": self.num_sensors,
-            "frontend_temporal_filters": self.frontend_temporal_filters,
-            "frontend_separable_filters": self.frontend_separable_filters,
-            "frontend_temporal_kernel_size": self.frontend_temporal_kernel_size,
-            "frontend_separable_kernel_size": self.frontend_separable_kernel_size,
-            "frontend_pool_size_1": self.frontend_pool_size_1,
-            "frontend_pool_size_2": self.frontend_pool_size_2,
-            "frontend_dropout_rate": self.frontend_dropout_rate,
-            "frontend_l2_weight": self.frontend_l2_weight,
+            "temporal_filters": self.temporal_filters,
+            "depth_multiplier": self.depth_multiplier,
+            "separable_filters": self.separable_filters,
+            "temporal_kernel_size": self.temporal_kernel_size,
+            "separable_kernel_size": self.separable_kernel_size,
+            "pool_size_1": self.pool_size_1,
+            "pool_size_2": self.pool_size_2,
+            "dropout_rate": self.dropout_rate,
+            "l2_weight": self.l2_weight,
             "num_heads": self.num_heads,
             "hidden_dim": self.hidden_dim,
             "num_layers": self.num_layers,
