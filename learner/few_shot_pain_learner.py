@@ -2282,9 +2282,7 @@ class FewShotPainLearner:
                                 completed_steps,
                                 tf.float32,
                             )
-                            mean_phase_loss = float(
-                                phase_loss_sum / mean_denominator
-                            )
+                            mean_phase_loss = float(phase_loss_sum / mean_denominator)
                             mean_phase_task_loss = float(
                                 phase_task_loss_sum / mean_denominator
                             )

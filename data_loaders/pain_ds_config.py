@@ -201,7 +201,9 @@ class PainDatasetConfig:
             raise ValueError("encoder_backend must be one of: 'eegnet', 'crossmod'")
         if self.encoder_backend == "crossmod":
             if str(self.attention_mode).strip().lower() != "can":
-                raise ValueError("encoder_backend='crossmod' requires attention_mode='can'")
+                raise ValueError(
+                    "encoder_backend='crossmod' requires attention_mode='can'"
+                )
             self.num_sensors = 2
             self.sensor_idx = (1, 4)
             self.modality_names = ("EDA", "ECG")
