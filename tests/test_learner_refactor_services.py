@@ -47,17 +47,13 @@ class _CountingPhase2Sampler:
                 fill_value=self.calls,
                 dtype=np.float32,
             ),
-            "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(
-                np.int32
-            ),
+            "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(np.int32),
             "query_X": np.full(
                 (self.query_size, 5, 2),
                 fill_value=self.calls + 100,
                 dtype=np.float32,
             ),
-            "query_y": np.repeat(np.arange(self.n_way), self.q_query).astype(
-                np.int32
-            ),
+            "query_y": np.repeat(np.arange(self.n_way), self.q_query).astype(np.int32),
         }
 
 
