@@ -4,7 +4,7 @@ import math
 import tensorflow as tf
 from tensorflow import keras
 
-from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
+from architecture.multimodal_proto_net import MultimodalPrototypicalNetwork
 
 
 class EpisodicLearningEngine:

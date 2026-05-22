@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
+from architecture.multimodal_proto_net import MultimodalPrototypicalNetwork
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
 from data_loaders.pain_meta_dataset import PainMetaDataset

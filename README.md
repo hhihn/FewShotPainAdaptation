@@ -237,10 +237,3 @@ python3 -m py_compile architecture/*.py data_loaders/*.py learner/*.py tests/*.p
 Set `--deterministic-ops` on CLI runs when exact reproducibility is more important
 than throughput.
 
-## Current Caveats
-
-- The repository uses the historical filename `architecture/mulitmodal_proto_net.py`
-  (note the spelling) because existing imports depend on it.
-- BioVid Part A data are not included in the repository.
-- Some checked-in `data/`, `outputs/`, and notebook artifacts may be local
-  experiment outputs rather than required source files.

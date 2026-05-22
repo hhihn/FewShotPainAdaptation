@@ -7,7 +7,7 @@ import numpy as np
 import tensorflow as tf
 
 from architecture.cnn import CrossModFeatureMapEncoder, EEGNetStyleEncoder
-from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
+from architecture.multimodal_proto_net import MultimodalPrototypicalNetwork
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.meta_ds_sampler import SixWayKShotSampler
 from data_loaders.pain_ds_config import PainDatasetConfig
