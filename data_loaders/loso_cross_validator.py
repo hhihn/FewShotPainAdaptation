@@ -44,17 +44,29 @@ class LOSOCrossValidator:
         self.logger = setup_logger(__name__)
 
     def __len__(self) -> int:
-        """Number of folds (one per subject)."""
+        """Return the number of LOSO folds.
+
+        Each fold corresponds to one held-out subject.
+        """
         return len(self.subjects)
 
     def __iter__(self) -> Generator[Dict[str, any], None, None]:
-        """Iterate over LOSO folds."""
+        """Iterate over LOSO fold dictionaries.
+
+        Yields:
+            Fold metadata and train/validation/test samplers.
+        """
         for test_subject in self.subjects:
             yield self.get_fold(test_subject)
 
     @staticmethod
     def _exclude_subject(subjects: List[int], heldout_subject: int) -> List[int]:
-        """Return subjects excluding the held-out subject."""
+        """Return subjects excluding the held-out subject.
+
+        Args:
+            subjects: Candidate subject identifiers.
+            heldout_subject: Subject identifier to remove.
+        """
         heldout_subject = int(heldout_subject)
         return [int(subject) for subject in subjects if int(subject) != heldout_subject]
 

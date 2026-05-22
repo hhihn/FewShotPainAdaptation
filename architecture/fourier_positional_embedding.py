@@ -4,7 +4,11 @@ from tensorflow import keras
 
 
 class FourierPositionalEncoding1D(keras.layers.Layer):
-    """Fourier positional encoding for temporal feature maps."""
+    """Add sinusoidal Fourier positional encodings to temporal features.
+
+    The layer creates deterministic sine/cosine encodings at call time and adds
+    them to tensors shaped as [batch, time, channels].
+    """
 
     def __init__(
         self,
@@ -12,6 +16,13 @@ class FourierPositionalEncoding1D(keras.layers.Layer):
         base: float = 10000.0,
         name: str = "fourier_positional_encoding",
     ):
+        """Initialize the positional encoding layer.
+
+        Args:
+            d_model: Channel dimension of the incoming temporal feature map.
+            base: Frequency base used by the sinusoidal encoding.
+            name: Keras layer name.
+        """
         super().__init__(name=name)
         self.d_model = int(d_model)
         self.base = float(base)
@@ -21,6 +32,11 @@ class FourierPositionalEncoding1D(keras.layers.Layer):
             raise ValueError("base must be > 0")
 
     def call(self, x):
+        """Add positional encodings to a temporal feature tensor.
+
+        Args:
+            x: Input tensor with shape [batch, time, channels].
+        """
         seq_len = tf.shape(x)[1]
         positions = tf.cast(tf.range(seq_len)[:, tf.newaxis], x.dtype)
         div_term = tf.exp(

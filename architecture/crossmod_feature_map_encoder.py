@@ -7,7 +7,11 @@ from architecture.eegnet_style_encoder import EEGNetStyleEncoder
 
 
 class CrossModFeatureMapEncoder(keras.Model):
-    """EDA/ECG EEGNet-1D frontends fused by CrossMod self/cross attention."""
+    """Fuse EDA and ECG feature maps with CrossMod attention.
+
+    Per-modality EEGNet-style frontends extract temporal maps before modality
+    self-attention and bidirectional cross-attention produce fused maps.
+    """
 
     def __init__(
         self,
@@ -30,6 +34,28 @@ class CrossModFeatureMapEncoder(keras.Model):
         ff_activation: str = "relu",
         name: str = "crossmod_encoder",
     ):
+        """Initialize the CrossMod feature-map encoder.
+
+        Args:
+            sequence_length: Number of time steps in each input window.
+            num_sensors: Number of input sensor channels; must be 2.
+            temporal_filters: Temporal filters for each EEGNet frontend.
+            depth_multiplier: Depth multiplier for per-sensor frontend mixing.
+            separable_filters: Output channel count for each frontend map.
+            temporal_kernel_size: Kernel size for the first temporal filter.
+            separable_kernel_size: Kernel size for separable temporal filtering.
+            pool_size_1: First temporal pooling factor.
+            pool_size_2: Second temporal pooling factor.
+            dropout_rate: Dropout rate inside each frontend.
+            l2_weight: L2 regularization weight passed to each frontend.
+            num_heads: Number of attention heads.
+            hidden_dim: Hidden width of modality Transformer layers.
+            num_layers: Number of modality Transformer layers.
+            positional_base: Base used by Fourier positional encodings.
+            attention_dropout_rate: Dropout rate for attention layers.
+            ff_activation: Activation used by modality feed-forward layers.
+            name: Keras model name.
+        """
         super().__init__(name=name)
         self.sequence_length = int(sequence_length)
         self.num_sensors = int(num_sensors)
@@ -106,6 +132,12 @@ class CrossModFeatureMapEncoder(keras.Model):
         )
 
     def _validate_config(self) -> None:
+        """Validate CrossMod encoder hyperparameters.
+
+        Raises:
+            ValueError: If dimensions, dropout rates, or attention divisibility
+                constraints are invalid.
+        """
         positive_int_fields = {
             "sequence_length": self.sequence_length,
             "num_sensors": self.num_sensors,
@@ -139,6 +171,11 @@ class CrossModFeatureMapEncoder(keras.Model):
             )
 
     def _build_frontend_branch(self, prefix: str):
+        """Build one modality frontend from the shared EEGNet-style encoder.
+
+        Args:
+            prefix: Name prefix identifying the modality branch.
+        """
         return EEGNetStyleEncoder(
             sequence_length=self.sequence_length,
             num_sensors=1,
@@ -157,6 +194,13 @@ class CrossModFeatureMapEncoder(keras.Model):
         )
 
     def extract_modality_feature_maps(self, x, training=False):
+        """Extract separate EDA and ECG temporal feature maps.
+
+        Args:
+            x: Input tensor with shape [batch, time, 2].
+            training: Whether frontend dropout and normalization run in training
+                mode.
+        """
         if x.shape.rank != 3:
             raise ValueError("CrossMod input must have shape [batch, time, sensors]")
         if x.shape[-1] is not None and int(x.shape[-1]) != 2:
@@ -173,6 +217,11 @@ class CrossModFeatureMapEncoder(keras.Model):
         return eda_features, ecg_features
 
     def extract_feature_map(self, x, training=False):
+        """Return fused CrossMod temporal feature maps.
+
+        EDA and ECG maps are position-encoded, passed through modality-specific
+        Transformer layers, and fused with bidirectional cross-attention.
+        """
         eda_features, ecg_features = self.extract_modality_feature_maps(
             x, training=training
         )
@@ -199,14 +248,29 @@ class CrossModFeatureMapEncoder(keras.Model):
         return tf.concat([eda_to_ecg, ecg_to_eda], axis=-1)
 
     def call(self, x, training=False):
-        """CrossMod is a representation encoder and returns fused feature maps."""
+        """Return fused feature maps for a batch of EDA/ECG windows.
+
+        Args:
+            x: Input tensor with shape [batch, time, 2].
+            training: Whether child layers run in training mode.
+        """
         return self.extract_feature_map(x, training=training)
 
     def embed_feature_map(self, feature_map, training=False):
+        """Reject embedding projection for CrossMod feature-map outputs.
+
+        CrossMod is used as a representation encoder for CAN-style feature maps,
+        so pooled embedding projection is intentionally unavailable.
+        """
         del training
         raise RuntimeError("CrossModFeatureMapEncoder does not produce embeddings.")
 
     def get_config(self):
+        """Return serializable CrossMod encoder configuration.
+
+        The configuration mirrors the constructor arguments used to build the
+        frontend, positional encoding, and attention layers.
+        """
         return {
             "sequence_length": self.sequence_length,
             "num_sensors": self.num_sensors,

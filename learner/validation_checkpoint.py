@@ -22,9 +22,19 @@ VALIDATION_CHECKPOINT_MINIMIZE_METRICS = {
 
 
 class ValidationCheckpointTracker:
-    """Keep the best validation model/optimizer state for one fold."""
+    """Track the best validation checkpoint for one training fold.
+
+    The tracker snapshots model and optimizer variables whenever the configured
+    validation metric improves.
+    """
 
     def __init__(self, metric: str, mode: str = "auto") -> None:
+        """Initialize checkpoint tracking for one validation metric.
+
+        Args:
+            metric: Metric name to monitor.
+            mode: ``auto``, ``min``, or ``max`` improvement direction.
+        """
         self.metric = str(metric).strip()
         self.mode = str(mode).strip()
         if self.metric not in SUPPORTED_VALIDATION_CHECKPOINT_METRICS:
@@ -46,6 +56,10 @@ class ValidationCheckpointTracker:
 
     @property
     def resolved_mode(self) -> str:
+        """Return the concrete checkpoint direction.
+
+        Auto mode minimizes known loss-like metrics and maximizes all others.
+        """
         if self.mode == "auto":
             return (
                 "min"
@@ -56,10 +70,19 @@ class ValidationCheckpointTracker:
 
     @property
     def has_checkpoint(self) -> bool:
+        """Return whether a model snapshot has been captured.
+
+        A true value means ``restore`` can attempt to assign saved variables.
+        """
         return self._model_snapshot is not None
 
     @staticmethod
     def _snapshot_variables(variables: list[tf.Variable]) -> list[tf.Tensor]:
+        """Copy variable values into immutable tensors.
+
+        Args:
+            variables: TensorFlow variables to snapshot.
+        """
         return [tf.identity(variable) for variable in variables]
 
     @staticmethod
@@ -69,6 +92,13 @@ class ValidationCheckpointTracker:
         *,
         label: str,
     ) -> None:
+        """Restore variables from a captured tensor snapshot.
+
+        Args:
+            variables: Variables to assign.
+            snapshot: Tensor values captured earlier.
+            label: Human-readable label used in error messages.
+        """
         if len(variables) != len(snapshot):
             raise RuntimeError(
                 f"Cannot restore {label}: variable count changed from "
@@ -78,6 +108,10 @@ class ValidationCheckpointTracker:
             variable.assign(value)
 
     def is_better(self, value: float) -> bool:
+        """Return whether a metric value improves on the current best.
+
+        Non-finite or non-numeric values are never considered improvements.
+        """
         try:
             numeric_value = float(value)
         except (TypeError, ValueError):
@@ -100,6 +134,11 @@ class ValidationCheckpointTracker:
         model_variables: list[tf.Variable],
         optimizer_variables: list[tf.Variable],
     ) -> bool:
+        """Snapshot model state if the provided metric value improves.
+
+        Returns:
+            True when a new checkpoint was captured, otherwise False.
+        """
         if not self.is_better(value):
             return False
 
@@ -117,6 +156,11 @@ class ValidationCheckpointTracker:
         model_variables: list[tf.Variable],
         optimizer_variables: list[tf.Variable],
     ) -> bool:
+        """Restore the best captured model and optimizer state.
+
+        Returns:
+            True when snapshots existed and were restored.
+        """
         if self._model_snapshot is None or self._optimizer_snapshot is None:
             return False
         self._restore_snapshot(
@@ -132,6 +176,10 @@ class ValidationCheckpointTracker:
         return True
 
     def summary(self) -> dict[str, object]:
+        """Return serializable metadata for the best checkpoint.
+
+        The summary omits variable tensors and includes only metric metadata.
+        """
         return {
             "metric": self.metric,
             "mode": self.mode,

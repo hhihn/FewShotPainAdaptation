@@ -9,7 +9,11 @@ from architecture.crossattention_module import CrossAttentionModule
 
 
 class MultimodalPrototypicalNetwork(keras.Model):
-    """Prototypical network with a joint EEGNet-style physiological encoder."""
+    """Represent episodic physiological samples with a prototypical network.
+
+    The model supports either compact EEGNet embeddings or CrossMod feature maps,
+    with optional CAN cross-attention over temporal prototype representations.
+    """
 
     def __init__(
         self,
@@ -45,7 +49,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         learned_prototype_slots_per_class: int = 1,
         seed: int = 0,
     ):
-        """
+        """Initialize the multimodal prototypical network.
+
         Args:
             sequence_length: Length of temporal sequence
             num_sensors: Number of sensor channels
@@ -204,7 +209,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
     def _log_episode_tensor_stats(self, episode_outputs: dict[str, tf.Tensor]) -> None:
-        """Emit lightweight debug stats for one episode."""
+        """Emit lightweight tensor-shape diagnostics for one episode.
+
+        The method is a no-op unless debug logging is enabled.
+        """
         if not self.logger.isEnabledFor(10):
             return
         if self.can_enabled:
@@ -225,8 +233,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             )
 
     def encode(self, x, training=False):
-        """
-        Map input to joint EEGNet embedding space.
+        """Map input windows to the configured embedding space.
 
         Args:
             x: [batch_size, sequence_length, num_sensors]
@@ -238,14 +245,27 @@ class MultimodalPrototypicalNetwork(keras.Model):
         return self.encoder(x, training=training)
 
     def encode_feature_map(self, x, training=False):
-        """Map input windows to temporal EEGNet feature maps."""
+        """Map input windows to temporal encoder feature maps.
+
+        This path is used by CAN/CrossMod workflows that operate on feature maps
+        rather than pooled embeddings.
+        """
         return self.encoder.extract_feature_map(x, training=training)
 
     def embed_feature_map(self, feature_map, training=False):
-        """Pool/project temporal EEGNet feature maps into embedding vectors."""
+        """Pool and project temporal feature maps into embedding vectors.
+
+        The concrete encoder owns the projection behavior and may reject this
+        call when embedding projection is disabled.
+        """
         return self.encoder.embed_feature_map(feature_map, training=training)
 
     def _support_normalize_embeddings(self, support_embeddings, query_embeddings):
+        """Normalize support and query embeddings from support statistics.
+
+        Statistics are computed over the support-sample axis and then reused for
+        the query embeddings to preserve episodic evaluation semantics.
+        """
         support_mean = tf.reduce_mean(support_embeddings, axis=-2, keepdims=True)
         support_std = (
             tf.math.reduce_std(support_embeddings, axis=-2, keepdims=True) + 1e-6
@@ -258,7 +278,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def _compute_prototype_maps_batch(
         self, support_feature_maps: tf.Tensor, support_y: tf.Tensor
     ) -> tf.Tensor:
-        """Compute per-class temporal prototype maps for each task."""
+        """Compute per-class temporal prototype maps for each task.
+
+        Each prototype map is the mean of support feature maps assigned to that
+        class within the corresponding episodic task.
+        """
         class_ids = tf.range(self.num_classes, dtype=support_y.dtype)
         class_mask = tf.equal(
             support_y[:, :, tf.newaxis],
@@ -276,7 +300,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         query_x: tf.Tensor,
         training: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run CAN/CAM over a batch of tasks."""
+        """Run CAN/CAM over a batch of sampled-support tasks.
+
+        Support and query examples are encoded jointly, class prototype maps are
+        computed from support labels, and CrossAttentionModule produces logits.
+        """
         num_tasks = tf.shape(support_x)[0]
         support_size = tf.shape(support_x)[1]
         query_size = tf.shape(query_x)[1]
@@ -329,6 +357,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         query_x: tf.Tensor,
         training: bool = False,
     ) -> tf.Tensor:
+        """Encode batched query windows into temporal feature maps.
+
+        The output preserves the task and query axes while flattening only for
+        the encoder call.
+        """
         num_tasks = tf.shape(query_x)[0]
         query_size = tf.shape(query_x)[1]
         sequence_length = tf.shape(query_x)[2]
@@ -345,6 +378,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
     def _aggregate_slot_scores(self, slot_scores: tf.Tensor) -> tf.Tensor:
+        """Aggregate learned-prototype slot scores into class scores.
+
+        Scores are reshaped by class and reduced over prototype slots using a
+        log-mean-exp aggregation.
+        """
         slot_scores = tf.reshape(
             slot_scores,
             [
@@ -359,6 +397,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
     def _aggregate_slot_local_logits(self, local_logits: tf.Tensor) -> tf.Tensor:
+        """Aggregate learned-prototype slot local logits into class logits.
+
+        Local temporal logits are grouped by class and reduced over prototype
+        slots with the same log-mean-exp aggregation used for global scores.
+        """
         local_logits = tf.reshape(
             local_logits,
             [
@@ -375,13 +418,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
     def _forward_episode_batch_learned_prototype_memory_can(
         self,
-        support_x: tf.Tensor,
-        support_y: tf.Tensor,
         query_x: tf.Tensor,
         training: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run CAN using trainable prototype feature-map slots as the only support."""
-        del support_x, support_y
+        """Run CAN using learned prototype-memory slots as support.
+
+        This path ignores sampled support examples and compares query feature
+        maps against trainable class-specific prototype slots.
+        """
         query_feature_maps = self._encode_query_feature_maps(query_x, training=training)
         prototype_maps, prototype_y = self.prototype_memory(query_feature_maps)
         cam_outputs = self.cross_attention((prototype_maps, query_feature_maps))
@@ -407,8 +451,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         }
 
     def compute_distances(self, query_embeddings, prototype_embeddings):
-        """
-        Compute distances between query and class prototypes.
+        """Compute distances between query embeddings and class prototypes.
 
         Args:
             query_embeddings: [num_queries, embedding_dim]
@@ -431,8 +474,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         return distances
 
     def compute_distances_batch(self, query_embeddings, prototype_embeddings):
-        """
-        Compute batched distances between query embeddings and task prototypes.
+        """Compute batched distances between query embeddings and prototypes.
 
         Args:
             query_embeddings: [num_tasks, num_queries, embedding_dim]
@@ -455,8 +497,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         return distances
 
     def compute_similarity_scores(self, query_embeddings, prototype_embeddings):
-        """
-        Compute similarity scores between query and class prototypes.
+        """Compute similarity scores between queries and class prototypes.
 
         Returns:
             similarities: [num_queries, num_classes]
@@ -467,7 +508,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         return -self.compute_distances(query_embeddings, prototype_embeddings)
 
     def compute_similarity_scores_batch(self, query_embeddings, prototype_embeddings):
-        """Compute batched query-to-prototype similarity scores."""
+        """Compute batched query-to-prototype similarity scores.
+
+        Cosine mode returns normalized dot products; Euclidean mode returns the
+        negated configured distance.
+        """
         if self.distance_metric == "cosine":
             return self.compute_cosine_sim(
                 query_embeddings, prototype_embeddings, axis=2
@@ -476,11 +521,20 @@ class MultimodalPrototypicalNetwork(keras.Model):
         return -self.compute_distances_batch(query_embeddings, prototype_embeddings)
 
     def compute_cosine_sim(self, a_embeddings, b_embeddings, axis=1):
+        """Compute cosine similarities between two embedding collections.
+
+        Inputs are L2-normalized along ``axis`` before matrix multiplication.
+        """
         query_norm = tf.nn.l2_normalize(a_embeddings, axis=axis)
         support_norm = tf.nn.l2_normalize(b_embeddings, axis=axis)
         return tf.matmul(query_norm, support_norm, transpose_b=True)
 
     def compute_euclidean_sim(self, a_embeddings, b_embeddings, axis=2):
+        """Compute pairwise Euclidean distances between embedding collections.
+
+        The method name is kept for compatibility with existing call sites even
+        though the returned value is a distance, not a similarity.
+        """
         return tf.sqrt(
             tf.reduce_sum(
                 (tf.expand_dims(a_embeddings, 1) - tf.expand_dims(b_embeddings, 0))
@@ -493,7 +547,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def compute_support_to_query_similarity(
         self, query_embeddings: tf.Tensor, support_embeddings: tf.Tensor
     ) -> tf.Tensor:
-        """Compute query-to-support similarities."""
+        """Compute query-to-support similarities for one episode.
+
+        Similarity is cosine similarity or negative pairwise distance depending
+        on the configured distance metric.
+        """
         if self.distance_metric == "cosine":
             return self.compute_cosine_sim(query_embeddings, support_embeddings)
         return -self.compute_pairwise_distances(query_embeddings, support_embeddings)
@@ -501,7 +559,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def compute_support_to_query_similarity_batch(
         self, query_embeddings: tf.Tensor, support_embeddings: tf.Tensor
     ) -> tf.Tensor:
-        """Compute batched query-to-support similarities."""
+        """Compute batched query-to-support similarities.
+
+        The leading task axis is preserved while each query is compared against
+        support embeddings from the same task.
+        """
         if self.distance_metric == "cosine":
             return self.compute_cosine_sim(query_embeddings, support_embeddings, axis=2)
 
@@ -512,7 +574,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def compute_pairwise_distances(
         self, a_embeddings: tf.Tensor, b_embeddings: tf.Tensor
     ) -> tf.Tensor:
-        """Compute pairwise distances between two embedding sets."""
+        """Compute pairwise distances between two embedding sets.
+
+        The selected distance metric controls whether Euclidean distance or
+        cosine distance is returned.
+        """
         if self.distance_metric == "euclidean":
             return self.compute_euclidean_sim(a_embeddings, b_embeddings, axis=2)
         if self.distance_metric == "cosine":
@@ -522,7 +588,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
     def compute_pairwise_distances_batch(
         self, a_embeddings: tf.Tensor, b_embeddings: tf.Tensor
     ) -> tf.Tensor:
-        """Compute batched pairwise distances between two embedding sets."""
+        """Compute batched pairwise distances between embedding sets.
+
+        Distances are computed independently for each task in the batch.
+        """
         if self.distance_metric == "euclidean":
             return self.compute_euclidean_sim(a_embeddings, b_embeddings, axis=3)
         if self.distance_metric == "cosine":
@@ -530,7 +599,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
     def _compute_prototypes(self, support_embeddings, support_y):
-        """Compute class prototypes as the mean support embedding per class."""
+        """Compute class prototypes for a single episode.
+
+        Each prototype is the mean support embedding for one class.
+        """
         prototypes = []
 
         for class_id in range(self.num_classes):
@@ -543,7 +615,10 @@ class MultimodalPrototypicalNetwork(keras.Model):
         return tf.stack(prototypes, axis=0)
 
     def _compute_prototypes_batch(self, support_embeddings, support_y):
-        """Compute class prototypes independently for each task in a batch."""
+        """Compute class prototypes independently for each batched task.
+
+        The output keeps one prototype tensor per task and per class.
+        """
         class_ids = tf.range(self.num_classes, dtype=support_y.dtype)
         class_mask = tf.equal(
             support_y[:, :, tf.newaxis],
@@ -560,7 +635,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         support_y: tf.Tensor,
         query_embeddings: tf.Tensor,
     ) -> tf.Tensor:
-        """Aggregate query-to-support similarities into class logits."""
+        """Aggregate query-to-support similarities into class logits.
+
+        The single-episode soft k-NN classifier pools support similarities by
+        class using log-sum-exp.
+        """
         support_similarities = self.compute_support_to_query_similarity(
             query_embeddings=query_embeddings,
             support_embeddings=support_embeddings,
@@ -585,7 +664,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         support_y: tf.Tensor,
         query_embeddings: tf.Tensor,
     ) -> tf.Tensor:
-        """Aggregate batched query-to-support similarities into class logits."""
+        """Aggregate batched query-to-support similarities into logits.
+
+        The task axis is preserved while support similarities are pooled by
+        class for each query example.
+        """
         support_similarities = self.compute_support_to_query_similarity_batch(
             query_embeddings=query_embeddings,
             support_embeddings=support_embeddings,
@@ -603,13 +686,15 @@ class MultimodalPrototypicalNetwork(keras.Model):
         )
 
     def forward_episode(self, support_x, support_y, query_x, training=False):
-        """Run one episode and return logits plus intermediate embedding tensors."""
+        """Run one few-shot episode.
+
+        The returned dictionary includes logits and intermediate tensors needed
+        by losses, diagnostics, and evaluation code.
+        """
         if self.can_enabled:
             if self.can_support_mode == "learned_prototype_memory":
                 batched_outputs = (
                     self._forward_episode_batch_learned_prototype_memory_can(
-                        support_x=support_x[tf.newaxis, ...],
-                        support_y=support_y[tf.newaxis, ...],
                         query_x=query_x[tf.newaxis, ...],
                         training=training,
                     )
@@ -687,6 +772,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         pseudo_labels: tf.Tensor,
         selected_mask: tf.Tensor,
     ) -> tf.Tensor:
+        """Recompute prototype maps with selected query pseudo-labels.
+
+        Support labels always contribute, while query maps contribute only where
+        the transductive selection mask is true.
+        """
         class_ids = tf.range(self.num_classes, dtype=support_y.dtype)
         support_class_mask = tf.equal(
             support_y[:, :, tf.newaxis],
@@ -717,6 +807,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         similarity_scores: tf.Tensor,
         selected_mask: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Select confident pseudo-labels for transductive CAN updates.
+
+        The method selects up to the configured top-k queries per predicted class
+        while avoiding queries already selected in earlier iterations.
+        """
         pseudo_labels = tf.argmax(similarity_scores, axis=2, output_type=tf.int32)
         top_values = tf.nn.top_k(similarity_scores, k=2).values
         confidence = top_values[:, :, 0] - top_values[:, :, 1]
@@ -770,7 +865,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         query_x: tf.Tensor,
         training: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run unlabeled query-set transductive CAN inference."""
+        """Run transductive CAN inference over unlabeled query sets.
+
+        When transduction is disabled, this method falls back to the standard
+        batched episode forward pass.
+        """
         if not self.can_enabled or self.can_transductive_iterations <= 0:
             return self.forward_episode_batch(
                 support_x=support_x,
@@ -828,7 +927,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         query_x: tf.Tensor,
         training: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run multiple episodes while encoding their samples in one batch."""
+        """Run multiple episodes while sharing one encoder batch.
+
+        The method keeps task structure around a single flattened encoder call
+        to reduce repeated TensorFlow overhead.
+        """
         if self.can_enabled:
             if self.can_support_mode == "learned_prototype_memory":
                 return self._forward_episode_batch_learned_prototype_memory_can(
@@ -913,14 +1016,14 @@ class MultimodalPrototypicalNetwork(keras.Model):
         training=False,
         return_similarity_scores: bool = False,
     ):
-        """
-        Forward pass for few-shot learning.
+        """Run the Keras forward pass for one few-shot episode.
 
         Args:
             support_x: [n_way * k_shot, sequence_length, num_sensors]
             support_y: [n_way * k_shot] (class labels 0 to n_way - 1)
             query_x: [n_way * q_query, sequence_length, num_sensors]
             training: Whether in training mode
+            return_similarity_scores: Whether to return similarities with logits
 
         Returns:
             logits: [n_way * q_query, n_way]

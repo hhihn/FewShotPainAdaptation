@@ -2,9 +2,19 @@ import tensorflow as tf
 
 
 class HeldoutAdaptationService:
-    """Adapt model weights on tasks sampled with temporary held-out task sizes."""
+    """Adapt model weights on held-out tasks with temporary task sizes.
+
+    The service owns the sampler k/q override lifecycle used during held-out
+    adaptation sweeps.
+    """
 
     def __init__(self, *, engine, evaluator):
+        """Initialize the held-out adaptation service.
+
+        Args:
+            engine: Episodic learning engine that performs train steps.
+            evaluator: Evaluation service that can modify sampler task sizes.
+        """
         self.engine = engine
         self.evaluator = evaluator
 
@@ -16,7 +26,14 @@ class HeldoutAdaptationService:
         k_shot: int,
         q_query: int,
     ) -> list[float]:
-        """Run adaptation on tasks drawn with temporary k-shot/q-query override."""
+        """Run adaptation with a temporary k-shot/q-query override.
+
+        Args:
+            sampler: Held-out episodic sampler.
+            adaptation_steps: Number of adaptation train steps to run.
+            k_shot: Temporary support samples per class.
+            q_query: Temporary query samples per class.
+        """
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
         self.evaluator.set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)

@@ -5,7 +5,11 @@ from utils.logger import setup_logger
 
 
 class EEGNetStyleEncoder(keras.Model):
-    """Compact EEGNet-style encoder for joint multichannel physiological windows."""
+    """Encode physiological windows with a compact EEGNet-style frontend.
+
+    The encoder can return temporal feature maps for attention-based models or
+    pooled embeddings for prototype-based classification.
+    """
 
     def __init__(
         self,
@@ -24,6 +28,25 @@ class EEGNetStyleEncoder(keras.Model):
         enable_embedding_projection: bool = True,
         name: str = "eegnet_encoder",
     ):
+        """Initialize the EEGNet-style encoder.
+
+        Args:
+            sequence_length: Number of time steps in each input window.
+            num_sensors: Number of sensor channels in each window.
+            embedding_dim: Output embedding width when projection is enabled.
+            temporal_filters: Number of first-stage temporal filters.
+            depth_multiplier: Depth multiplier for sensor-wise depthwise mixing.
+            separable_filters: Number of separable temporal filters.
+            temporal_kernel_size: Kernel size for first-stage temporal filters.
+            separable_kernel_size: Kernel size for separable temporal filters.
+            pool_size_1: Pooling factor after depthwise sensor mixing.
+            pool_size_2: Pooling factor after separable temporal filtering.
+            dropout_rate: Dropout rate applied after each pooling stage.
+            l2_weight: L2 regularization weight for the embedding projection.
+            enable_embedding_projection: Whether to create pooling/projection
+                layers and allow ``call`` to return embeddings.
+            name: Keras model name.
+        """
         super().__init__(name=name)
         self.sequence_length = int(sequence_length)
         self.num_sensors = int(num_sensors)
@@ -119,7 +142,15 @@ class EEGNetStyleEncoder(keras.Model):
         )
 
     def _feature_map_4d(self, x, training=False):
-        """Return post-separable EEGNet activations as [batch, time, 1, channels]."""
+        """Return post-separable EEGNet activations.
+
+        Args:
+            x: Input tensor with shape [batch, time, sensors].
+            training: Whether dropout and normalization run in training mode.
+
+        Returns:
+            Tensor with shape [batch, time, 1, channels].
+        """
         x = self.reshape(x)
         x = self.temporal_conv(x)
         x = self.temporal_norm(x, training=training)
@@ -139,11 +170,22 @@ class EEGNetStyleEncoder(keras.Model):
         return x
 
     def extract_feature_map(self, x, training=False):
-        """Return post-sensor-mixing temporal features as [batch, time, channels]."""
+        """Return post-sensor-mixing temporal features.
+
+        Args:
+            x: Input tensor with shape [batch, time, sensors].
+            training: Whether child layers run in training mode.
+        """
         return self._feature_map_4d(x, training=training)[:, :, 0, :]
 
     def embed_feature_map(self, feature_map, training=False):
-        """Pool/project a temporal feature map into the configured embedding space."""
+        """Pool and project a temporal feature map into embedding space.
+
+        Args:
+            feature_map: Tensor with shape [batch, time, channels] or
+                [batch, time, 1, channels].
+            training: Whether embedding normalization runs in training mode.
+        """
         if not self.enable_embedding_projection:
             raise RuntimeError("Embedding projection is disabled for this encoder.")
         x = feature_map
@@ -154,7 +196,12 @@ class EEGNetStyleEncoder(keras.Model):
         return self.embedding_norm(x, training=training)
 
     def call(self, x, training=False):
-        """Encode [batch, time, sensors] windows into [batch, embedding_dim]."""
+        """Encode windows into pooled embeddings.
+
+        Args:
+            x: Input tensor with shape [batch, time, sensors].
+            training: Whether child layers run in training mode.
+        """
         if not self.enable_embedding_projection:
             raise RuntimeError("Embedding projection is disabled for this encoder.")
         return self.embed_feature_map(
@@ -163,7 +210,11 @@ class EEGNetStyleEncoder(keras.Model):
         )
 
     def get_config(self):
-        """Return model configuration for serialization."""
+        """Return model configuration for serialization.
+
+        The returned dictionary contains constructor-compatible hyperparameters
+        for rebuilding this encoder.
+        """
         return {
             "sequence_length": self.sequence_length,
             "num_sensors": self.num_sensors,

@@ -84,7 +84,11 @@ class PainMetaDataset:
             self._compute_normalization_stats()
 
     def _load_data(self):
-        """Load data arrays from disk."""
+        """Load configured dataset arrays and initialize split metadata.
+
+        The method dispatches to the selected dataset-source loader, coerces
+        common dtypes, and creates all/test/train masks used by samplers.
+        """
         self.logger.info(f"Loading data from {self.data_dir}...")
         if self.config.dataset_source == "biovid_part_a":
             self._load_biovid_part_a_data()
@@ -137,7 +141,11 @@ class PainMetaDataset:
             )
 
     def _load_painmonit_data(self) -> None:
-        """Load PainMonit-formatted arrays from a flat numpy directory."""
+        """Load PainMonit-formatted arrays from a flat numpy directory.
+
+        PainMonit inputs are stored as feature, label, and subject arrays with
+        sensor selection applied from the active configuration.
+        """
         if self.has_predefined_split:
             raise ValueError(
                 "split_strategy='predefined' requires dataset_source='biovid_part_a'."
@@ -159,6 +167,11 @@ class PainMetaDataset:
 
     @staticmethod
     def _candidate_array_paths(path: Path) -> tuple[Path, ...]:
+        """Return plausible .npy/.npz paths for one configured array path.
+
+        Args:
+            path: Preferred array path from configuration.
+        """
         if path.suffix in {".npy", ".npz"}:
             alternate_suffix = ".npz" if path.suffix == ".npy" else ".npy"
             return (path, path.with_suffix(alternate_suffix))
@@ -166,6 +179,11 @@ class PainMetaDataset:
 
     @classmethod
     def _resolve_array_path(cls, path: Path) -> Path:
+        """Resolve an existing numpy array path from fallback candidates.
+
+        Args:
+            path: Preferred path that may omit or use either numpy suffix.
+        """
         for candidate in cls._candidate_array_paths(path):
             if candidate.is_file():
                 return candidate
@@ -196,7 +214,11 @@ class PainMetaDataset:
         return loaded
 
     def _resolve_biovid_part_dir(self) -> Path:
-        """Resolve the BioVid PartA directory from common repository layouts."""
+        """Resolve the BioVid PartA directory from common repository layouts.
+
+        Returns:
+            Directory containing the configured Train and Test split folders.
+        """
         candidates = (
             self.data_dir / "BioVid" / self.config.biovid_part_dir,
             self.data_dir / self.config.biovid_part_dir,
@@ -214,7 +236,11 @@ class PainMetaDataset:
 
     @staticmethod
     def _subject_key_from_data_filename(path: Path) -> str:
-        """Convert '<subject>_data.npy/.npz' to '<subject>'."""
+        """Convert a BioVid data filename into a subject key.
+
+        Args:
+            path: Path named like ``<subject>_data.npy`` or ``.npz``.
+        """
         if path.suffix not in {".npy", ".npz"}:
             raise ValueError(f"Unexpected data filename extension: {path.name}")
         suffix = "_data"
@@ -224,7 +250,11 @@ class PainMetaDataset:
 
     @staticmethod
     def _subject_key_from_label_filename(path: Path) -> str:
-        """Convert '<subject>_label.npy/.npz' to '<subject>'."""
+        """Convert a BioVid label filename into a subject key.
+
+        Args:
+            path: Path named like ``<subject>_label.npy`` or ``.npz``.
+        """
         if path.suffix not in {".npy", ".npz"}:
             raise ValueError(f"Unexpected label filename extension: {path.name}")
         suffix = "_label"
@@ -234,12 +264,23 @@ class PainMetaDataset:
 
     @staticmethod
     def _prefer_npz(paths: List[Path]) -> Path:
+        """Choose the preferred path when both .npz and .npy are present.
+
+        Compressed ``.npz`` files are preferred, with filename ordering used as a
+        stable tie breaker.
+        """
         return sorted(paths, key=lambda path: (path.suffix != ".npz", path.name))[0]
 
     @classmethod
     def _collect_biovid_files(
         cls, modality_dir: Path, file_kind: str
     ) -> Dict[str, Path]:
+        """Collect BioVid data or label files keyed by subject identifier.
+
+        Args:
+            modality_dir: Directory containing one modality's files.
+            file_kind: Either ``"data"`` or ``"label"``.
+        """
         paths = sorted(
             [
                 path
@@ -266,7 +307,11 @@ class PainMetaDataset:
         }
 
     def _load_biovid_part_a_data(self) -> None:
-        """Load BioVid Part A pre-segmented train/test files."""
+        """Load BioVid Part A pre-segmented train/test files.
+
+        Data are assembled across configured modalities while preserving subject
+        IDs and predefined split labels.
+        """
         part_dir = self._resolve_biovid_part_dir()
         self.logger.info(f"Resolved BioVid Part A directory: {part_dir}")
         modalities = tuple(self.config.biovid_modalities)
@@ -419,7 +464,11 @@ class PainMetaDataset:
         self.config.num_sensors = int(self.X.shape[2])
 
     def _build_index(self):
-        """Build index mapping (subject, class) -> sample indices."""
+        """Build subject/class index mappings for every available split.
+
+        Window-shift augmentation expands base sample indices into window
+        references when enabled.
+        """
         split_names = ["all"]
         if self.has_predefined_split:
             split_names = ["all", "train", "test"]
@@ -449,7 +498,11 @@ class PainMetaDataset:
     def _build_base_index_for_mask(
         self, split_mask: np.ndarray
     ) -> Dict[int, Dict[int, np.ndarray]]:
-        """Build base index mapping for a specific sample mask."""
+        """Build base subject/class index mappings for a sample mask.
+
+        Args:
+            split_mask: Boolean mask selecting samples for one split.
+        """
         base_index: Dict[int, Dict[int, np.ndarray]] = {}
         for subject in self.unique_subjects:
             base_index[subject] = {}
@@ -462,7 +515,11 @@ class PainMetaDataset:
         return base_index
 
     def _get_split_mask(self, split: str) -> np.ndarray:
-        """Return sample mask for split ('all', 'train', 'test')."""
+        """Return the boolean sample mask for a split.
+
+        Args:
+            split: Split name such as ``"all"``, ``"train"``, or ``"test"``.
+        """
         normalized_split = split.lower()
         if normalized_split not in self.split_masks:
             available = ", ".join(sorted(self.split_masks.keys()))
@@ -470,7 +527,11 @@ class PainMetaDataset:
         return self.split_masks[normalized_split]
 
     def _get_index_for_split(self, split: str) -> Dict[int, Dict[int, np.ndarray]]:
-        """Return index mapping for the requested split."""
+        """Return augmented sampling index mapping for the requested split.
+
+        Args:
+            split: Split name to resolve.
+        """
         normalized_split = split.lower()
         if normalized_split not in self.index_by_split:
             available = ", ".join(sorted(self.index_by_split.keys()))
@@ -482,13 +543,22 @@ class PainMetaDataset:
     def _get_sampling_index_for_split(
         self, split: str, use_base_index: bool = False
     ) -> Dict[int, Dict[int, np.ndarray]]:
-        """Return index for sampling, optionally using non-augmented base entries."""
+        """Return the index used for sampling from a split.
+
+        Args:
+            split: Split name to resolve.
+            use_base_index: Whether to bypass window-shift expanded references.
+        """
         if use_base_index:
             return self._get_base_index_for_split(split)
         return self._get_index_for_split(split)
 
     def _get_base_index_for_split(self, split: str) -> Dict[int, Dict[int, np.ndarray]]:
-        """Return non-windowed base index mapping for the requested split."""
+        """Return non-windowed base index mapping for a split.
+
+        Args:
+            split: Split name to resolve.
+        """
         normalized_split = split.lower()
         if normalized_split not in self.base_index_by_split:
             available = ", ".join(sorted(self.base_index_by_split.keys()))
@@ -500,7 +570,11 @@ class PainMetaDataset:
     def _build_window_shift_index(
         self, base_index: Dict[int, Dict[int, np.ndarray]]
     ) -> Dict[int, Dict[int, np.ndarray]]:
-        """Expand index entries into [sample_idx, window_start_idx] references."""
+        """Expand sample indices into window-shift references.
+
+        Args:
+            base_index: Subject/class mapping containing raw sample indices.
+        """
         if self.X.ndim != 3:
             raise ValueError(
                 f"Expected rank-3 input [n_samples, seq_len, n_sensors], got {self.X.shape}"
@@ -574,7 +648,11 @@ class PainMetaDataset:
         return expanded_index
 
     def _extract_windows(self, refs: np.ndarray) -> np.ndarray:
-        """Extract fixed windows from [sample_idx, start_idx] references."""
+        """Extract fixed windows from window-shift references.
+
+        Args:
+            refs: Array shaped [n_refs, 2] as [sample_idx, start_idx].
+        """
         if refs.size == 0:
             return np.empty(
                 (0, self.window_length_samples, self.X.shape[2]), dtype=self.X.dtype
@@ -598,7 +676,12 @@ class PainMetaDataset:
         return windows
 
     def _gather_samples(self, refs_or_indices: np.ndarray) -> np.ndarray:
-        """Gather samples from either base indices [n] or window refs [n, 2]."""
+        """Gather samples from base indices or window-shift references.
+
+        Args:
+            refs_or_indices: One-dimensional sample indices or two-dimensional
+                [sample_idx, start_idx] references.
+        """
         if refs_or_indices.size == 0:
             if self.window_shift_enabled:
                 seq_len = self.window_length_samples
@@ -619,7 +702,11 @@ class PainMetaDataset:
         return self.X[refs_or_indices]
 
     def _log_window_shift_summary(self) -> None:
-        """Log global augmentation metadata and class-wise counts."""
+        """Log global window-shift augmentation metadata.
+
+        The summary includes configured window geometry and class-wise expanded
+        sample counts across all subjects.
+        """
         if not self.window_shift_enabled:
             return
 
@@ -671,7 +758,13 @@ class PainMetaDataset:
     def log_window_shift_split_summary(
         self, split_name: str, subjects: List[int], split: str = "all"
     ) -> None:
-        """Log augmentation counts for a split's subject set."""
+        """Log window-shift augmentation counts for a subject split.
+
+        Args:
+            split_name: Human-readable label for the subject group.
+            subjects: Subject IDs included in the summary.
+            split: Data split name used to select indices.
+        """
         if not self.window_shift_enabled:
             return
 
@@ -709,7 +802,11 @@ class PainMetaDataset:
         )
 
     def _verify_index(self):
-        """Verify that the index is valid for sampling."""
+        """Verify that every indexed split can support configured sampling.
+
+        Emits warnings for subject/class pools smaller than the required episodic
+        sample count.
+        """
         for split_name, split_index in self.index_by_split.items():
             min_samples_per_class = float("inf")
             required_samples = self.config.k_shot + self.config.q_query
@@ -731,7 +828,11 @@ class PainMetaDataset:
             )
 
     def _compute_normalization_stats(self):
-        """Compute mean and std for normalization."""
+        """Compute normalization statistics from loaded data.
+
+        Statistics are stored per subject or globally depending on the dataset
+        normalization settings.
+        """
         if self.normalize_per_subject:
             # Per-subject normalization
             self.norm_stats = {}
@@ -750,7 +851,12 @@ class PainMetaDataset:
     def _normalize_data(
         self, data: np.ndarray, subject: Optional[int] = None
     ) -> np.ndarray:
-        """Normalize data."""
+        """Normalize a data batch with subject or global statistics.
+
+        Args:
+            data: Batch shaped [samples, time, sensors].
+            subject: Optional subject ID for per-subject normalization.
+        """
         if not self.normalize:
             return data
 
@@ -766,7 +872,12 @@ class PainMetaDataset:
     def _normalize_data_by_subjects(
         self, data: np.ndarray, subjects: np.ndarray
     ) -> np.ndarray:
-        """Normalize each sample using the statistics of its source subject."""
+        """Normalize each sample using its source-subject statistics.
+
+        Args:
+            data: Batch shaped [samples, time, sensors].
+            subjects: Subject ID per sample.
+        """
         if not self.normalize or data.size == 0:
             return data
 
@@ -789,7 +900,14 @@ class PainMetaDataset:
         q_query: int,
         allow_partial_query: bool,
     ) -> int:
-        """Resolve how many samples may be drawn while preserving k-shot support."""
+        """Resolve drawable sample count while preserving k-shot support.
+
+        Args:
+            available_count: Number of candidate samples.
+            k_shot: Required support samples per class.
+            q_query: Requested query samples per class.
+            allow_partial_query: Whether fewer than q_query samples may be used.
+        """
         requested_total = k_shot + q_query
         if available_count < k_shot:
             raise ValueError(
@@ -803,7 +921,11 @@ class PainMetaDataset:
 
     @staticmethod
     def _compute_batch_stats(data: np.ndarray) -> Dict[str, np.ndarray]:
-        """Compute mean/std stats from a batch [n, seq_len, n_sensors]."""
+        """Compute modality-wise mean/std statistics for a batch.
+
+        Args:
+            data: Batch shaped [samples, time, sensors].
+        """
         return {
             "mean": np.mean(data, axis=(0, 1), keepdims=True),
             "std": np.std(data, axis=(0, 1), keepdims=True) + 1e-8,
@@ -811,13 +933,23 @@ class PainMetaDataset:
 
     @staticmethod
     def _apply_stats(data: np.ndarray, stats: Dict[str, np.ndarray]) -> np.ndarray:
-        """Normalize a batch with externally provided stats."""
+        """Normalize a batch with externally provided statistics.
+
+        Args:
+            data: Batch shaped [samples, time, sensors].
+            stats: Dictionary containing broadcastable ``mean`` and ``std``.
+        """
         return (data - stats["mean"]) / stats["std"]
 
     def compute_split_normalization_stats(
         self, subjects: List[int], split: str = "all"
     ) -> Dict[str, np.ndarray]:
-        """Compute modality-wise stats over all samples/windows in a LOSO split."""
+        """Compute modality-wise statistics over samples/windows in a split.
+
+        Args:
+            subjects: Subject IDs contributing to the statistics.
+            split: Data split name to select samples from.
+        """
         selected_subjects = [int(subject) for subject in subjects]
         if not selected_subjects:
             raise ValueError("subjects must contain at least one subject id")
@@ -1021,7 +1153,21 @@ class PainMetaDataset:
         split: str = "all",
         use_base_index: bool = False,
     ) -> Dict[str, np.ndarray]:
-        """Sample one task by pooling each class across the provided subjects."""
+        """Sample one task by pooling each class across subjects.
+
+        Args:
+            subjects: Subject IDs eligible for support and query sampling.
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+            seed: Optional random seed.
+            normalize_mode: ``subject``, ``split``, ``support``, or ``none``.
+            rng: Optional numpy random generator.
+            allow_partial_query: Whether to allow reduced query counts.
+            include_sample_subjects: Whether to include per-sample subject IDs.
+            split_normalization_stats: Optional precomputed split stats.
+            split: Data split selector.
+            use_base_index: Whether to sample from non-augmented references.
+        """
         k_shot = k_shot or self.config.k_shot
         q_query = q_query or self.config.q_query
         selected_subjects = [int(subject) for subject in subjects]
@@ -1423,7 +1569,11 @@ class PainMetaDataset:
         ]
 
     def get_split_subjects(self, split: str = "all") -> List[int]:
-        """Return sorted subject IDs that have samples in a split."""
+        """Return sorted subject IDs that have samples in a split.
+
+        Args:
+            split: Split name such as ``"all"``, ``"train"``, or ``"test"``.
+        """
         normalized_split = split.lower()
         if normalized_split not in self.split_subjects:
             available = ", ".join(sorted(self.split_subjects.keys()))
@@ -1509,10 +1659,17 @@ class PainMetaDataset:
         use_base_index: bool = True,
         normalize_with_query_subject_stats: bool = True,
     ) -> Dict[str, np.ndarray]:
-        """Build a query-only task containing every eligible sample for one subject.
+        """Build a query-only task with every eligible sample for one subject.
 
         The returned support tensors are placeholders for API compatibility; learned
         prototype-memory CAN ignores them.
+
+        Args:
+            subject: Subject ID to gather query samples from.
+            split: Data split selector.
+            use_base_index: Whether to avoid window-shift expanded references.
+            normalize_with_query_subject_stats: Whether to normalize with query
+                batch statistics instead of stored subject/global statistics.
         """
         subject = int(subject)
         split_index = self._get_sampling_index_for_split(

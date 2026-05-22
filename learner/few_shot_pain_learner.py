@@ -22,7 +22,11 @@ from learner.validation_checkpoint import ValidationCheckpointTracker
 
 
 class FewShotPainLearner:
-    """Meta-learning trainer for personalized pain assessment."""
+    """Train and evaluate few-shot pain adaptation models.
+
+    The learner is the public facade that wires together data loading, LOSO
+    orchestration, TensorFlow execution, evaluation, and reporting services.
+    """
 
     def __init__(
         self,
@@ -260,35 +264,62 @@ class FewShotPainLearner:
         )
 
     def _augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
-        """Apply training-only signal augmentation configured for episodic updates."""
+        """Apply training-only signal augmentation.
+
+        Args:
+            x: Input tensor to augment.
+        """
         return self.engine.augment_training_inputs(x)
 
     def _release_model_resources(self, clear_session: bool = True) -> None:
-        """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
+        """Release model and optimizer resources.
+
+        Args:
+            clear_session: Whether to clear Keras backend state.
+        """
         self.engine.release_model_resources(clear_session=clear_session)
 
     def _rebuild_model(self, clear_session: bool = True) -> None:
-        """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
+        """Build a fresh model and optimizer.
+
+        Args:
+            clear_session: Whether to clear stale TensorFlow graph state first.
+        """
         self.engine.rebuild_model(clear_session=clear_session)
 
     def _reset_model_state_for_new_fold(self) -> None:
-        """Restore initial model/optimizer state while reusing compiled functions."""
+        """Restore initial model and optimizer state for a new fold.
+
+        Compiled functions are reused after variables are restored.
+        """
         self.engine.reset_model_state_for_new_fold()
 
     def _build_compiled_train_batch_step(self) -> None:
-        """Build a compiled train-step function bound to current model/optimizer vars."""
+        """Build the compiled train-step function.
+
+        The implementation is delegated to the episodic learning engine.
+        """
         self.engine.build_compiled_train_batch_step()
 
     def _build_compiled_eval_batch_step(self) -> None:
-        """Build a compiled evaluation function for batches of episodic tasks."""
+        """Build the compiled evaluation function.
+
+        The implementation is delegated to the episodic learning engine.
+        """
         self.engine.build_compiled_eval_batch_step()
 
     def _build_compiled_prototype_memory_batch_step(self) -> None:
-        """Build a compiled phase-2 learned-prototype update function."""
+        """Build the compiled prototype-memory update function.
+
+        The implementation is delegated to the episodic learning engine.
+        """
         self.engine.build_compiled_prototype_memory_batch_step()
 
     def _get_loso_fold_subjects(self) -> list[int]:
-        """Return held-out subjects selected by single-fold and LOSO index config."""
+        """Return held-out subjects selected by LOSO configuration.
+
+        Single-fold and start/stop index settings are resolved here.
+        """
         subjects = [int(subject) for subject in self.cv.subjects]
         if not subjects:
             raise ValueError("No LOSO subjects are available.")
@@ -339,7 +370,10 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Compiled evaluation over a batch of tasks without optimizer updates."""
+        """Evaluate a batch of tasks without optimizer updates.
+
+        This facade delegates to the engine's compiled implementation.
+        """
         return self.engine._eval_task_batch_step_compiled_impl(
             support_x_batch,
             support_y_batch,
@@ -354,7 +388,10 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Compiled optimizer update over one batch of episodic tasks."""
+        """Run a compiled optimizer update over one task batch.
+
+        This facade delegates to the engine's compiled implementation.
+        """
         return self.engine._train_batch_step_compiled_impl(
             support_x_batch,
             support_y_batch,
@@ -369,7 +406,10 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Run one phase-2 learned-prototype-memory optimizer update."""
+        """Run one learned-prototype-memory optimizer update.
+
+        The update path is used for CAN phase-2 fine-tuning.
+        """
         return self.engine.train_prototype_memory_batch_step_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
@@ -378,7 +418,11 @@ class FewShotPainLearner:
         )
 
     def _resolve_prototype_finetune_tasks_per_epoch(self, train_sampler) -> int:
-        """Return the phase-2 learned-prototype update budget."""
+        """Return the phase-2 learned-prototype update budget.
+
+        Args:
+            train_sampler: Training sampler used to infer a default budget.
+        """
         configured_tasks = self.config.prototype_finetune_tasks_per_epoch
         if configured_tasks is not None:
             return max(1, int(configured_tasks))
@@ -390,7 +434,12 @@ class FewShotPainLearner:
         train_sampler,
         prototype_updates_per_epoch: int,
     ):
-        """Yield configured episodic task batches for phase-2 prototype updates."""
+        """Yield episodic task batches for phase-2 updates.
+
+        Args:
+            train_sampler: Training sampler used to draw tasks.
+            prototype_updates_per_epoch: Number of prototype updates per epoch.
+        """
         total_sampled_tasks = (
             max(1, int(prototype_updates_per_epoch)) * self.train_batch_size
         )
@@ -400,35 +449,64 @@ class FewShotPainLearner:
         )
 
     def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
-        """Return regularization losses added by submodules, or zero if absent."""
+        """Return model auxiliary losses.
+
+        Args:
+            dtype: Output dtype for the summed auxiliary loss.
+        """
         return self.engine.compute_model_aux_loss(dtype)
 
     def _apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
-        """Apply gradients for the current model update."""
+        """Apply gradients for the current model update.
+
+        Args:
+            loss: Scalar objective tensor.
+            tape: Active gradient tape.
+        """
         return self.engine.apply_gradients(loss, tape)
 
     def _compute_batch_all_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Compute BatchAllTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        """Compute batch-all triplet loss.
+
+        Args:
+            embeddings: Embedding tensor.
+            labels: Labels aligned with embeddings.
+        """
         return self.engine.compute_batch_all_triplet_loss(embeddings, labels)
 
     def _compute_batch_hard_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        """Compute batch-hard triplet loss.
+
+        Args:
+            embeddings: Embedding tensor.
+            labels: Labels aligned with embeddings.
+        """
         return self.engine.compute_batch_hard_triplet_loss(embeddings, labels)
 
     def _compute_triplet_center_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Compute Triplet-Center Loss using trainable class centers."""
+        """Compute triplet-center loss.
+
+        Args:
+            embeddings: Embedding tensor.
+            labels: Labels aligned with embeddings.
+        """
         return self.engine.compute_triplet_center_loss(embeddings, labels)
 
     def _compute_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Dispatch configured triplet mining strategy over one episode."""
+        """Dispatch the configured triplet mining strategy.
+
+        Args:
+            embeddings: Embedding tensor.
+            labels: Labels aligned with embeddings.
+        """
         return self.engine.compute_triplet_loss(embeddings, labels)
 
     def _compute_task_batch_objective(
@@ -437,7 +515,13 @@ class FewShotPainLearner:
         support_y_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> dict[str, tf.Tensor]:
-        """Compute per-task objective tensors for normalized batched episode outputs."""
+        """Compute objective tensors for batched episode outputs.
+
+        Args:
+            episode_outputs: Task-major model output dictionary.
+            support_y_batch: Batched support labels.
+            query_y_batch: Batched query labels.
+        """
         return self.engine.compute_task_batch_objective(
             episode_outputs,
             support_y_batch,
@@ -453,7 +537,16 @@ class FewShotPainLearner:
         training: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run one task and compute classification plus optional embedding losses."""
+        """Run one task and compute losses.
+
+        Args:
+            support_x: Support windows.
+            support_y: Support labels.
+            query_x: Query windows.
+            query_y: Query labels.
+            training: Whether child layers run in training mode.
+            return_similarity_scores: Whether to include similarity scores.
+        """
         return self.engine.forward_task(
             support_x=support_x,
             support_y=support_y,
@@ -472,7 +565,16 @@ class FewShotPainLearner:
         training: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run multiple tasks with batched embedding and per-task losses."""
+        """Run multiple tasks with batched encoding and losses.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+            training: Whether child layers run in training mode.
+            return_similarity_scores: Whether to include similarity scores.
+        """
         return self.engine.forward_task_batch(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
@@ -483,21 +585,36 @@ class FewShotPainLearner:
         )
 
     def train_step(self, support_x, support_y, query_x, query_y):
-        """Single training step on one task."""
+        """Run one training step on a single task.
+
+        Args:
+            support_x: Support windows.
+            support_y: Support labels.
+            query_x: Query windows.
+            query_y: Query labels.
+        """
         return self.engine.train_step(support_x, support_y, query_x, query_y)
 
     @staticmethod
     def _stack_task_batch_numpy(
         task_batch: list[dict],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Pack a Python task list into dense NumPy arrays once per update."""
+        """Pack task dictionaries into dense NumPy arrays.
+
+        Args:
+            task_batch: List of task dictionaries with uniform shapes.
+        """
         return TaskBatchPipeline.stack_task_batch_numpy(task_batch)
 
     @staticmethod
     def _stack_task_batch(
         task_batch: list[dict],
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Pack a Python task list into dense batch tensors once per update."""
+        """Pack task dictionaries into dense TensorFlow tensors.
+
+        Args:
+            task_batch: List of task dictionaries with uniform shapes.
+        """
         return TaskBatchPipeline.stack_task_batch(task_batch)
 
     @staticmethod
@@ -505,7 +622,12 @@ class FewShotPainLearner:
         sampler,
         batch_size: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Sample one task batch and pack it into dense NumPy arrays."""
+        """Sample one task batch and pack it into NumPy arrays.
+
+        Args:
+            sampler: Episodic sampler exposing ``get_task``.
+            batch_size: Number of tasks to sample.
+        """
         return TaskBatchPipeline.sample_and_stack_task_batch_numpy(
             sampler,
             batch_size,
@@ -516,7 +638,12 @@ class FewShotPainLearner:
         sampler,
         tasks_per_epoch: int,
     ):
-        """Yield `(batch_size, stacked_numpy_batch)` with async CPU prefetch."""
+        """Yield stacked NumPy task batches with optional prefetch.
+
+        Args:
+            sampler: Episodic sampler exposing ``get_task``.
+            tasks_per_epoch: Number of tasks to sample.
+        """
         yield from self.task_pipeline.iter_prefetched_task_batches(
             sampler,
             tasks_per_epoch,
@@ -529,7 +656,14 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Yield task tensor chunks sized by embedding_batch_size in eager mode."""
+        """Yield task tensor chunks sized by embedding batch size.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         yield from self.task_pipeline.iter_task_tensor_chunks(
             support_x_batch,
             support_y_batch,
@@ -542,7 +676,12 @@ class FewShotPainLearner:
         support_x_chunk: tf.Tensor,
         query_x_chunk: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Apply train augmentation while preserving legacy single-task shapes."""
+        """Apply training augmentation to one task chunk.
+
+        Args:
+            support_x_chunk: Task-major support windows.
+            query_x_chunk: Task-major query windows.
+        """
         task_count = int(tf.shape(support_x_chunk)[0].numpy())
         if task_count == 1:
             return (
@@ -564,7 +703,16 @@ class FewShotPainLearner:
         training: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Forward one eager task chunk and normalize outputs to task-major tensors."""
+        """Forward one eager chunk and normalize outputs.
+
+        Args:
+            support_x_chunk: Task-major support windows.
+            support_y_chunk: Task-major support labels.
+            query_x_chunk: Task-major query windows.
+            query_y_chunk: Task-major query labels.
+            training: Whether child layers run in training mode.
+            return_similarity_scores: Whether to include similarity scores.
+        """
         return self.engine.forward_task_chunk(
             support_x_chunk=support_x_chunk,
             support_y_chunk=support_y_chunk,
@@ -576,7 +724,11 @@ class FewShotPainLearner:
 
     @staticmethod
     def _mean_concat(tensor_parts: list[tf.Tensor]) -> tf.Tensor:
-        """Mean over rank-1 tensors collected from task chunks."""
+        """Return the mean over tensors collected from chunks.
+
+        Args:
+            tensor_parts: List of tensors to concatenate before reducing.
+        """
         return tf.reduce_mean(tf.concat(tensor_parts, axis=0))
 
     @staticmethod
@@ -584,7 +736,12 @@ class FewShotPainLearner:
         chunk_outputs: dict[str, tf.Tensor],
         query_y_chunk: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Return per-task train losses and accuracies for one normalized chunk."""
+        """Return train metric tensors for one normalized chunk.
+
+        Args:
+            chunk_outputs: Task-major output dictionary.
+            query_y_chunk: Task-major query labels.
+        """
         return EpisodicLearningEngine.train_metric_tensors_from_chunk_outputs(
             chunk_outputs,
             query_y_chunk,
@@ -595,7 +752,12 @@ class FewShotPainLearner:
         similarity_scores: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Split batched query-to-prototype scores into intra/inter-class groups."""
+        """Split batched scores into true-class and other-class groups.
+
+        Args:
+            similarity_scores: Task-major query-by-class scores.
+            query_y_batch: Task-major query labels.
+        """
         query_y_batch = tf.cast(query_y_batch, tf.int32)
         task_count = tf.shape(query_y_batch)[0]
         query_size = tf.shape(query_y_batch)[1]
@@ -624,7 +786,12 @@ class FewShotPainLearner:
         chunk_outputs: dict[str, tf.Tensor],
         query_y_chunk: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Return flattened eval losses, labels, predictions, and similarity groups."""
+        """Return flattened eval losses, labels, predictions, and scores.
+
+        Args:
+            chunk_outputs: Task-major output dictionary.
+            query_y_chunk: Task-major query labels.
+        """
         return self.engine.eval_metric_tensors_from_chunk_outputs(
             chunk_outputs,
             query_y_chunk,
@@ -637,7 +804,14 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Eager fallback for one optimizer update using a batch of tasks."""
+        """Run eager optimizer update for one task batch.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         return self.engine.train_batch_step_eager_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
@@ -652,7 +826,14 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Run compiled train step, with eager fallback if compilation fails."""
+        """Run compiled train step with eager fallback.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         return self.engine.train_batch_step_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
@@ -667,7 +848,14 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Eager fallback for task-batch evaluation without optimizer updates."""
+        """Run eager task-batch evaluation.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         return self.engine.eval_task_batch_step_eager_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
@@ -682,7 +870,14 @@ class FewShotPainLearner:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, ...]:
-        """Run compiled task-batch eval, with eager fallback if compilation fails."""
+        """Run compiled task-batch evaluation with eager fallback.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         return self.engine.eval_task_batch_step_tensors(
             support_x_batch=support_x_batch,
             support_y_batch=support_y_batch,
@@ -692,11 +887,19 @@ class FewShotPainLearner:
 
     @staticmethod
     def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
-        """Return True when support/query tensors share identical shapes across tasks."""
+        """Return whether support/query tensors have uniform shapes.
+
+        Args:
+            task_batch: List of task dictionaries to inspect.
+        """
         return TaskBatchPipeline.task_batch_has_uniform_shapes(task_batch)
 
     def train_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, ...]:
-        """Single optimizer update using a batch of tasks."""
+        """Run one optimizer update using a task batch.
+
+        Args:
+            task_batch: List of task dictionaries.
+        """
         (
             support_x_batch,
             support_y_batch,
@@ -711,13 +914,24 @@ class FewShotPainLearner:
         )
 
     def evaluate_task(self, support_x, support_y, query_x, query_y):
-        """Evaluate on one task without updating weights."""
+        """Evaluate one task without updating weights.
+
+        Args:
+            support_x: Support windows.
+            support_y: Support labels.
+            query_x: Query windows.
+            query_y: Query labels.
+        """
         return self.engine.evaluate_task(support_x, support_y, query_x, query_y)
 
     def evaluate_batch_step(
         self, task_batch: list[dict]
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Evaluate a batch of tasks without updating weights."""
+        """Evaluate a batch of tasks without updating weights.
+
+        Args:
+            task_batch: List of task dictionaries.
+        """
         batch_loss, metrics = self._evaluate_task_batch_loss_and_metrics(
             task_batch,
         )
@@ -732,7 +946,12 @@ class FewShotPainLearner:
     def _split_similarity_scores(
         similarity_scores: np.ndarray, y_true: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Split query-to-prototype similarities into intra/inter-class groups."""
+        """Split similarities into true-class and other-class groups.
+
+        Args:
+            similarity_scores: Query-by-class similarity matrix.
+            y_true: True query labels.
+        """
         return EpisodeEvaluationService.split_similarity_scores(
             similarity_scores,
             y_true,
@@ -742,7 +961,12 @@ class FewShotPainLearner:
     def _compute_similarity_metrics(
         intra_class_scores: np.ndarray, inter_class_scores: np.ndarray
     ) -> dict:
-        """Aggregate similarity statistics using the existing metric dict shape."""
+        """Aggregate intra/inter-class similarity statistics.
+
+        Args:
+            intra_class_scores: Similarities assigned to true classes.
+            inter_class_scores: Similarities assigned to other classes.
+        """
         return EpisodeEvaluationService.compute_similarity_metrics(
             intra_class_scores,
             inter_class_scores,
@@ -754,14 +978,24 @@ class FewShotPainLearner:
         *,
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
-        """Evaluate a task batch and aggregate classification/similarity metrics."""
+        """Evaluate a task batch and aggregate metrics.
+
+        Args:
+            task_batch: List of task dictionaries.
+            forward_batch_size: Optional tasks per batched forward pass.
+        """
         return self.evaluator.evaluate_task_batch_loss_and_metrics(
             task_batch,
             forward_batch_size=forward_batch_size,
         )
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-        """Compute accuracy, macro precision, macro recall, and macro F1."""
+        """Compute accuracy and macro precision/recall/F1.
+
+        Args:
+            y_true: Ground-truth labels.
+            y_pred: Predicted labels.
+        """
         return self.evaluator.compute_macro_metrics(y_true, y_pred)
 
     def _evaluate_sampler_loss_and_metrics(
@@ -771,7 +1005,13 @@ class FewShotPainLearner:
         *,
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
-        """Evaluate average loss plus classification/similarity metrics on tasks."""
+        """Evaluate sampled tasks and aggregate metrics.
+
+        Args:
+            sampler: Episodic sampler exposing ``get_task``.
+            num_tasks: Number of tasks to sample.
+            forward_batch_size: Optional tasks per batched forward pass.
+        """
         return self.evaluator.evaluate_sampler_loss_and_metrics(
             sampler,
             num_tasks,
@@ -780,7 +1020,13 @@ class FewShotPainLearner:
 
     @staticmethod
     def _set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
-        """Update sampler task size in-place for temporary held-out evaluation sweeps."""
+        """Update sampler task size in place.
+
+        Args:
+            sampler: Episodic sampler with mutable k/q fields.
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+        """
         EpisodeEvaluationService.set_sampler_task_size(
             sampler,
             k_shot=k_shot,
@@ -796,7 +1042,15 @@ class FewShotPainLearner:
         q_query: int,
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
-        """Evaluate sampler metrics with a temporary k-shot/q-query override."""
+        """Evaluate sampler metrics with temporary task size.
+
+        Args:
+            sampler: Episodic sampler with mutable k/q fields.
+            num_tasks: Number of tasks to sample.
+            k_shot: Temporary support samples per class.
+            q_query: Temporary query samples per class.
+            forward_batch_size: Optional tasks per batched forward pass.
+        """
         return self.evaluator.evaluate_sampler_loss_and_metrics_at_task_size(
             sampler,
             num_tasks=num_tasks,
@@ -813,7 +1067,14 @@ class FewShotPainLearner:
         k_shot: int,
         q_query: int,
     ) -> list[dict]:
-        """Sample held-out tasks with a temporary k-shot/q-query override."""
+        """Sample held-out tasks with temporary task size.
+
+        Args:
+            sampler: Episodic sampler with mutable k/q fields.
+            num_tasks: Number of tasks to sample.
+            k_shot: Temporary support samples per class.
+            q_query: Temporary query samples per class.
+        """
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
         self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
@@ -834,7 +1095,14 @@ class FewShotPainLearner:
         k_shot: int,
         q_query: int,
     ) -> list[float]:
-        """Run adaptation on tasks drawn with temporary k-shot/q-query override."""
+        """Run adaptation using temporary task size.
+
+        Args:
+            sampler: Held-out episodic sampler.
+            adaptation_steps: Number of adaptation updates.
+            k_shot: Temporary support samples per class.
+            q_query: Temporary query samples per class.
+        """
         return self.adaptation_service.adapt_on_sampler_at_task_size(
             sampler,
             adaptation_steps=adaptation_steps,
@@ -843,7 +1111,12 @@ class FewShotPainLearner:
         )
 
     def _save_model_architecture(self, sample_task: dict, output_path: str) -> str:
-        """Build model and save model architecture summaries to a text file."""
+        """Build the model and save architecture summaries.
+
+        Args:
+            sample_task: Task dictionary used to build model variables.
+            output_path: Output path for the text summary.
+        """
         return self.architecture_writer.save_model_architecture(
             sample_task,
             output_path,
@@ -851,6 +1124,11 @@ class FewShotPainLearner:
 
     @staticmethod
     def _format_seconds(seconds: float) -> str:
+        """Format elapsed seconds as a compact human-readable string.
+
+        Args:
+            seconds: Duration in seconds.
+        """
         seconds = max(0, int(round(seconds)))
         hours, remainder = divmod(seconds, 3600)
         minutes, secs = divmod(remainder, 60)
@@ -869,6 +1147,15 @@ class FewShotPainLearner:
         heldout_metrics: dict,
         elapsed_seconds: float,
     ) -> None:
+        """Log a compact train/validation/held-out composite summary.
+
+        Args:
+            prefix: Log message prefix.
+            train_metrics: Training metric dictionary.
+            val_metrics: Validation metric dictionary.
+            heldout_metrics: Held-out metric dictionary.
+            elapsed_seconds: Runtime used in the summary.
+        """
         composite_accuracy = float(
             np.mean(
                 [
@@ -896,7 +1183,12 @@ class FewShotPainLearner:
         *,
         title: str,
     ) -> None:
-        """Log aggregate cross-validation metrics in the same format as final summary."""
+        """Log aggregate cross-validation metrics.
+
+        Args:
+            cv_results: Cross-validation result payload.
+            title: Header title for the log block.
+        """
         self.logger.info(f"\n{'=' * 60}")
         self.logger.info(title)
         self.logger.info(f"{'=' * 60}")
@@ -958,6 +1250,13 @@ class FewShotPainLearner:
         prefix: str,
         metrics: dict,
     ) -> None:
+        """Append similarity or CAN diagnostics to a bucket.
+
+        Args:
+            bucket: Result dictionary receiving metric values.
+            prefix: Metric prefix such as ``zero_shot`` or ``k_shot``.
+            metrics: Evaluation metric dictionary.
+        """
         if "can_score_margin" in metrics:
             bucket[f"{prefix}_can_true_class_scores"].append(
                 metrics["can_true_class_score"]
@@ -985,6 +1284,17 @@ class FewShotPainLearner:
         zero_shot_metrics: dict,
         k_shot_metrics: dict,
     ) -> str | None:
+        """Write per-fold CAN alignment summary CSV.
+
+        Args:
+            progress_file: Fold progress CSV path used to derive output path.
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+            zero_shot_metrics: Zero-shot evaluation metrics.
+            k_shot_metrics: Post-adaptation evaluation metrics.
+        """
         if getattr(self.config, "attention_mode", "none") != "can":
             return None
         if "can_mean_alignment" not in zero_shot_metrics:
@@ -1056,6 +1366,17 @@ class FewShotPainLearner:
         zero_shot_task_batch: list[dict],
         k_shot_task_batch: list[dict],
     ) -> str | None:
+        """Write per-sample CAN diagnostic statistics.
+
+        Args:
+            progress_file: Fold progress CSV path used to derive output path.
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+            zero_shot_task_batch: Tasks evaluated before adaptation.
+            k_shot_task_batch: Tasks evaluated after adaptation.
+        """
         if getattr(self.config, "attention_mode", "none") != "can":
             return None
 
@@ -1129,8 +1450,12 @@ class FewShotPainLearner:
         save_model_architecture_first_run: bool = True,
         model_architecture_output_path: str = "outputs/model_architecture/model_summary.txt",
     ):
-        """
-        Train on all subjects using leave-one-subject-out cross-validation.
+        """Train with leave-one-subject-out cross-validation.
+
+        Args:
+            training_progress_output_dir: Directory for progress CSV files.
+            save_model_architecture_first_run: Whether to save architecture once.
+            model_architecture_output_path: Output path for architecture summary.
         """
         return self.training_runner.train(
             training_progress_output_dir=training_progress_output_dir,
@@ -1144,8 +1469,12 @@ class FewShotPainLearner:
         save_model_architecture_first_run: bool = True,
         model_architecture_output_path: str = "outputs/model_architecture/model_summary.txt",
     ):
-        """
-        Train on all subjects using leave-one-subject-out cross-validation.
+        """Run the internal LOSO training workflow.
+
+        Args:
+            training_progress_output_dir: Directory for progress CSV files.
+            save_model_architecture_first_run: Whether to save architecture once.
+            model_architecture_output_path: Output path for architecture summary.
         """
         num_epochs = max(1, int(self.config.num_epochs))
         tasks_per_epoch = max(1, int(self.config.tasks_per_epoch))

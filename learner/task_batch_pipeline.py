@@ -6,7 +6,11 @@ import tensorflow as tf
 
 
 class TaskBatchPipeline:
-    """Task sampling, stacking, prefetching, and tensor chunking utilities."""
+    """Provide task sampling, stacking, prefetching, and chunking utilities.
+
+    The pipeline keeps CPU task sampling and TensorFlow tensor conversion
+    separate from the learner orchestration code.
+    """
 
     def __init__(
         self,
@@ -15,6 +19,13 @@ class TaskBatchPipeline:
         embedding_batch_size: int,
         train_prefetch_batches: int,
     ):
+        """Initialize task-batch pipeline settings.
+
+        Args:
+            train_batch_size: Number of episodic tasks per optimizer update.
+            embedding_batch_size: Number of tasks per encoder-forward chunk.
+            train_prefetch_batches: Number of sampled batches to prefetch.
+        """
         self.train_batch_size = max(1, int(train_batch_size))
         self.embedding_batch_size = max(1, int(embedding_batch_size))
         self.train_prefetch_batches = max(1, int(train_prefetch_batches))
@@ -23,7 +34,11 @@ class TaskBatchPipeline:
     def stack_task_batch_numpy(
         task_batch: list[dict],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Pack a Python task list into dense NumPy arrays once per update."""
+        """Pack a Python task list into dense NumPy arrays.
+
+        Args:
+            task_batch: List of task dictionaries with support/query arrays.
+        """
         support_x_np = np.stack(
             [task_dict["support_X"] for task_dict in task_batch], axis=0
         )
@@ -43,7 +58,11 @@ class TaskBatchPipeline:
         cls,
         task_batch: list[dict],
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Pack a Python task list into dense batch tensors once per update."""
+        """Pack a Python task list into dense TensorFlow tensors.
+
+        Args:
+            task_batch: List of task dictionaries with uniform shapes.
+        """
         support_x_np, support_y_np, query_x_np, query_y_np = cls.stack_task_batch_numpy(
             task_batch
         )
@@ -60,7 +79,12 @@ class TaskBatchPipeline:
         sampler,
         batch_size: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Sample one task batch and pack it into dense NumPy arrays."""
+        """Sample one task batch and pack it into dense NumPy arrays.
+
+        Args:
+            sampler: Episodic sampler exposing ``get_task``.
+            batch_size: Number of tasks to sample.
+        """
         task_batch = [sampler.get_task() for _ in range(max(1, int(batch_size)))]
         return cls.stack_task_batch_numpy(task_batch)
 
@@ -69,7 +93,12 @@ class TaskBatchPipeline:
         sampler,
         tasks_per_epoch: int,
     ):
-        """Yield `(batch_size, stacked_numpy_batch)` with async CPU prefetch."""
+        """Yield stacked NumPy task batches with optional CPU prefetch.
+
+        Args:
+            sampler: Episodic sampler exposing ``get_task``.
+            tasks_per_epoch: Number of tasks to consume this epoch.
+        """
         batch_sizes = [
             min(self.train_batch_size, tasks_per_epoch - task_start)
             for task_start in range(0, tasks_per_epoch, self.train_batch_size)
@@ -134,7 +163,14 @@ class TaskBatchPipeline:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Yield task tensor chunks sized by embedding_batch_size in eager mode."""
+        """Yield task tensor chunks sized by ``embedding_batch_size``.
+
+        Args:
+            support_x_batch: Batched support windows.
+            support_y_batch: Batched support labels.
+            query_x_batch: Batched query windows.
+            query_y_batch: Batched query labels.
+        """
         total_tasks = int(tf.shape(support_x_batch)[0].numpy())
         if total_tasks <= 0:
             raise ValueError("task tensor batch must contain at least one task")
@@ -150,7 +186,11 @@ class TaskBatchPipeline:
 
     @staticmethod
     def task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
-        """Return True when support/query tensors share identical shapes across tasks."""
+        """Return whether support/query tensors share shapes across tasks.
+
+        Args:
+            task_batch: List of task dictionaries to inspect.
+        """
         if not task_batch:
             return False
         keys = ("support_X", "support_y", "query_X", "query_y")

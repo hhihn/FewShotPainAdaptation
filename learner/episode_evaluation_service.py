@@ -3,9 +3,20 @@ import tensorflow as tf
 
 
 class EpisodeEvaluationService:
-    """Aggregate episodic task metrics over task lists and samplers."""
+    """Aggregate episodic metrics over task lists and samplers.
+
+    The service centralizes evaluation-time TensorFlow calls, metric reduction,
+    CAN diagnostics, and temporary task-size overrides.
+    """
 
     def __init__(self, *, config, engine, task_pipeline):
+        """Initialize the episode evaluation service.
+
+        Args:
+            config: Active dataset/training configuration.
+            engine: Episodic learning engine used for forward passes.
+            task_pipeline: TaskBatchPipeline used for stacking batches.
+        """
         self.config = config
         self.engine = engine
         self.task_pipeline = task_pipeline
@@ -14,7 +25,12 @@ class EpisodeEvaluationService:
     def split_similarity_scores(
         similarity_scores: np.ndarray, y_true: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Split query-to-prototype similarities into intra/inter-class groups."""
+        """Split similarities into true-class and other-class groups.
+
+        Args:
+            similarity_scores: Query-by-class similarity matrix.
+            y_true: True query labels.
+        """
         row_indices = np.arange(len(y_true))
         intra_class_scores = similarity_scores[row_indices, y_true]
 
@@ -28,7 +44,12 @@ class EpisodeEvaluationService:
     def compute_similarity_metrics(
         intra_class_scores: np.ndarray, inter_class_scores: np.ndarray
     ) -> dict:
-        """Aggregate similarity statistics using the existing metric dict shape."""
+        """Aggregate intra/inter-class similarity statistics.
+
+        Args:
+            intra_class_scores: Similarities assigned to true classes.
+            inter_class_scores: Similarities assigned to non-true classes.
+        """
         intra_mean = float(np.mean(intra_class_scores))
         inter_mean = float(np.mean(inter_class_scores))
         return {
@@ -38,7 +59,12 @@ class EpisodeEvaluationService:
         }
 
     def compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-        """Compute accuracy, macro precision, macro recall, and macro F1."""
+        """Compute accuracy, macro precision, recall, and F1.
+
+        Args:
+            y_true: Ground-truth class labels.
+            y_pred: Predicted class labels.
+        """
         num_classes = self.config.n_way
         conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
         for truth, pred in zip(y_true, y_pred):
@@ -71,7 +97,11 @@ class EpisodeEvaluationService:
         }
 
     def evaluate_transductive_task_batch_metrics(self, task_batch: list[dict]) -> dict:
-        """Evaluate CAN transductive predictions without changing inductive metrics."""
+        """Evaluate CAN transductive predictions for a task batch.
+
+        Args:
+            task_batch: List of episodic task dictionaries.
+        """
         if getattr(self.config, "attention_mode", "none") != "can":
             return {}
         if int(getattr(self.config, "can_transductive_iterations", 0)) <= 0:
@@ -140,7 +170,13 @@ class EpisodeEvaluationService:
 
     @staticmethod
     def set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
-        """Update sampler task size in-place for temporary held-out evaluation sweeps."""
+        """Update sampler task size in-place for temporary sweeps.
+
+        Args:
+            sampler: Episodic sampler with mutable k/q fields.
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+        """
         sampler.k_shot = int(k_shot)
         sampler.q_query = int(q_query)
         if hasattr(sampler, "n_way"):
@@ -153,7 +189,12 @@ class EpisodeEvaluationService:
         *,
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
-        """Evaluate a task batch and aggregate classification/similarity metrics."""
+        """Evaluate a task batch and aggregate losses and metrics.
+
+        Args:
+            task_batch: List of episodic task dictionaries.
+            forward_batch_size: Optional number of tasks per batched forward pass.
+        """
         if not task_batch:
             raise ValueError("task_batch must contain at least one task")
 
@@ -374,7 +415,13 @@ class EpisodeEvaluationService:
         *,
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
-        """Evaluate average loss plus classification/similarity metrics on tasks."""
+        """Sample tasks and evaluate average loss plus metrics.
+
+        Args:
+            sampler: Episodic sampler exposing ``get_task``.
+            num_tasks: Number of tasks to sample.
+            forward_batch_size: Optional number of tasks per batched forward pass.
+        """
         return self.evaluate_task_batch_loss_and_metrics(
             [sampler.get_task() for _ in range(num_tasks)],
             forward_batch_size=forward_batch_size,
@@ -389,7 +436,15 @@ class EpisodeEvaluationService:
         q_query: int,
         forward_batch_size: int | None = None,
     ) -> tuple[float, dict]:
-        """Evaluate sampler metrics with a temporary k-shot/q-query override."""
+        """Evaluate sampler metrics with temporary k-shot/q-query values.
+
+        Args:
+            sampler: Episodic sampler with mutable k/q fields.
+            num_tasks: Number of tasks to sample.
+            k_shot: Temporary support samples per class.
+            q_query: Temporary query samples per class.
+            forward_batch_size: Optional batched-forward size.
+        """
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
         self.set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
@@ -405,7 +460,11 @@ class EpisodeEvaluationService:
     def evaluate_prototype_memory_task_metrics(
         self, task_dict: dict
     ) -> tuple[float, dict]:
-        """Evaluate one query-only task with learned prototype memory as support."""
+        """Evaluate one query-only task with prototype memory support.
+
+        Args:
+            task_dict: Query-only task dictionary with placeholder support tensors.
+        """
         original_support_mode = self.engine.model.can_support_mode
         original_triplet_weight = self.engine.triplet_loss_weight
         self.engine.model.can_support_mode = "learned_prototype_memory"
@@ -549,7 +608,13 @@ class EpisodeEvaluationService:
         phase: str,
         can_support_mode: str | None = None,
     ) -> list[dict]:
-        """Return one diagnostic row per evaluated query sample for CAN folds."""
+        """Collect one diagnostic row per evaluated query sample for CAN.
+
+        Args:
+            task_batch: List of episodic task dictionaries.
+            phase: Label written into each diagnostic row.
+            can_support_mode: Optional temporary CAN support mode override.
+        """
         if getattr(self.config, "attention_mode", "none") != "can":
             return []
 

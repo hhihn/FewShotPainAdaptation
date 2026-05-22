@@ -38,7 +38,11 @@ PROTOTYPE_PHASE2_LOSS_MODES = ("ce_can",)
 
 @dataclass
 class PainDatasetConfig:
-    """Configuration for the pain dataset."""
+    """Store dataset, episodic sampling, and model hyperparameters.
+
+    The dataclass normalizes coupled settings in ``__post_init__`` so downstream
+    loaders and learners can rely on a consistent configuration.
+    """
 
     # Data dimensions
     num_subjects: int = 52
@@ -184,6 +188,12 @@ class PainDatasetConfig:
     biovid_modalities: Tuple[str, ...] = ("GSR", "ECG", "EMG")
 
     def __post_init__(self) -> None:
+        """Normalize derived fields and validate configuration values.
+
+        Raises:
+            ValueError: If dataset, model, sampler, or training settings are
+                inconsistent or outside supported ranges.
+        """
         if self.subject_eval_tasks is not None:
             self.heldout_eval_tasks = int(self.subject_eval_tasks)
         self.encoder_backend = str(self.encoder_backend).strip().lower()

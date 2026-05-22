@@ -115,11 +115,18 @@ class SixWayKShotSampler:
         self.n_sensors = self.config.num_sensors
 
     def __len__(self) -> int:
-        """Number of tasks per epoch."""
+        """Return the number of tasks yielded per epoch.
+
+        The value is derived from the sampler mode and dataset configuration.
+        """
         return self.tasks_per_epoch
 
     def __iter__(self) -> Generator[Dict[str, np.ndarray], None, None]:
-        """Iterate over tasks."""
+        """Iterate over sampled episodic tasks.
+
+        Yields:
+            Task dictionaries containing support/query arrays and labels.
+        """
         for _ in range(self.tasks_per_epoch):
             yield self._sample_task()
 
@@ -130,7 +137,13 @@ class SixWayKShotSampler:
         use_base_index: bool,
         pool_subjects: bool = True,
     ) -> int:
-        """Return the smallest per-class sample pool for selected subjects."""
+        """Return the smallest per-class sample pool for selected subjects.
+
+        Args:
+            subjects: Subject IDs to inspect.
+            use_base_index: Whether to ignore window-shift expanded references.
+            pool_subjects: Whether samples are pooled across subjects per class.
+        """
         split_index = self.dataset._get_sampling_index_for_split(
             self.data_split,
             use_base_index=use_base_index,
@@ -152,7 +165,11 @@ class SixWayKShotSampler:
         )
 
     def _apply_eval_task_size_fallback(self) -> None:
-        """Use a fixed eval size when configured k+q exceeds raw eval samples."""
+        """Use fixed evaluation task sizes when configured sizes are too large.
+
+        Validation and test tasks fall back to stable k/q defaults when raw
+        per-class subject pools cannot satisfy the configured request.
+        """
         available_count = self._min_available_samples_per_class(
             self.active_subjects,
             use_base_index=True,
@@ -179,7 +196,11 @@ class SixWayKShotSampler:
         )
 
     def _sample_task(self) -> Dict[str, np.ndarray]:
-        """Sample a single task."""
+        """Sample one episodic task according to construction mode.
+
+        The selected construction mode controls whether support and query data
+        come from one subject, two subjects, or mixed subject pools.
+        """
         normalize_mode = self.config.task_normalize_mode
         use_base_index = self.mode in {"val", "test"}
         active_subjects = self.active_subjects_array
@@ -318,7 +339,12 @@ class SixWayKShotSampler:
     def _maybe_report_task_size_mismatch(
         self, task: Dict[str, np.ndarray], requested_subject: Optional[int]
     ) -> None:
-        """Warn once per mismatch pattern when effective support/query sizes differ."""
+        """Warn once when effective support/query sizes differ from requested sizes.
+
+        Args:
+            task: Sampled task dictionary.
+            requested_subject: Explicit subject requested by the caller, if any.
+        """
         support_y = np.asarray(task["support_y"], dtype=np.int32)
         query_y = np.asarray(task["query_y"], dtype=np.int32)
 
@@ -416,6 +442,10 @@ class SixWayKShotSampler:
         }
 
         def generator():
+            """Yield task dictionaries matching the TensorFlow output signature.
+
+            Values are cast to TensorFlow-compatible dtypes before yielding.
+            """
             for task in self:
                 yield {
                     "support_X": task["support_X"].astype(np.float32),
@@ -449,6 +479,11 @@ class SixWayKShotSampler:
         modality_names = self.config.modality_names
 
         def generator():
+            """Yield modality-split task dictionaries for TensorFlow datasets.
+
+            Support and query tensors are split into one channel per configured
+            modality name.
+            """
             for task in self:
                 # Split by modality
                 support_modalities = {

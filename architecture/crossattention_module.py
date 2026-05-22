@@ -3,7 +3,11 @@ from tensorflow import keras
 
 
 class CrossAttentionModule(keras.layers.Layer):
-    """Task-conditioned cross attention over temporal support/query feature maps."""
+    """Apply task-conditioned cross attention to temporal feature maps.
+
+    The layer compares class prototype feature maps with query feature maps and
+    returns pairwise similarity scores plus the intermediate attention tensors.
+    """
 
     def __init__(
         self,
@@ -11,12 +15,24 @@ class CrossAttentionModule(keras.layers.Layer):
         meta_hidden_dim: int = 32,
         name: str = "cross_attention_module",
     ):
+        """Initialize the cross-attention module.
+
+        Args:
+            temperature: Softmax temperature for temporal attention weights.
+            meta_hidden_dim: Hidden width of the meta-kernel generator.
+            name: Keras layer name.
+        """
         super().__init__(name=name)
         self.temperature = float(temperature)
         self.meta_hidden_dim = int(meta_hidden_dim)
         self._built_temporal_shapes = None
 
     def build(self, input_shape):
+        """Create meta-kernel weights from static temporal feature shapes.
+
+        Args:
+            input_shape: Pair of prototype and query feature-map shapes.
+        """
         prototype_shape, query_shape = input_shape
         if prototype_shape[-2] is None or query_shape[-2] is None:
             raise ValueError(
@@ -69,6 +85,11 @@ class CrossAttentionModule(keras.layers.Layer):
 
     @staticmethod
     def _pair_descriptor(prototype_maps: tf.Tensor, query_maps: tf.Tensor) -> tf.Tensor:
+        """Build pair descriptors for every query/prototype combination.
+
+        Descriptors concatenate prototype summaries, query summaries, absolute
+        differences, and elementwise products for the meta-kernel network.
+        """
         proto_summary = tf.reduce_mean(prototype_maps, axis=2)
         query_summary = tf.reduce_mean(query_maps, axis=2)
         proto_pair = proto_summary[:, tf.newaxis, :, :]
@@ -104,6 +125,11 @@ class CrossAttentionModule(keras.layers.Layer):
     def _meta_kernels(
         self, prototype_maps: tf.Tensor, query_maps: tf.Tensor
     ) -> tuple[tf.Tensor, tf.Tensor]:
+        """Generate prototype-side and query-side temporal kernels.
+
+        The generated kernels are conditioned on each query/prototype pair and
+        normalized over their corresponding temporal axes.
+        """
         descriptor = self._pair_descriptor(prototype_maps, query_maps)
         hidden = tf.nn.gelu(
             tf.einsum("bqcd,dh->bqch", descriptor, self.meta_w1) + self.meta_b1
@@ -125,6 +151,10 @@ class CrossAttentionModule(keras.layers.Layer):
             inputs: `(prototype_maps, query_maps)`, where prototype maps are
                 [tasks, classes, time, channels] and query maps are
                 [tasks, queries, time, channels].
+
+        Returns:
+            Dictionary containing similarity scores, distances, temporal
+            attentions, local logits, and the raw correlation tensor.
         """
         prototype_maps, query_maps = inputs
         temperature = tf.maximum(

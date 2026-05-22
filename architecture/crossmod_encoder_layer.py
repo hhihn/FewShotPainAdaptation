@@ -2,7 +2,11 @@ from tensorflow import keras
 
 
 class CrossModTransformerEncoderLayer(keras.layers.Layer):
-    """Pre-norm Transformer encoder layer for one physiological modality."""
+    """Encode one physiological modality with a pre-norm Transformer block.
+
+    The block applies self-attention and a feed-forward projection with residual
+    connections while preserving the temporal feature-map shape.
+    """
 
     def __init__(
         self,
@@ -13,6 +17,16 @@ class CrossModTransformerEncoderLayer(keras.layers.Layer):
         ff_activation: str,
         name: str,
     ):
+        """Initialize the modality-specific Transformer encoder layer.
+
+        Args:
+            input_dim: Channel dimension of the temporal feature map.
+            num_heads: Number of self-attention heads.
+            hidden_dim: Hidden width of the feed-forward sublayer.
+            dropout_rate: Dropout rate for attention and feed-forward outputs.
+            ff_activation: Activation used in the feed-forward sublayer.
+            name: Keras layer name and prefix for child layers.
+        """
         super().__init__(name=name)
         self.input_dim = int(input_dim)
         self.num_heads = int(num_heads)
@@ -52,6 +66,12 @@ class CrossModTransformerEncoderLayer(keras.layers.Layer):
         )
 
     def call(self, x, training=False):
+        """Apply self-attention and feed-forward updates to a feature map.
+
+        Args:
+            x: Tensor with shape [batch, time, channels].
+            training: Whether dropout should run in training mode.
+        """
         attention_input = self.attention_norm(x)
         attention_output = self.attention(
             attention_input,

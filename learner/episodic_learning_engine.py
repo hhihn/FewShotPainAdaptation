@@ -8,9 +8,18 @@ from architecture.mulitmodal_proto_net import MultimodalPrototypicalNetwork
 
 
 class EpisodicLearningEngine:
-    """TensorFlow model lifecycle and episodic train/eval tensor execution."""
+    """Manage TensorFlow model lifecycle and episodic tensor execution.
+
+    The engine owns model construction, optimizer state, compiled train/eval
+    steps, and low-level loss computations for the learner facade.
+    """
 
     def __init__(self, learner):
+        """Initialize the engine around a learner facade.
+
+        Args:
+            learner: FewShotPainLearner instance providing config and services.
+        """
         self.learner = learner
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
@@ -19,26 +28,53 @@ class EpisodicLearningEngine:
         self._initial_optimizer_variables = None
 
     def __getattr__(self, name):
+        """Delegate unknown attributes to the learner facade.
+
+        Args:
+            name: Attribute name requested on the engine.
+        """
         return getattr(self.learner, name)
 
     @property
     def model(self):
+        """Return the active learner model.
+
+        The property keeps engine code synchronized with the facade state.
+        """
         return self.learner.model
 
     @model.setter
     def model(self, value):
+        """Set the active learner model.
+
+        Args:
+            value: Keras model instance or None.
+        """
         self.learner.model = value
 
     @property
     def optimizer(self):
+        """Return the active optimizer.
+
+        The optimizer is stored on the learner facade.
+        """
         return self.learner.optimizer
 
     @optimizer.setter
     def optimizer(self, value):
+        """Set the active optimizer.
+
+        Args:
+            value: Keras optimizer instance or None.
+        """
         self.learner.optimizer = value
 
     def augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
-        """Apply training-only signal augmentation configured for episodic updates."""
+        """Apply training-only signal augmentation to input windows.
+
+        Args:
+            x: Input tensor to augment.
+        """
         if self.gaussian_noise_std <= 0:
             return x
         noise = keras.random.normal(
@@ -51,7 +87,11 @@ class EpisodicLearningEngine:
         return x + noise
 
     def release_model_resources(self, clear_session: bool = True) -> None:
-        """Drop TensorFlow model/optimizer references and optionally clear Keras state."""
+        """Release model, optimizer, and compiled-function references.
+
+        Args:
+            clear_session: Whether to clear the global Keras backend session.
+        """
         self._compiled_train_batch_step = None
         self._compiled_eval_batch_step = None
         self._compiled_prototype_memory_batch_step = None
@@ -67,7 +107,11 @@ class EpisodicLearningEngine:
         gc.collect()
 
     def rebuild_model(self, clear_session: bool = True) -> None:
-        """Build a fresh model/optimizer, optionally clearing stale TF graph state."""
+        """Build a fresh model and optimizer for the current config.
+
+        Args:
+            clear_session: Whether to release existing TensorFlow graph state first.
+        """
         if clear_session:
             self.release_model_resources(clear_session=True)
 
@@ -121,7 +165,11 @@ class EpisodicLearningEngine:
         self.capture_initial_model_state()
 
     def build_learning_rate(self):
-        """Return the configured scalar LR or Keras schedule for optimizer updates."""
+        """Return the configured learning-rate object.
+
+        Constant schedules return a scalar; cosine schedules return a Keras
+        learning-rate schedule.
+        """
         schedule_name = str(getattr(self.config, "lr_schedule", "constant")).lower()
         if schedule_name == "constant":
             return self.learning_rate
@@ -143,7 +191,11 @@ class EpisodicLearningEngine:
     def make_dummy_episode_tensors(
         self,
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Create one configured episode to build model and optimizer variables."""
+        """Create one dummy episode for variable initialization.
+
+        Returns:
+            Support windows, support labels, query windows, and query labels.
+        """
         class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)
         support_y = tf.repeat(class_ids, repeats=int(self.config.k_shot))
         query_y = tf.repeat(class_ids, repeats=int(self.config.q_query))
@@ -166,7 +218,11 @@ class EpisodicLearningEngine:
         return support_x, support_y, query_x, query_y
 
     def initialize_model_and_optimizer_variables(self) -> None:
-        """Build model weights and optimizer slot variables without training."""
+        """Build model weights and optimizer slot variables without training.
+
+        A dummy forward pass initializes model variables and optional CAN
+        prototype-memory variables before optimizer slots are built.
+        """
         support_x, support_y, query_x, _ = self.make_dummy_episode_tensors()
         self.model.forward_episode(
             support_x=support_x,
@@ -191,7 +247,11 @@ class EpisodicLearningEngine:
 
     @staticmethod
     def snapshot_variables(variables: list[tf.Variable]) -> list[tf.Tensor]:
-        """Return immutable tensor snapshots for a variable list."""
+        """Return immutable tensor snapshots for variables.
+
+        Args:
+            variables: Variables to copy.
+        """
         return [tf.identity(variable) for variable in variables]
 
     @staticmethod
@@ -201,7 +261,13 @@ class EpisodicLearningEngine:
         *,
         label: str,
     ) -> None:
-        """Assign a previously captured snapshot back into matching variables."""
+        """Assign a captured snapshot back into matching variables.
+
+        Args:
+            variables: Variables to restore.
+            snapshot: Tensor values captured earlier.
+            label: Human-readable label for error messages.
+        """
         if len(variables) != len(snapshot):
             raise RuntimeError(
                 f"Cannot restore {label}: variable count changed from "
@@ -211,14 +277,20 @@ class EpisodicLearningEngine:
             variable.assign(value)
 
     def capture_initial_model_state(self) -> None:
-        """Capture the post-build untrained model and optimizer state."""
+        """Capture post-build untrained model and optimizer state.
+
+        The captured state is reused to reset each LOSO fold without retracing.
+        """
         self._initial_model_weights = self.snapshot_variables(self.model.weights)
         self._initial_optimizer_variables = self.snapshot_variables(
             self.optimizer.variables
         )
 
     def reset_model_state_for_new_fold(self) -> None:
-        """Restore fold-start weights and optimizer state without retracing functions."""
+        """Restore fold-start model and optimizer state.
+
+        The restore avoids rebuilding compiled TensorFlow functions between folds.
+        """
         if (
             self._initial_model_weights is None
             or self._initial_optimizer_variables is None
@@ -238,7 +310,11 @@ class EpisodicLearningEngine:
         )
 
     def build_compiled_train_batch_step(self) -> None:
-        """Build a compiled train-step function bound to current model/optimizer vars."""
+        """Build the compiled batched train-step function.
+
+        The compiled function is also mirrored onto the learner facade for
+        backwards-compatible access.
+        """
         self._compiled_train_batch_step = tf.function(
             self._train_batch_step_compiled_impl,
             reduce_retracing=True,
@@ -268,7 +344,10 @@ class EpisodicLearningEngine:
         self.learner._compiled_train_batch_step = self._compiled_train_batch_step
 
     def build_compiled_eval_batch_step(self) -> None:
-        """Build a compiled evaluation function for batches of episodic tasks."""
+        """Build the compiled batched evaluation function.
+
+        The input signature permits variable support/query counts for evaluation.
+        """
         self._compiled_eval_batch_step = tf.function(
             self._eval_task_batch_step_compiled_impl,
             reduce_retracing=True,
@@ -288,7 +367,10 @@ class EpisodicLearningEngine:
         self.learner._compiled_eval_batch_step = self._compiled_eval_batch_step
 
     def build_compiled_prototype_memory_batch_step(self) -> None:
-        """Build a compiled phase-2 learned-prototype update function."""
+        """Build the compiled learned-prototype phase-2 update function.
+
+        This function updates only prototype-memory phase variables.
+        """
         self._compiled_prototype_memory_batch_step = tf.function(
             self._train_prototype_memory_batch_step_compiled_impl,
             reduce_retracing=True,
@@ -320,7 +402,11 @@ class EpisodicLearningEngine:
         )
 
     def compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
-        """Return regularization losses added by submodules, or zero if absent."""
+        """Return regularization losses added by submodules.
+
+        Args:
+            dtype: Output dtype for the summed auxiliary loss.
+        """
         if not self.model.losses:
             return tf.constant(0.0, dtype=dtype)
         return tf.add_n([tf.cast(loss, dtype) for loss in self.model.losses])
@@ -331,7 +417,13 @@ class EpisodicLearningEngine:
         tape: tf.GradientTape,
         variables: list[tf.Variable] | None = None,
     ) -> tf.Tensor:
-        """Apply gradients for the current model update."""
+        """Apply gradients for the current model update.
+
+        Args:
+            loss: Scalar loss tensor.
+            tape: Active gradient tape.
+            variables: Optional restricted variable list to update.
+        """
         trainable_variables = (
             list(self.model.trainable_variables) if variables is None else list(variables)
         )
@@ -366,7 +458,10 @@ class EpisodicLearningEngine:
         return loss
 
     def prototype_phase_trainable_variables(self) -> list[tf.Variable]:
-        """Variables updated during learned-prototype phase-2 fine-tuning."""
+        """Return variables updated during prototype-memory fine-tuning.
+
+        The encoder is intentionally excluded from this phase.
+        """
         variables: list[tf.Variable] = [self.model.logit_scale]
         if getattr(self.model, "prototype_memory", None) is not None:
             variables.extend(self.model.prototype_memory.trainable_variables)
@@ -385,7 +480,12 @@ class EpisodicLearningEngine:
     def compute_batch_all_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Compute BatchAllTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        """Compute batch-all triplet loss with cosine distance.
+
+        Args:
+            embeddings: Embeddings for one episode.
+            labels: Class labels aligned with embeddings.
+        """
         if self.triplet_loss_weight <= 0:
             return tf.constant(0.0, dtype=embeddings.dtype)
 
@@ -431,7 +531,12 @@ class EpisodicLearningEngine:
     def compute_batch_hard_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Compute BatchHardTripletLoss using cosine distance d(a, b)=1-cos(a, b)."""
+        """Compute batch-hard triplet loss with cosine distance.
+
+        Args:
+            embeddings: Embeddings for one episode.
+            labels: Class labels aligned with embeddings.
+        """
         if self.triplet_loss_weight <= 0:
             return tf.constant(0.0, dtype=embeddings.dtype)
 
@@ -484,7 +589,12 @@ class EpisodicLearningEngine:
     def compute_triplet_center_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Compute Triplet-Center Loss with trainable per-class centers."""
+        """Compute triplet-center loss with trainable class centers.
+
+        Args:
+            embeddings: Embeddings for one episode.
+            labels: Class labels aligned with embeddings.
+        """
         if (
             self.triplet_loss_weight <= 0
             or getattr(self.model, "triplet_centers", None) is None
@@ -532,7 +642,12 @@ class EpisodicLearningEngine:
         embeddings_batch: tf.Tensor,
         labels_batch: tf.Tensor,
     ) -> tf.Tensor:
-        """Compute Triplet-Center Loss for a batch of independent episodes."""
+        """Compute triplet-center losses for independent task batches.
+
+        Args:
+            embeddings_batch: Task-major embedding tensor.
+            labels_batch: Task-major label tensor.
+        """
         if (
             self.triplet_loss_weight <= 0
             or getattr(self.model, "triplet_centers", None) is None
@@ -584,7 +699,12 @@ class EpisodicLearningEngine:
     def compute_triplet_loss(
         self, embeddings: tf.Tensor, labels: tf.Tensor
     ) -> tf.Tensor:
-        """Dispatch configured triplet mining strategy over one episode."""
+        """Dispatch the configured triplet mining strategy.
+
+        Args:
+            embeddings: Embeddings for one episode.
+            labels: Class labels aligned with embeddings.
+        """
         if self.triplet_mining_strategy == "batch_hard":
             return self.compute_batch_hard_triplet_loss(embeddings, labels)
         if self.triplet_mining_strategy == "batch_all":
@@ -602,7 +722,13 @@ class EpisodicLearningEngine:
         support_y_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> dict[str, tf.Tensor]:
-        """Compute per-task objective tensors for normalized batched episode outputs."""
+        """Compute per-task objective tensors for batched outputs.
+
+        Args:
+            episode_outputs: Task-major model output dictionary.
+            support_y_batch: Batched support labels.
+            query_y_batch: Batched query labels.
+        """
         logits = episode_outputs["logits"]
         per_query_loss = keras.losses.sparse_categorical_crossentropy(
             query_y_batch,
@@ -720,7 +846,16 @@ class EpisodicLearningEngine:
         training: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run one task and compute classification plus optional embedding losses."""
+        """Run one task and compute losses.
+
+        Args:
+            support_x: Support windows.
+            support_y: Support labels.
+            query_x: Query windows.
+            query_y: Query labels.
+            training: Whether child layers run in training mode.
+            return_similarity_scores: Whether to include similarity scores.
+        """
         episode_outputs = self.model.forward_episode(
             support_x=support_x,
             support_y=support_y,
@@ -790,7 +925,16 @@ class EpisodicLearningEngine:
         training: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Run multiple tasks with batched embedding and per-task losses."""
+        """Run multiple tasks with batched encoding and per-task losses.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+            training: Whether child layers run in training mode.
+            return_similarity_scores: Whether to include similarity scores.
+        """
         episode_outputs = self.model.forward_episode_batch(
             support_x=support_x_batch,
             support_y=support_y_batch,
@@ -828,7 +972,14 @@ class EpisodicLearningEngine:
         return outputs
 
     def train_step(self, support_x, support_y, query_x, query_y):
-        """Single training step on one task."""
+        """Run one optimizer update on a single episodic task.
+
+        Args:
+            support_x: Support windows.
+            support_y: Support labels.
+            query_x: Query windows.
+            query_y: Query labels.
+        """
         with tf.GradientTape() as tape:
             task_outputs = self.forward_task(
                 support_x=support_x,
@@ -850,7 +1001,14 @@ class EpisodicLearningEngine:
         return loss, accuracy
 
     def evaluate_task(self, support_x, support_y, query_x, query_y):
-        """Evaluate on one task without updating weights."""
+        """Evaluate one task without updating weights.
+
+        Args:
+            support_x: Support windows.
+            support_y: Support labels.
+            query_x: Query windows.
+            query_y: Query labels.
+        """
         task_outputs = self.forward_task(
             support_x=support_x,
             support_y=support_y,
@@ -875,7 +1033,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Compiled evaluation over vectorized chunks of episodic tasks."""
+        """Evaluate a task batch inside a compiled TensorFlow graph.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         losses = tf.TensorArray(
             tf.float32, size=0, dynamic_size=True, infer_shape=False
         )
@@ -926,6 +1091,11 @@ class EpisodicLearningEngine:
         )
 
         def _condition(task_start, *_):
+            """Return whether compiled eval loop has remaining tasks.
+
+            Args:
+                task_start: Current task offset.
+            """
             return task_start < total_tasks
 
         def _body(
@@ -946,6 +1116,12 @@ class EpisodicLearningEngine:
             can_best_other_scores,
             can_score_margins,
         ):
+            """Evaluate one compiled task chunk and append metric tensors.
+
+            Args:
+                task_start: Current task offset.
+                chunk_index: TensorArray write index for this chunk.
+            """
             task_end = tf.minimum(task_start + chunk_size, total_tasks)
             task_outputs = self.forward_task_batch(
                 support_x_batch=support_x_batch[task_start:task_end],
@@ -1057,7 +1233,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Compiled optimizer update over vectorized chunks of episodic tasks."""
+        """Run a compiled optimizer update over episodic task chunks.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         with tf.GradientTape() as tape:
             losses = tf.TensorArray(
                 tf.float32, size=0, dynamic_size=True, infer_shape=False
@@ -1091,6 +1274,11 @@ class EpisodicLearningEngine:
             )
 
             def _condition(task_start, *_):
+                """Return whether compiled train loop has remaining tasks.
+
+                Args:
+                    task_start: Current task offset.
+                """
                 return task_start < total_tasks
 
             def _body(
@@ -1105,6 +1293,12 @@ class EpisodicLearningEngine:
                 can_global_losses,
                 can_margin_losses,
             ):
+                """Train-forward one task chunk and append metric tensors.
+
+                Args:
+                    task_start: Current task offset.
+                    chunk_index: TensorArray write index for this chunk.
+                """
                 task_end = tf.minimum(task_start + chunk_size, total_tasks)
                 support_x_chunk = self.augment_training_inputs(
                     support_x_batch[task_start:task_end]
@@ -1202,7 +1396,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Compiled phase-2 update using learned prototype memory as support."""
+        """Run a compiled phase-2 learned-prototype update.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         if not getattr(self.model, "can_enabled", False):
             raise ValueError("Prototype-memory fine-tuning requires CAN to be enabled")
         original_support_mode = self.model.can_support_mode
@@ -1261,7 +1462,11 @@ class EpisodicLearningEngine:
 
     @staticmethod
     def mean_concat(tensor_parts: list[tf.Tensor]) -> tf.Tensor:
-        """Mean over rank-1 tensors collected from task chunks."""
+        """Return the mean over rank-1 tensors from task chunks.
+
+        Args:
+            tensor_parts: List of tensors to concatenate before reducing.
+        """
         return tf.reduce_mean(tf.concat(tensor_parts, axis=0))
 
     def augment_training_task_chunk(
@@ -1269,7 +1474,12 @@ class EpisodicLearningEngine:
         support_x_chunk: tf.Tensor,
         query_x_chunk: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Apply train augmentation while preserving legacy single-task shapes."""
+        """Apply training augmentation to one task chunk.
+
+        Args:
+            support_x_chunk: Task-major support windows.
+            query_x_chunk: Task-major query windows.
+        """
         task_count = int(tf.shape(support_x_chunk)[0].numpy())
         if task_count == 1:
             return (
@@ -1291,7 +1501,16 @@ class EpisodicLearningEngine:
         training: bool,
         return_similarity_scores: bool = False,
     ) -> dict[str, tf.Tensor]:
-        """Forward one eager task chunk and normalize outputs to task-major tensors."""
+        """Forward one eager chunk and normalize outputs to task-major tensors.
+
+        Args:
+            support_x_chunk: Task-major support windows.
+            support_y_chunk: Task-major support labels.
+            query_x_chunk: Task-major query windows.
+            query_y_chunk: Task-major query labels.
+            training: Whether child layers run in training mode.
+            return_similarity_scores: Whether to include similarity scores.
+        """
         task_count = int(tf.shape(support_x_chunk)[0].numpy())
         if task_count == 1:
             task_outputs = self.forward_task(
@@ -1344,7 +1563,12 @@ class EpisodicLearningEngine:
         chunk_outputs: dict[str, tf.Tensor],
         query_y_chunk: tf.Tensor,
     ):
-        """Return per-task train losses and accuracies for one normalized chunk."""
+        """Return per-task train losses and accuracies for one chunk.
+
+        Args:
+            chunk_outputs: Task-major output dictionary.
+            query_y_chunk: Task-major query labels.
+        """
         logits = chunk_outputs["logits"]
         predictions = tf.argmax(logits, axis=2, output_type=tf.int32)
         accuracies = tf.reduce_mean(
@@ -1367,7 +1591,12 @@ class EpisodicLearningEngine:
         similarity_scores: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Split batched query-to-prototype scores into intra/inter-class groups."""
+        """Split batched scores into true-class and other-class groups.
+
+        Args:
+            similarity_scores: Task-major query-by-class scores.
+            query_y_batch: Task-major query labels.
+        """
         query_y_batch = tf.cast(query_y_batch, tf.int32)
         task_count = tf.shape(query_y_batch)[0]
         query_size = tf.shape(query_y_batch)[1]
@@ -1396,7 +1625,12 @@ class EpisodicLearningEngine:
         chunk_outputs: dict[str, tf.Tensor],
         query_y_chunk: tf.Tensor,
     ):
-        """Return flattened eval losses, labels, predictions, and similarity groups."""
+        """Return flattened eval losses, labels, predictions, and scores.
+
+        Args:
+            chunk_outputs: Task-major output dictionary.
+            query_y_chunk: Task-major query labels.
+        """
         logits = chunk_outputs["logits"]
         pred = tf.argmax(logits, axis=2, output_type=tf.int32)
         intra_scores, inter_scores = self.split_batched_similarity_scores(
@@ -1430,7 +1664,12 @@ class EpisodicLearningEngine:
         similarity_scores: tf.Tensor,
         query_y_batch: tf.Tensor,
     ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Return true-class and strongest competing CAN scores."""
+        """Return true-class and strongest competing CAN scores.
+
+        Args:
+            similarity_scores: Task-major query-by-class scores.
+            query_y_batch: Task-major query labels.
+        """
         query_y_batch = tf.cast(query_y_batch, tf.int32)
         task_count = tf.shape(query_y_batch)[0]
         query_size = tf.shape(query_y_batch)[1]
@@ -1468,7 +1707,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Eager fallback for one optimizer update using a batch of tasks."""
+        """Run an eager optimizer update over a task batch.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         with tf.GradientTape() as tape:
             losses = []
             task_losses = []
@@ -1550,7 +1796,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Run compiled train step, with eager fallback if compilation fails."""
+        """Run the compiled train step with eager fallback.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         if self._compiled_train_batch_step is not None:
             try:
                 return self._compiled_train_batch_step(
@@ -1580,7 +1833,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Run compiled phase-2 update, with eager fallback if compilation fails."""
+        """Run compiled prototype-memory update with eager fallback.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         if self._compiled_prototype_memory_batch_step is not None:
             try:
                 return self._compiled_prototype_memory_batch_step(
@@ -1610,7 +1870,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Eager phase-2 update using learned prototype memory as the only support."""
+        """Run eager phase-2 update using prototype memory support.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         if not getattr(self.model, "can_enabled", False):
             raise ValueError("Prototype-memory fine-tuning requires CAN to be enabled")
         original_support_mode = self.model.can_support_mode
@@ -1674,7 +1941,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Eager fallback for task-batch evaluation without optimizer updates."""
+        """Run eager task-batch evaluation without optimizer updates.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         losses = []
         task_losses = []
         contrastive_losses = []
@@ -1767,7 +2041,14 @@ class EpisodicLearningEngine:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Run compiled task-batch eval, with eager fallback if compilation fails."""
+        """Run compiled task-batch evaluation with eager fallback.
+
+        Args:
+            support_x_batch: Task-major support windows.
+            support_y_batch: Task-major support labels.
+            query_x_batch: Task-major query windows.
+            query_y_batch: Task-major query labels.
+        """
         if self._compiled_eval_batch_step is not None:
             try:
                 (

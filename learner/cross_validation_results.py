@@ -4,7 +4,11 @@ from utils.training_progress_csv import TrainingProgressCSVWriter
 
 
 class CrossValidationResultRecorder:
-    """Own CSV progress writes and LOSO cross-validation result aggregation."""
+    """Own CSV progress writes and LOSO result aggregation.
+
+    The recorder keeps the nested result payload synchronized with progress CSV
+    events emitted during training, validation, adaptation, and held-out testing.
+    """
 
     def __init__(
         self,
@@ -14,6 +18,14 @@ class CrossValidationResultRecorder:
         csv_flush_every_events: int,
         logger,
     ):
+        """Initialize the result recorder.
+
+        Args:
+            heldout_eval_pairs: Held-out k/q task sizes to track separately.
+            training_progress_output_dir: Directory for per-fold progress CSVs.
+            csv_flush_every_events: Flush cadence for the progress writer.
+            logger: Logger used for aggregate summaries.
+        """
         self.heldout_eval_pairs = [
             (int(k_shot), int(q_query)) for k_shot, q_query in heldout_eval_pairs
         ]
@@ -27,9 +39,18 @@ class CrossValidationResultRecorder:
 
     @property
     def results(self) -> dict:
+        """Return the mutable cross-validation result dictionary.
+
+        Callers use this property to attach the final payload to reports.
+        """
         return self.cv_results
 
     def _build_initial_results(self) -> dict:
+        """Build the initial nested cross-validation result payload.
+
+        The payload contains aggregate fold lists, held-out task-size buckets,
+        progress file paths, and architecture metadata.
+        """
         return {
             "train_losses": [],
             "train_accuracies": [],
@@ -74,10 +95,22 @@ class CrossValidationResultRecorder:
 
     @staticmethod
     def size_key(k_shot: int, q_query: int) -> str:
+        """Return the stable key for a held-out task-size bucket.
+
+        Args:
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+        """
         return f"k{int(k_shot)}_q{int(q_query)}"
 
     @staticmethod
     def _build_size_bucket(k_shot: int, q_query: int) -> dict:
+        """Build an empty result bucket for one held-out task size.
+
+        Args:
+            k_shot: Support samples per class.
+            q_query: Query samples per class.
+        """
         return {
             "k_shot": int(k_shot),
             "q_query": int(q_query),
@@ -109,6 +142,12 @@ class CrossValidationResultRecorder:
         *,
         include_similarity_margin: bool = False,
     ) -> dict:
+        """Convert metric dictionaries into CSV event keyword arguments.
+
+        Args:
+            metrics: Evaluation metric dictionary.
+            include_similarity_margin: Whether to include non-CAN margin output.
+        """
         can_mode = "can_score_margin" in metrics
         event_kwargs = {
             "task_loss": metrics.get("task_loss"),
@@ -139,6 +178,13 @@ class CrossValidationResultRecorder:
 
     @staticmethod
     def _append_eval_diagnostics(bucket: dict, prefix: str, metrics: dict) -> None:
+        """Append similarity or CAN diagnostics to a result bucket.
+
+        Args:
+            bucket: Result dictionary receiving metric values.
+            prefix: Metric prefix such as ``zero_shot`` or ``k_shot``.
+            metrics: Evaluation metric dictionary.
+        """
         if "can_score_margin" in metrics:
             bucket[f"{prefix}_can_true_class_scores"].append(
                 metrics["can_true_class_score"]
@@ -163,6 +209,14 @@ class CrossValidationResultRecorder:
         loss: float,
         metrics: dict,
     ) -> None:
+        """Append one evaluation result to a result bucket.
+
+        Args:
+            bucket: Result dictionary receiving metric values.
+            prefix: Metric prefix such as ``zero_shot`` or ``k_shot``.
+            loss: Evaluation loss value.
+            metrics: Evaluation metric dictionary.
+        """
         bucket[f"{prefix}_losses"].append(loss)
         bucket[f"{prefix}_accuracies"].append(metrics["accuracy"])
         bucket[f"{prefix}_precisions"].append(metrics["precision"])
@@ -175,6 +229,12 @@ class CrossValidationResultRecorder:
         )
 
     def start_fold(self, *, fold_idx: int, test_subject: int) -> str:
+        """Start progress recording for one fold.
+
+        Args:
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+        """
         self.current_progress_file = self.csv_writer.start_fold(
             fold_idx=fold_idx,
             test_subject=test_subject,
@@ -182,6 +242,10 @@ class CrossValidationResultRecorder:
         return self.current_progress_file
 
     def close_fold(self) -> None:
+        """Close the active fold writer and record its CSV path.
+
+        The current progress file is appended to the result payload when present.
+        """
         self.csv_writer.close()
         if self.current_progress_file is not None:
             self.cv_results["training_progress_files"].append(
@@ -190,6 +254,11 @@ class CrossValidationResultRecorder:
         self.current_progress_file = None
 
     def set_model_architecture_file(self, architecture_path: str) -> None:
+        """Record the saved model architecture summary path.
+
+        Args:
+            architecture_path: Path to the architecture summary file.
+        """
         self.cv_results["model_architecture_file"] = architecture_path
 
     def write_train_update(
@@ -208,6 +277,22 @@ class CrossValidationResultRecorder:
         accuracy: float,
         can_margin_loss: float | None = None,
     ) -> None:
+        """Write one training progress update event.
+
+        Args:
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            epoch: Current epoch number.
+            epoch_total: Total epochs.
+            step: Current train step within the epoch.
+            step_total: Total train steps in the epoch.
+            loss: Total objective value.
+            task_loss: Supervised task loss value.
+            contrastive_loss: Contrastive auxiliary loss value.
+            triplet_loss: Triplet auxiliary loss value.
+            accuracy: Batch accuracy.
+            can_margin_loss: Optional CAN margin loss value.
+        """
         self.csv_writer.write_event(
             fold_idx=fold_idx,
             test_subject=test_subject,
@@ -236,6 +321,18 @@ class CrossValidationResultRecorder:
         loss: float,
         metrics: dict,
     ) -> None:
+        """Write one validation progress event.
+
+        Args:
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            epoch: Current epoch number.
+            epoch_total: Total epochs.
+            step: Current train step.
+            step_total: Total train steps.
+            loss: Validation loss.
+            metrics: Validation metric dictionary.
+        """
         self.csv_writer.write_event(
             fold_idx=fold_idx,
             test_subject=test_subject,
@@ -257,6 +354,15 @@ class CrossValidationResultRecorder:
         loss: float,
         metrics: dict,
     ) -> None:
+        """Write a generic metric event to the progress CSV.
+
+        Args:
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            event_type: Progress CSV event type.
+            loss: Event loss value.
+            metrics: Event metric dictionary.
+        """
         self.csv_writer.write_event(
             fold_idx=fold_idx,
             test_subject=test_subject,
@@ -273,6 +379,14 @@ class CrossValidationResultRecorder:
         event_type: str,
         adaptation_losses: list[float],
     ) -> float:
+        """Write an adaptation event and return mean adaptation loss.
+
+        Args:
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            event_type: Progress CSV event type.
+            adaptation_losses: Per-step adaptation losses.
+        """
         mean_loss = float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
         self.csv_writer.write_event(
             fold_idx=fold_idx,
@@ -292,6 +406,11 @@ class CrossValidationResultRecorder:
         k_shot_loss: float,
         k_shot_metrics: dict,
     ) -> dict:
+        """Record held-out results for one k/q task-size bucket.
+
+        Returns:
+            Compact summary dictionary for the evaluated task size.
+        """
         size_results = self.cv_results["heldout_eval_by_task_size"][size_key]
         self._append_eval_result(
             size_results,
@@ -327,6 +446,11 @@ class CrossValidationResultRecorder:
         k_shot_metrics: dict,
         run_adaptation: bool,
     ) -> None:
+        """Write legacy zero-shot/adaptation/k-shot summary events.
+
+        These events preserve the historical progress CSV shape expected by
+        plotting and reporting scripts.
+        """
         self.write_metric_event(
             fold_idx=fold_idx,
             test_subject=test_subject,
@@ -360,6 +484,17 @@ class CrossValidationResultRecorder:
         k_shot_loss: float,
         k_shot_metrics: dict,
     ) -> None:
+        """Append one fold's aggregate results to the CV payload.
+
+        Args:
+            fold_idx: One-based fold index.
+            test_subject: Held-out subject identifier.
+            fold_results: Training and validation histories for the fold.
+            zero_shot_loss: Held-out zero-shot loss.
+            zero_shot_metrics: Held-out zero-shot metrics.
+            k_shot_loss: Held-out post-adaptation loss.
+            k_shot_metrics: Held-out post-adaptation metrics.
+        """
         self.cv_results["train_losses"].append(np.mean(fold_results["train_losses"]))
         self.cv_results["train_accuracies"].append(
             np.mean(fold_results["train_accuracies"])
@@ -399,6 +534,15 @@ class CrossValidationResultRecorder:
         heldout_metrics: dict,
         elapsed_seconds: float,
     ) -> None:
+        """Log a compact train/validation/held-out composite summary.
+
+        Args:
+            prefix: Log message prefix.
+            train_metrics: Train metric dictionary.
+            val_metrics: Validation metric dictionary.
+            heldout_metrics: Held-out metric dictionary.
+            elapsed_seconds: Runtime used in the summary.
+        """
         composite_accuracy = float(
             np.mean(
                 [
@@ -421,6 +565,11 @@ class CrossValidationResultRecorder:
         )
 
     def log_cross_validation_aggregate(self, *, title: str) -> None:
+        """Log aggregate cross-validation summary statistics.
+
+        Args:
+            title: Section title for the aggregate log block.
+        """
         self.logger.info(f"\n{'=' * 60}")
         self.logger.info(title)
         self.logger.info(f"{'=' * 60}")
