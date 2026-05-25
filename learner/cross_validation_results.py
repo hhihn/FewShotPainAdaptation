@@ -17,6 +17,8 @@ class CrossValidationResultRecorder:
         training_progress_output_dir: str,
         csv_flush_every_events: int,
         logger,
+        validation_checkpoint_metric: str = "accuracy",
+        validation_checkpoint_mode: str = "auto",
     ):
         """Initialize the result recorder.
 
@@ -24,12 +26,16 @@ class CrossValidationResultRecorder:
             heldout_eval_pairs: Held-out k/q task sizes to track separately.
             training_progress_output_dir: Directory for per-fold progress CSVs.
             csv_flush_every_events: Flush cadence for the progress writer.
+            validation_checkpoint_metric: Metric tracked by validation checkpoints.
+            validation_checkpoint_mode: Optimization mode for validation checkpoints.
             logger: Logger used for aggregate summaries.
         """
         self.heldout_eval_pairs = [
             (int(k_shot), int(q_query)) for k_shot, q_query in heldout_eval_pairs
         ]
         self.logger = logger
+        self.validation_checkpoint_metric = validation_checkpoint_metric
+        self.validation_checkpoint_mode = validation_checkpoint_mode
         self.csv_writer = TrainingProgressCSVWriter(
             output_dir=training_progress_output_dir,
             flush_every_events=max(1, int(csv_flush_every_events)),
@@ -68,6 +74,11 @@ class CrossValidationResultRecorder:
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
+            "zero_shot_transductive_losses": [],
+            "zero_shot_transductive_accuracies": [],
+            "zero_shot_transductive_precisions": [],
+            "zero_shot_transductive_recalls": [],
+            "zero_shot_transductive_f1s": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
@@ -78,6 +89,11 @@ class CrossValidationResultRecorder:
             "k_shot_can_true_class_scores": [],
             "k_shot_can_best_other_scores": [],
             "k_shot_can_score_margins": [],
+            "k_shot_transductive_losses": [],
+            "k_shot_transductive_accuracies": [],
+            "k_shot_transductive_precisions": [],
+            "k_shot_transductive_recalls": [],
+            "k_shot_transductive_f1s": [],
             "heldout_eval_task_sizes": [
                 {"k_shot": int(k_shot), "q_query": int(q_query)}
                 for k_shot, q_query in self.heldout_eval_pairs
@@ -90,7 +106,15 @@ class CrossValidationResultRecorder:
                 for k_shot, q_query in self.heldout_eval_pairs
             },
             "training_progress_files": [],
+            "can_alignment_summary_files": [],
+            "can_sample_statistics_files": [],
             "model_architecture_file": None,
+            "validation_checkpoint_metric": self.validation_checkpoint_metric,
+            "validation_checkpoint_mode": self.validation_checkpoint_mode,
+            "validation_checkpoint_values": [],
+            "validation_checkpoint_epochs": [],
+            "validation_checkpoint_steps": [],
+            "validation_checkpoint_metrics": [],
         }
 
     @staticmethod
@@ -124,6 +148,11 @@ class CrossValidationResultRecorder:
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
+            "zero_shot_transductive_losses": [],
+            "zero_shot_transductive_accuracies": [],
+            "zero_shot_transductive_precisions": [],
+            "zero_shot_transductive_recalls": [],
+            "zero_shot_transductive_f1s": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
@@ -134,6 +163,11 @@ class CrossValidationResultRecorder:
             "k_shot_can_true_class_scores": [],
             "k_shot_can_best_other_scores": [],
             "k_shot_can_score_margins": [],
+            "k_shot_transductive_losses": [],
+            "k_shot_transductive_accuracies": [],
+            "k_shot_transductive_precisions": [],
+            "k_shot_transductive_recalls": [],
+            "k_shot_transductive_f1s": [],
         }
 
     @staticmethod
@@ -165,10 +199,25 @@ class CrossValidationResultRecorder:
             else metrics.get("inter_class_similarity"),
             "can_local_loss": metrics.get("can_local_loss"),
             "can_global_loss": None if can_mode else metrics.get("can_global_loss"),
-            "can_margin_loss": metrics.get("can_margin_loss"),
+            "can_margin_loss": metrics.get("can_margin_loss") if can_mode else None,
             "can_true_class_score": metrics.get("can_true_class_score"),
             "can_best_other_score": metrics.get("can_best_other_score"),
             "can_score_margin": metrics.get("can_score_margin"),
+            "transductive_loss": metrics.get("transductive_loss"),
+            "transductive_accuracy": metrics.get("transductive_accuracy"),
+            "transductive_precision": metrics.get("transductive_precision"),
+            "transductive_recall": metrics.get("transductive_recall"),
+            "transductive_f1": metrics.get("transductive_f1"),
+            "transductive_intra_class_similarity": metrics.get(
+                "transductive_intra_class_similarity"
+            ),
+            "transductive_inter_class_similarity": metrics.get(
+                "transductive_inter_class_similarity"
+            ),
+            "transductive_similarity_margin": metrics.get(
+                "transductive_similarity_margin"
+            ),
+            "transductive_selected_count": metrics.get("transductive_selected_count"),
         }
         if include_similarity_margin:
             event_kwargs["similarity_margin"] = (
@@ -227,6 +276,30 @@ class CrossValidationResultRecorder:
             prefix,
             metrics,
         )
+        CrossValidationResultRecorder._append_transductive_result(
+            bucket,
+            prefix,
+            metrics,
+        )
+
+    @staticmethod
+    def _append_transductive_result(bucket: dict, prefix: str, metrics: dict) -> None:
+        """Append optional CAN transductive metrics to a result bucket."""
+        if "transductive_accuracy" not in metrics:
+            return
+        bucket[f"{prefix}_transductive_losses"].append(
+            metrics["transductive_loss"]
+        )
+        bucket[f"{prefix}_transductive_accuracies"].append(
+            metrics["transductive_accuracy"]
+        )
+        bucket[f"{prefix}_transductive_precisions"].append(
+            metrics["transductive_precision"]
+        )
+        bucket[f"{prefix}_transductive_recalls"].append(
+            metrics["transductive_recall"]
+        )
+        bucket[f"{prefix}_transductive_f1s"].append(metrics["transductive_f1"])
 
     def start_fold(self, *, fold_idx: int, test_subject: int) -> str:
         """Start progress recording for one fold.
@@ -275,6 +348,8 @@ class CrossValidationResultRecorder:
         contrastive_loss: float,
         triplet_loss: float,
         accuracy: float,
+        can_local_loss: float | None = None,
+        can_global_loss: float | None = None,
         can_margin_loss: float | None = None,
     ) -> None:
         """Write one training progress update event.
@@ -291,6 +366,8 @@ class CrossValidationResultRecorder:
             contrastive_loss: Contrastive auxiliary loss value.
             triplet_loss: Triplet auxiliary loss value.
             accuracy: Batch accuracy.
+            can_local_loss: Optional CAN local loss value.
+            can_global_loss: Optional CAN global loss value.
             can_margin_loss: Optional CAN margin loss value.
         """
         self.csv_writer.write_event(
@@ -305,6 +382,8 @@ class CrossValidationResultRecorder:
             task_loss=task_loss,
             contrastive_loss=contrastive_loss,
             triplet_loss=triplet_loss,
+            can_local_loss=can_local_loss,
+            can_global_loss=can_global_loss,
             can_margin_loss=can_margin_loss,
             accuracy=accuracy,
         )
@@ -320,6 +399,9 @@ class CrossValidationResultRecorder:
         step_total: int,
         loss: float,
         metrics: dict,
+        checkpoint_metric: str | None = None,
+        checkpoint_value: float | None = None,
+        checkpoint_is_best: bool | None = None,
     ) -> None:
         """Write one validation progress event.
 
@@ -332,6 +414,9 @@ class CrossValidationResultRecorder:
             step_total: Total train steps.
             loss: Validation loss.
             metrics: Validation metric dictionary.
+            checkpoint_metric: Name of validation checkpoint metric.
+            checkpoint_value: Current checkpoint metric value.
+            checkpoint_is_best: Whether current checkpoint improved.
         """
         self.csv_writer.write_event(
             fold_idx=fold_idx,
@@ -343,6 +428,9 @@ class CrossValidationResultRecorder:
             step_total=step_total,
             loss=loss,
             **self._metric_event_kwargs(metrics, include_similarity_margin=True),
+            checkpoint_metric=checkpoint_metric,
+            checkpoint_value=checkpoint_value,
+            checkpoint_is_best=checkpoint_is_best,
         )
 
     def write_metric_event(
@@ -396,6 +484,31 @@ class CrossValidationResultRecorder:
         )
         return mean_loss
 
+    def record_validation_checkpoint(self, checkpoint_summary: dict) -> None:
+        """Append one fold's validation checkpoint summary."""
+        self.cv_results["validation_checkpoint_values"].append(
+            checkpoint_summary["value"]
+        )
+        self.cv_results["validation_checkpoint_epochs"].append(
+            checkpoint_summary["epoch"]
+        )
+        self.cv_results["validation_checkpoint_steps"].append(
+            checkpoint_summary["step"]
+        )
+        self.cv_results["validation_checkpoint_metrics"].append(
+            checkpoint_summary["metrics"]
+        )
+
+    def record_can_alignment_summary_file(self, path: str | None) -> None:
+        """Record a generated CAN alignment summary path when present."""
+        if path is not None:
+            self.cv_results["can_alignment_summary_files"].append(path)
+
+    def record_can_sample_statistics_file(self, path: str | None) -> None:
+        """Record a generated CAN sample statistics path when present."""
+        if path is not None:
+            self.cv_results["can_sample_statistics_files"].append(path)
+
     def record_heldout_size_result(
         self,
         *,
@@ -405,6 +518,8 @@ class CrossValidationResultRecorder:
         adaptation_losses: list[float],
         k_shot_loss: float,
         k_shot_metrics: dict,
+        zero_shot_task_batch: list[dict] | None = None,
+        k_shot_task_batch: list[dict] | None = None,
     ) -> dict:
         """Record held-out results for one k/q task-size bucket.
 
@@ -427,11 +542,13 @@ class CrossValidationResultRecorder:
         return {
             "zero_shot_loss": zero_shot_loss,
             "zero_shot_metrics": zero_shot_metrics,
+            "zero_shot_task_batch": zero_shot_task_batch or [],
             "adaptation_mean_loss": (
                 float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
             ),
             "k_shot_loss": k_shot_loss,
             "k_shot_metrics": k_shot_metrics,
+            "k_shot_task_batch": k_shot_task_batch or [],
         }
 
     def write_legacy_heldout_events(
@@ -587,6 +704,18 @@ class CrossValidationResultRecorder:
         self.logger.info(
             f"Average K-shot Loss: {np.mean(self.cv_results['k_shot_losses']):.4f}"
         )
+        if self.cv_results.get("zero_shot_transductive_accuracies"):
+            self.logger.info(
+                "Average Zero-shot Transductive Accuracy: "
+                f"{np.mean(self.cv_results['zero_shot_transductive_accuracies']):.4f} "
+                f"(±{np.std(self.cv_results['zero_shot_transductive_accuracies']):.4f})"
+            )
+        if self.cv_results.get("k_shot_transductive_accuracies"):
+            self.logger.info(
+                "Average K-shot Transductive Accuracy: "
+                f"{np.mean(self.cv_results['k_shot_transductive_accuracies']):.4f} "
+                f"(±{np.std(self.cv_results['k_shot_transductive_accuracies']):.4f})"
+            )
         if self.cv_results.get("zero_shot_can_score_margins"):
             self.logger.info(
                 "Average Zero-shot CAN Scores: "

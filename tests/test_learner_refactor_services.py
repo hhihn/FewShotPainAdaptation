@@ -1,9 +1,13 @@
 import unittest
+import csv
+import logging
+import tempfile
 from types import SimpleNamespace
 
 import numpy as np
 import tensorflow as tf
 
+from learner.cross_validation_results import CrossValidationResultRecorder
 from learner.episode_evaluation_service import EpisodeEvaluationService
 from learner.heldout_adaptation_service import HeldoutAdaptationService
 from learner.few_shot_pain_learner import FewShotPainLearner
@@ -122,6 +126,148 @@ class _FakeDatasetForSampler:
 
 
 class LearnerRefactorServiceTests(unittest.TestCase):
+    def _make_recorder(self):
+        tmp = tempfile.TemporaryDirectory()
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(2, 3)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="f1",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_cv_result_recorder"),
+        )
+        self.addCleanup(tmp.cleanup)
+        return recorder
+
+    def test_cv_result_recorder_initial_payload_contains_extended_keys(self):
+        recorder = self._make_recorder()
+        results = recorder.results
+        size_bucket = results["heldout_eval_by_task_size"]["k2_q3"]
+
+        for key in (
+            "zero_shot_transductive_accuracies",
+            "k_shot_transductive_accuracies",
+            "can_alignment_summary_files",
+            "can_sample_statistics_files",
+            "validation_checkpoint_values",
+            "validation_checkpoint_metrics",
+        ):
+            self.assertIn(key, results)
+        self.assertIn("zero_shot_transductive_accuracies", size_bucket)
+        self.assertIn("k_shot_transductive_accuracies", size_bucket)
+        self.assertEqual(results["validation_checkpoint_metric"], "f1")
+        self.assertEqual(results["validation_checkpoint_mode"], "max")
+
+    def test_cv_result_recorder_records_standard_diagnostics_and_transductive(self):
+        recorder = self._make_recorder()
+        metrics = {
+            "task_loss": 0.4,
+            "contrastive_loss": 0.1,
+            "triplet_loss": 0.2,
+            "can_local_loss": 0.05,
+            "can_global_loss": 0.03,
+            "accuracy": 0.75,
+            "precision": 0.7,
+            "recall": 0.8,
+            "f1": 0.74,
+            "intra_class_similarity": 0.9,
+            "inter_class_similarity": 0.2,
+            "transductive_loss": 0.35,
+            "transductive_accuracy": 0.8,
+            "transductive_precision": 0.81,
+            "transductive_recall": 0.79,
+            "transductive_f1": 0.8,
+        }
+
+        recorder.record_heldout_size_result(
+            size_key="k2_q3",
+            zero_shot_loss=0.5,
+            zero_shot_metrics=metrics,
+            adaptation_losses=[0.3, 0.2],
+            k_shot_loss=0.4,
+            k_shot_metrics=metrics,
+            zero_shot_task_batch=[{"id": "zero"}],
+            k_shot_task_batch=[{"id": "k"}],
+        )
+
+        bucket = recorder.results["heldout_eval_by_task_size"]["k2_q3"]
+        self.assertEqual(bucket["zero_shot_accuracies"], [0.75])
+        self.assertEqual(bucket["zero_shot_intra_class_similarities"], [0.9])
+        self.assertEqual(bucket["zero_shot_transductive_accuracies"], [0.8])
+        self.assertEqual(bucket["k_shot_transductive_f1s"], [0.8])
+
+    def test_cv_result_recorder_metric_kwargs_leave_non_can_margin_blank(self):
+        kwargs = CrossValidationResultRecorder._metric_event_kwargs(
+            {
+                "task_loss": 0.4,
+                "contrastive_loss": 0.1,
+                "triplet_loss": 0.2,
+                "can_local_loss": 0.05,
+                "can_global_loss": 0.03,
+                "can_margin_loss": 0.99,
+                "accuracy": 0.75,
+                "precision": 0.7,
+                "recall": 0.8,
+                "f1": 0.74,
+                "intra_class_similarity": 0.9,
+                "inter_class_similarity": 0.2,
+                "similarity_margin": 0.7,
+            },
+            include_similarity_margin=True,
+        )
+
+        self.assertEqual(kwargs["contrastive_loss"], 0.1)
+        self.assertEqual(kwargs["can_global_loss"], 0.03)
+        self.assertIsNone(kwargs["can_margin_loss"])
+        self.assertEqual(kwargs["similarity_margin"], 0.7)
+
+    def test_cv_result_recorder_writes_transductive_metrics_to_progress_csv(self):
+        recorder = self._make_recorder()
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=2)
+        recorder.write_metric_event(
+            fold_idx=1,
+            test_subject=2,
+            event_type="k_shot_summary_k2_q3",
+            loss=0.5,
+            metrics={
+                "task_loss": 0.4,
+                "contrastive_loss": 0.1,
+                "triplet_loss": 0.2,
+                "can_local_loss": 0.05,
+                "can_global_loss": 0.03,
+                "accuracy": 0.75,
+                "precision": 0.7,
+                "recall": 0.8,
+                "f1": 0.74,
+                "intra_class_similarity": 0.9,
+                "inter_class_similarity": 0.2,
+                "transductive_loss": 0.35,
+                "transductive_accuracy": 0.8,
+                "transductive_precision": 0.81,
+                "transductive_recall": 0.79,
+                "transductive_f1": 0.8,
+                "transductive_intra_class_similarity": 0.88,
+                "transductive_inter_class_similarity": 0.18,
+                "transductive_similarity_margin": 0.7,
+                "transductive_selected_count": 6,
+            },
+        )
+        recorder.close_fold()
+
+        with open(progress_file, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(rows[0]["event_type"], "k_shot_summary_k2_q3")
+        self.assertEqual(rows[0]["transductive_loss"], "0.35")
+        self.assertEqual(rows[0]["transductive_accuracy"], "0.8")
+        self.assertEqual(rows[0]["transductive_precision"], "0.81")
+        self.assertEqual(rows[0]["transductive_recall"], "0.79")
+        self.assertEqual(rows[0]["transductive_f1"], "0.8")
+        self.assertEqual(rows[0]["transductive_intra_class_similarity"], "0.88")
+        self.assertEqual(rows[0]["transductive_inter_class_similarity"], "0.18")
+        self.assertEqual(rows[0]["transductive_similarity_margin"], "0.7")
+        self.assertEqual(rows[0]["transductive_selected_count"], "6")
+
     def test_task_batch_pipeline_stacks_and_prefetches_batch_sizes(self):
         tasks = [
             {

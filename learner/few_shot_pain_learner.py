@@ -11,7 +11,7 @@ from data_loaders.pain_ds_config import PainDatasetConfig
 from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
 from utils.training_progress import TrainingProgressReporter
-from utils.training_progress_csv import TrainingProgressCSVWriter
+from learner.cross_validation_results import CrossValidationResultRecorder
 from learner.episodic_learning_engine import EpisodicLearningEngine
 from learner.episode_evaluation_service import EpisodeEvaluationService
 from learner.heldout_adaptation_service import HeldoutAdaptationService
@@ -1138,141 +1138,6 @@ class FewShotPainLearner:
             return f"{minutes}m {secs}s"
         return f"{secs}s"
 
-    def _log_composite_summary(
-        self,
-        *,
-        prefix: str,
-        train_metrics: dict,
-        val_metrics: dict,
-        heldout_metrics: dict,
-        elapsed_seconds: float,
-    ) -> None:
-        """Log a compact train/validation/held-out composite summary.
-
-        Args:
-            prefix: Log message prefix.
-            train_metrics: Training metric dictionary.
-            val_metrics: Validation metric dictionary.
-            heldout_metrics: Held-out metric dictionary.
-            elapsed_seconds: Runtime used in the summary.
-        """
-        composite_accuracy = float(
-            np.mean(
-                [
-                    train_metrics["accuracy"],
-                    val_metrics["accuracy"],
-                    heldout_metrics["accuracy"],
-                ]
-            )
-        )
-        self.logger.info(
-            f"{prefix}: "
-            f"composite={composite_accuracy:.4f}, "
-            f"train_acc={train_metrics['accuracy']:.4f}, "
-            f"val_acc={val_metrics['accuracy']:.4f}, "
-            f"heldout_acc={heldout_metrics['accuracy']:.4f}, "
-            f"train_loss={train_metrics['loss']:.4f}, "
-            f"val_loss={val_metrics['loss']:.4f}, "
-            f"heldout_loss={heldout_metrics['loss']:.4f}, "
-            f"elapsed_seconds={elapsed_seconds:.2f}"
-        )
-
-    def _log_cross_validation_aggregate(
-        self,
-        cv_results: dict,
-        *,
-        title: str,
-    ) -> None:
-        """Log aggregate cross-validation metrics.
-
-        Args:
-            cv_results: Cross-validation result payload.
-            title: Header title for the log block.
-        """
-        self.logger.info(f"\n{'=' * 60}")
-        self.logger.info(title)
-        self.logger.info(f"{'=' * 60}")
-        self.logger.info(
-            f"Average Zero-shot Accuracy: {np.mean(cv_results['zero_shot_accuracies']):.4f} "
-            f"(±{np.std(cv_results['zero_shot_accuracies']):.4f})"
-        )
-        self.logger.info(
-            f"Average K-shot Accuracy: {np.mean(cv_results['k_shot_accuracies']):.4f} "
-            f"(±{np.std(cv_results['k_shot_accuracies']):.4f})"
-        )
-        self.logger.info(
-            f"Average Zero-shot Loss: {np.mean(cv_results['zero_shot_losses']):.4f}"
-        )
-        self.logger.info(
-            f"Average K-shot Loss: {np.mean(cv_results['k_shot_losses']):.4f}"
-        )
-        if cv_results.get("zero_shot_transductive_accuracies"):
-            self.logger.info(
-                "Average Zero-shot Transductive Accuracy: "
-                f"{np.mean(cv_results['zero_shot_transductive_accuracies']):.4f} "
-                f"(±{np.std(cv_results['zero_shot_transductive_accuracies']):.4f})"
-            )
-        if cv_results.get("k_shot_transductive_accuracies"):
-            self.logger.info(
-                "Average K-shot Transductive Accuracy: "
-                f"{np.mean(cv_results['k_shot_transductive_accuracies']):.4f} "
-                f"(±{np.std(cv_results['k_shot_transductive_accuracies']):.4f})"
-            )
-        if cv_results.get("zero_shot_can_score_margins"):
-            self.logger.info(
-                "Average Zero-shot CAN Scores: "
-                f"true_class={np.mean(cv_results['zero_shot_can_true_class_scores']):.4f}, "
-                f"best_other={np.mean(cv_results['zero_shot_can_best_other_scores']):.4f}, "
-                f"margin={np.mean(cv_results['zero_shot_can_score_margins']):.4f}"
-            )
-            self.logger.info(
-                "Average K-shot CAN Scores: "
-                f"true_class={np.mean(cv_results['k_shot_can_true_class_scores']):.4f}, "
-                f"best_other={np.mean(cv_results['k_shot_can_best_other_scores']):.4f}, "
-                f"margin={np.mean(cv_results['k_shot_can_score_margins']):.4f}"
-            )
-        elif cv_results.get("zero_shot_intra_class_similarities"):
-            self.logger.info(
-                "Average Zero-shot Similarities: "
-                f"intra_class={np.mean(cv_results['zero_shot_intra_class_similarities']):.4f}, "
-                f"inter_class={np.mean(cv_results['zero_shot_inter_class_similarities']):.4f}"
-            )
-            self.logger.info(
-                "Average K-shot Similarities: "
-                f"intra_class={np.mean(cv_results['k_shot_intra_class_similarities']):.4f}, "
-                f"inter_class={np.mean(cv_results['k_shot_inter_class_similarities']):.4f}"
-            )
-        self.logger.info(f"{'=' * 60}\n")
-
-    @staticmethod
-    def _append_evaluation_diagnostics(
-        bucket: dict,
-        prefix: str,
-        metrics: dict,
-    ) -> None:
-        """Append similarity or CAN diagnostics to a bucket.
-
-        Args:
-            bucket: Result dictionary receiving metric values.
-            prefix: Metric prefix such as ``zero_shot`` or ``k_shot``.
-            metrics: Evaluation metric dictionary.
-        """
-        if "can_score_margin" in metrics:
-            bucket[f"{prefix}_can_true_class_scores"].append(
-                metrics["can_true_class_score"]
-            )
-            bucket[f"{prefix}_can_best_other_scores"].append(
-                metrics["can_best_other_score"]
-            )
-            bucket[f"{prefix}_can_score_margins"].append(metrics["can_score_margin"])
-        else:
-            bucket[f"{prefix}_intra_class_similarities"].append(
-                metrics["intra_class_similarity"]
-            )
-            bucket[f"{prefix}_inter_class_similarities"].append(
-                metrics["inter_class_similarity"]
-            )
-
     def _write_can_alignment_summary(
         self,
         *,
@@ -1493,95 +1358,15 @@ class FewShotPainLearner:
                 dedup_pairs.append(eval_pair)
         heldout_eval_pairs = dedup_pairs
 
-        cv_results = {
-            "train_losses": [],
-            "train_accuracies": [],
-            "val_losses": [],
-            "val_accuracies": [],
-            "test_losses": [],
-            "test_accuracies": [],
-            "zero_shot_losses": [],
-            "zero_shot_accuracies": [],
-            "zero_shot_precisions": [],
-            "zero_shot_recalls": [],
-            "zero_shot_f1s": [],
-            "zero_shot_intra_class_similarities": [],
-            "zero_shot_inter_class_similarities": [],
-            "zero_shot_can_true_class_scores": [],
-            "zero_shot_can_best_other_scores": [],
-            "zero_shot_can_score_margins": [],
-            "zero_shot_transductive_losses": [],
-            "zero_shot_transductive_accuracies": [],
-            "zero_shot_transductive_precisions": [],
-            "zero_shot_transductive_recalls": [],
-            "zero_shot_transductive_f1s": [],
-            "k_shot_losses": [],
-            "k_shot_accuracies": [],
-            "k_shot_precisions": [],
-            "k_shot_recalls": [],
-            "k_shot_f1s": [],
-            "k_shot_intra_class_similarities": [],
-            "k_shot_inter_class_similarities": [],
-            "k_shot_can_true_class_scores": [],
-            "k_shot_can_best_other_scores": [],
-            "k_shot_can_score_margins": [],
-            "k_shot_transductive_losses": [],
-            "k_shot_transductive_accuracies": [],
-            "k_shot_transductive_precisions": [],
-            "k_shot_transductive_recalls": [],
-            "k_shot_transductive_f1s": [],
-            "heldout_eval_task_sizes": [
-                {"k_shot": int(k_shot), "q_query": int(q_query)}
-                for k_shot, q_query in heldout_eval_pairs
-            ],
-            "heldout_eval_by_task_size": {
-                f"k{k_shot}_q{q_query}": {
-                    "k_shot": int(k_shot),
-                    "q_query": int(q_query),
-                    "zero_shot_losses": [],
-                    "zero_shot_accuracies": [],
-                    "zero_shot_precisions": [],
-                    "zero_shot_recalls": [],
-                    "zero_shot_f1s": [],
-                    "zero_shot_intra_class_similarities": [],
-                    "zero_shot_inter_class_similarities": [],
-                    "zero_shot_can_true_class_scores": [],
-                    "zero_shot_can_best_other_scores": [],
-                    "zero_shot_can_score_margins": [],
-                    "zero_shot_transductive_losses": [],
-                    "zero_shot_transductive_accuracies": [],
-                    "zero_shot_transductive_precisions": [],
-                    "zero_shot_transductive_recalls": [],
-                    "zero_shot_transductive_f1s": [],
-                    "k_shot_losses": [],
-                    "k_shot_accuracies": [],
-                    "k_shot_precisions": [],
-                    "k_shot_recalls": [],
-                    "k_shot_f1s": [],
-                    "k_shot_intra_class_similarities": [],
-                    "k_shot_inter_class_similarities": [],
-                    "k_shot_can_true_class_scores": [],
-                    "k_shot_can_best_other_scores": [],
-                    "k_shot_can_score_margins": [],
-                    "k_shot_transductive_losses": [],
-                    "k_shot_transductive_accuracies": [],
-                    "k_shot_transductive_precisions": [],
-                    "k_shot_transductive_recalls": [],
-                    "k_shot_transductive_f1s": [],
-                }
-                for k_shot, q_query in heldout_eval_pairs
-            },
-            "training_progress_files": [],
-            "can_alignment_summary_files": [],
-            "can_sample_statistics_files": [],
-            "model_architecture_file": None,
-            "validation_checkpoint_metric": self.config.validation_checkpoint_metric,
-            "validation_checkpoint_mode": self.config.validation_checkpoint_mode,
-            "validation_checkpoint_values": [],
-            "validation_checkpoint_epochs": [],
-            "validation_checkpoint_steps": [],
-            "validation_checkpoint_metrics": [],
-        }
+        result_recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=heldout_eval_pairs,
+            training_progress_output_dir=training_progress_output_dir,
+            csv_flush_every_events=self.config.csv_flush_every_events,
+            validation_checkpoint_metric=self.config.validation_checkpoint_metric,
+            validation_checkpoint_mode=self.config.validation_checkpoint_mode,
+            logger=self.logger,
+        )
+        cv_results = result_recorder.results
 
         fold_subjects = self._get_loso_fold_subjects()
         num_subjects = len(fold_subjects)
@@ -1601,10 +1386,6 @@ class FewShotPainLearner:
             train_log_every=train_log_every,
             eval_log_every=eval_log_every,
         )
-        csv_writer = TrainingProgressCSVWriter(
-            output_dir=training_progress_output_dir,
-            flush_every_events=max(1, int(self.config.csv_flush_every_events)),
-        )
         architecture_saved = False
 
         for fold, test_subject in enumerate(fold_subjects):
@@ -1612,7 +1393,7 @@ class FewShotPainLearner:
             progress.log_fold_start(
                 fold_idx=fold + 1, total_folds=num_subjects, test_subject=test_subject
             )
-            progress_file = csv_writer.start_fold(
+            progress_file = result_recorder.start_fold(
                 fold_idx=fold + 1, test_subject=test_subject
             )
 
@@ -1636,7 +1417,7 @@ class FewShotPainLearner:
                     sample_task=sample_task,
                     output_path=model_architecture_output_path,
                 )
-                cv_results["model_architecture_file"] = architecture_path
+                result_recorder.set_model_architecture_file(architecture_path)
                 architecture_saved = True
                 self.logger.info(f"Saved model architecture to {architecture_path}")
 
@@ -1713,10 +1494,9 @@ class FewShotPainLearner:
                         or processed_tasks == tasks_per_epoch
                     ):
                         can_mode = self.attention_mode == "can"
-                        csv_writer.write_event(
+                        result_recorder.write_train_update(
                             fold_idx=fold + 1,
                             test_subject=test_subject,
-                            event_type="train_update",
                             epoch=epoch + 1,
                             epoch_total=num_epochs,
                             step=processed_tasks,
@@ -1731,10 +1511,10 @@ class FewShotPainLearner:
                             can_global_loss=None
                             if can_mode
                             else float(can_global_loss),
+                            accuracy=float(acc),
                             can_margin_loss=float(can_margin_loss)
                             if can_mode
                             else None,
-                            accuracy=float(acc),
                         )
                     train_extra_metrics = {
                         "task_loss": float(task_loss),
@@ -1947,45 +1727,15 @@ class FewShotPainLearner:
                         model_variables=self.model.weights,
                         optimizer_variables=self.optimizer.variables,
                     )
-                    csv_writer.write_event(
+                    result_recorder.write_validation_step(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
-                        event_type="validation_step",
                         epoch=epoch + 1,
                         epoch_total=num_epochs,
                         step=processed_tasks,
                         step_total=tasks_per_epoch,
                         loss=mean_val_loss,
-                        task_loss=mean_val_task_loss,
-                        contrastive_loss=None
-                        if mean_val_can_score_margin is not None
-                        else mean_val_contrastive_loss,
-                        triplet_loss=None
-                        if mean_val_can_score_margin is not None
-                        else mean_val_triplet_loss,
-                        can_local_loss=mean_val_can_local_loss,
-                        can_global_loss=None
-                        if mean_val_can_score_margin is not None
-                        else mean_val_can_global_loss,
-                        can_margin_loss=mean_val_can_margin_loss
-                        if mean_val_can_score_margin is not None
-                        else None,
-                        accuracy=mean_val_acc,
-                        precision=mean_val_precision,
-                        recall=mean_val_recall,
-                        f1=mean_val_f1,
-                        intra_class_similarity=None
-                        if mean_val_can_score_margin is not None
-                        else mean_val_intra_class_similarity,
-                        inter_class_similarity=None
-                        if mean_val_can_score_margin is not None
-                        else mean_val_inter_class_similarity,
-                        similarity_margin=None
-                        if mean_val_can_score_margin is not None
-                        else mean_val_similarity_margin,
-                        can_true_class_score=mean_val_can_true_class_score,
-                        can_best_other_score=mean_val_can_best_other_score,
-                        can_score_margin=mean_val_can_score_margin,
+                        metrics=validation_checkpoint_metrics,
                         checkpoint_metric=validation_checkpoint.metric,
                         checkpoint_value=checkpoint_value,
                         checkpoint_is_best=checkpoint_improved,
@@ -2112,7 +1862,7 @@ class FewShotPainLearner:
                     self.logging_verbosity >= 1
                     and fold_summary_reference["train"] is not None
                 ):
-                    self._log_composite_summary(
+                    result_recorder.log_composite_summary(
                         prefix=(
                             f"[Fold {fold + 1}/{num_subjects}] "
                             f"[Epoch {epoch + 1}/{num_epochs}] "
@@ -2129,16 +1879,7 @@ class FewShotPainLearner:
                 model_variables=self.model.weights,
                 optimizer_variables=self.optimizer.variables,
             )
-            cv_results["validation_checkpoint_values"].append(
-                checkpoint_summary["value"]
-            )
-            cv_results["validation_checkpoint_epochs"].append(
-                checkpoint_summary["epoch"]
-            )
-            cv_results["validation_checkpoint_steps"].append(checkpoint_summary["step"])
-            cv_results["validation_checkpoint_metrics"].append(
-                checkpoint_summary["metrics"]
-            )
+            result_recorder.record_validation_checkpoint(checkpoint_summary)
             if restored_checkpoint:
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
@@ -2360,68 +2101,18 @@ class FewShotPainLearner:
                 )
                 k_shot_loss = float(zero_shot_loss)
                 k_shot_metrics = dict(zero_shot_metrics)
-                sweep_metrics_by_size[fixed_size_key] = {
-                    "zero_shot_loss": zero_shot_loss,
-                    "zero_shot_metrics": zero_shot_metrics,
-                    "zero_shot_task_batch": [query_task],
-                    "adaptation_mean_loss": 0.0,
-                    "k_shot_loss": k_shot_loss,
-                    "k_shot_metrics": k_shot_metrics,
-                    "k_shot_task_batch": [query_task],
-                }
-                size_results = cv_results["heldout_eval_by_task_size"][fixed_size_key]
-                size_results["zero_shot_losses"].append(zero_shot_loss)
-                size_results["zero_shot_accuracies"].append(
-                    zero_shot_metrics["accuracy"]
+                sweep_metrics_by_size[fixed_size_key] = (
+                    result_recorder.record_heldout_size_result(
+                        size_key=fixed_size_key,
+                        zero_shot_loss=zero_shot_loss,
+                        zero_shot_metrics=zero_shot_metrics,
+                        adaptation_losses=[],
+                        k_shot_loss=k_shot_loss,
+                        k_shot_metrics=k_shot_metrics,
+                        zero_shot_task_batch=[query_task],
+                        k_shot_task_batch=[query_task],
+                    )
                 )
-                size_results["zero_shot_precisions"].append(
-                    zero_shot_metrics["precision"]
-                )
-                size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
-                size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
-                self._append_evaluation_diagnostics(
-                    size_results, "zero_shot", zero_shot_metrics
-                )
-                if "transductive_accuracy" in zero_shot_metrics:
-                    size_results["zero_shot_transductive_losses"].append(
-                        zero_shot_metrics["transductive_loss"]
-                    )
-                    size_results["zero_shot_transductive_accuracies"].append(
-                        zero_shot_metrics["transductive_accuracy"]
-                    )
-                    size_results["zero_shot_transductive_precisions"].append(
-                        zero_shot_metrics["transductive_precision"]
-                    )
-                    size_results["zero_shot_transductive_recalls"].append(
-                        zero_shot_metrics["transductive_recall"]
-                    )
-                    size_results["zero_shot_transductive_f1s"].append(
-                        zero_shot_metrics["transductive_f1"]
-                    )
-                size_results["k_shot_losses"].append(k_shot_loss)
-                size_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
-                size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
-                size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
-                size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-                self._append_evaluation_diagnostics(
-                    size_results, "k_shot", k_shot_metrics
-                )
-                if "transductive_accuracy" in k_shot_metrics:
-                    size_results["k_shot_transductive_losses"].append(
-                        k_shot_metrics["transductive_loss"]
-                    )
-                    size_results["k_shot_transductive_accuracies"].append(
-                        k_shot_metrics["transductive_accuracy"]
-                    )
-                    size_results["k_shot_transductive_precisions"].append(
-                        k_shot_metrics["transductive_precision"]
-                    )
-                    size_results["k_shot_transductive_recalls"].append(
-                        k_shot_metrics["transductive_recall"]
-                    )
-                    size_results["k_shot_transductive_f1s"].append(
-                        k_shot_metrics["transductive_f1"]
-                    )
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
                     "Prototype-only holdout evaluated on all query samples: "
@@ -2465,38 +2156,12 @@ class FewShotPainLearner:
                         f"Skipping optional held-out size {size_key}: {exc}"
                     )
                     continue
-                csv_writer.write_event(
+                result_recorder.write_metric_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,
                     event_type=f"zero_shot_summary_{size_key}",
                     loss=zero_shot_loss,
-                    task_loss=zero_shot_metrics["task_loss"],
-                    contrastive_loss=None
-                    if "can_score_margin" in zero_shot_metrics
-                    else zero_shot_metrics["contrastive_loss"],
-                    triplet_loss=None
-                    if "can_score_margin" in zero_shot_metrics
-                    else zero_shot_metrics["triplet_loss"],
-                    can_local_loss=zero_shot_metrics["can_local_loss"],
-                    can_global_loss=None
-                    if "can_score_margin" in zero_shot_metrics
-                    else zero_shot_metrics["can_global_loss"],
-                    can_margin_loss=zero_shot_metrics.get("can_margin_loss")
-                    if "can_score_margin" in zero_shot_metrics
-                    else None,
-                    accuracy=zero_shot_metrics["accuracy"],
-                    precision=zero_shot_metrics["precision"],
-                    recall=zero_shot_metrics["recall"],
-                    f1=zero_shot_metrics["f1"],
-                    intra_class_similarity=None
-                    if "can_score_margin" in zero_shot_metrics
-                    else zero_shot_metrics["intra_class_similarity"],
-                    inter_class_similarity=None
-                    if "can_score_margin" in zero_shot_metrics
-                    else zero_shot_metrics["inter_class_similarity"],
-                    can_true_class_score=zero_shot_metrics.get("can_true_class_score"),
-                    can_best_other_score=zero_shot_metrics.get("can_best_other_score"),
-                    can_score_margin=zero_shot_metrics.get("can_score_margin"),
+                    metrics=zero_shot_metrics,
                 )
                 if (eval_k_shot, eval_q_query) == configured_eval_pair:
                     if k_shot_adaptation_steps > 0:
@@ -2514,13 +2179,11 @@ class FewShotPainLearner:
                         k_shot=eval_k_shot,
                         q_query=eval_q_query,
                     )
-                    csv_writer.write_event(
+                    result_recorder.write_adaptation_event(
                         fold_idx=fold + 1,
                         test_subject=test_subject,
                         event_type=f"adaptation_phase_{size_key}",
-                        loss=float(np.mean(adaptation_losses))
-                        if adaptation_losses
-                        else 0.0,
+                        adaptation_losses=adaptation_losses,
                     )
                     k_shot_task_batch = self._sample_tasks_at_task_size(
                         test_sampler,
@@ -2541,104 +2204,26 @@ class FewShotPainLearner:
                     k_shot_metrics = dict(zero_shot_metrics)
                     k_shot_task_batch = zero_shot_task_batch
 
-                csv_writer.write_event(
+                result_recorder.write_metric_event(
                     fold_idx=fold + 1,
                     test_subject=test_subject,
                     event_type=f"k_shot_summary_{size_key}",
                     loss=k_shot_loss,
-                    task_loss=k_shot_metrics["task_loss"],
-                    contrastive_loss=None
-                    if "can_score_margin" in k_shot_metrics
-                    else k_shot_metrics["contrastive_loss"],
-                    triplet_loss=None
-                    if "can_score_margin" in k_shot_metrics
-                    else k_shot_metrics["triplet_loss"],
-                    can_local_loss=k_shot_metrics["can_local_loss"],
-                    can_global_loss=None
-                    if "can_score_margin" in k_shot_metrics
-                    else k_shot_metrics["can_global_loss"],
-                    can_margin_loss=k_shot_metrics.get("can_margin_loss")
-                    if "can_score_margin" in k_shot_metrics
-                    else None,
-                    accuracy=k_shot_metrics["accuracy"],
-                    precision=k_shot_metrics["precision"],
-                    recall=k_shot_metrics["recall"],
-                    f1=k_shot_metrics["f1"],
-                    intra_class_similarity=None
-                    if "can_score_margin" in k_shot_metrics
-                    else k_shot_metrics["intra_class_similarity"],
-                    inter_class_similarity=None
-                    if "can_score_margin" in k_shot_metrics
-                    else k_shot_metrics["inter_class_similarity"],
-                    can_true_class_score=k_shot_metrics.get("can_true_class_score"),
-                    can_best_other_score=k_shot_metrics.get("can_best_other_score"),
-                    can_score_margin=k_shot_metrics.get("can_score_margin"),
+                    metrics=k_shot_metrics,
                 )
 
-                sweep_metrics_by_size[size_key] = {
-                    "zero_shot_loss": zero_shot_loss,
-                    "zero_shot_metrics": zero_shot_metrics,
-                    "zero_shot_task_batch": zero_shot_task_batch,
-                    "adaptation_mean_loss": (
-                        float(np.mean(adaptation_losses)) if adaptation_losses else 0.0
-                    ),
-                    "k_shot_loss": k_shot_loss,
-                    "k_shot_metrics": k_shot_metrics,
-                    "k_shot_task_batch": k_shot_task_batch,
-                }
-                size_results = cv_results["heldout_eval_by_task_size"][size_key]
-                size_results["zero_shot_losses"].append(zero_shot_loss)
-                size_results["zero_shot_accuracies"].append(
-                    zero_shot_metrics["accuracy"]
+                sweep_metrics_by_size[size_key] = (
+                    result_recorder.record_heldout_size_result(
+                        size_key=size_key,
+                        zero_shot_loss=zero_shot_loss,
+                        zero_shot_metrics=zero_shot_metrics,
+                        adaptation_losses=adaptation_losses,
+                        k_shot_loss=k_shot_loss,
+                        k_shot_metrics=k_shot_metrics,
+                        zero_shot_task_batch=zero_shot_task_batch,
+                        k_shot_task_batch=k_shot_task_batch,
+                    )
                 )
-                size_results["zero_shot_precisions"].append(
-                    zero_shot_metrics["precision"]
-                )
-                size_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
-                size_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
-                self._append_evaluation_diagnostics(
-                    size_results, "zero_shot", zero_shot_metrics
-                )
-                if "transductive_accuracy" in zero_shot_metrics:
-                    size_results["zero_shot_transductive_losses"].append(
-                        zero_shot_metrics["transductive_loss"]
-                    )
-                    size_results["zero_shot_transductive_accuracies"].append(
-                        zero_shot_metrics["transductive_accuracy"]
-                    )
-                    size_results["zero_shot_transductive_precisions"].append(
-                        zero_shot_metrics["transductive_precision"]
-                    )
-                    size_results["zero_shot_transductive_recalls"].append(
-                        zero_shot_metrics["transductive_recall"]
-                    )
-                    size_results["zero_shot_transductive_f1s"].append(
-                        zero_shot_metrics["transductive_f1"]
-                    )
-                size_results["k_shot_losses"].append(k_shot_loss)
-                size_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
-                size_results["k_shot_precisions"].append(k_shot_metrics["precision"])
-                size_results["k_shot_recalls"].append(k_shot_metrics["recall"])
-                size_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-                self._append_evaluation_diagnostics(
-                    size_results, "k_shot", k_shot_metrics
-                )
-                if "transductive_accuracy" in k_shot_metrics:
-                    size_results["k_shot_transductive_losses"].append(
-                        k_shot_metrics["transductive_loss"]
-                    )
-                    size_results["k_shot_transductive_accuracies"].append(
-                        k_shot_metrics["transductive_accuracy"]
-                    )
-                    size_results["k_shot_transductive_precisions"].append(
-                        k_shot_metrics["transductive_precision"]
-                    )
-                    size_results["k_shot_transductive_recalls"].append(
-                        k_shot_metrics["transductive_recall"]
-                    )
-                    size_results["k_shot_transductive_f1s"].append(
-                        k_shot_metrics["transductive_f1"]
-                    )
 
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] [Heldout size {size_key}] "
@@ -2656,79 +2241,15 @@ class FewShotPainLearner:
             zero_shot_task_batch = fixed_size_metrics.get("zero_shot_task_batch", [])
             k_shot_task_batch = fixed_size_metrics.get("k_shot_task_batch", [])
 
-            # Keep legacy fixed-size event names for downstream tooling compatibility.
-            csv_writer.write_event(
+            result_recorder.write_legacy_heldout_events(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
-                event_type="zero_shot_summary",
-                loss=zero_shot_loss,
-                task_loss=zero_shot_metrics["task_loss"],
-                contrastive_loss=None
-                if "can_score_margin" in zero_shot_metrics
-                else zero_shot_metrics["contrastive_loss"],
-                triplet_loss=None
-                if "can_score_margin" in zero_shot_metrics
-                else zero_shot_metrics["triplet_loss"],
-                can_local_loss=zero_shot_metrics["can_local_loss"],
-                can_global_loss=None
-                if "can_score_margin" in zero_shot_metrics
-                else zero_shot_metrics["can_global_loss"],
-                can_margin_loss=zero_shot_metrics.get("can_margin_loss")
-                if "can_score_margin" in zero_shot_metrics
-                else None,
-                accuracy=zero_shot_metrics["accuracy"],
-                precision=zero_shot_metrics["precision"],
-                recall=zero_shot_metrics["recall"],
-                f1=zero_shot_metrics["f1"],
-                intra_class_similarity=None
-                if "can_score_margin" in zero_shot_metrics
-                else zero_shot_metrics["intra_class_similarity"],
-                inter_class_similarity=None
-                if "can_score_margin" in zero_shot_metrics
-                else zero_shot_metrics["inter_class_similarity"],
-                can_true_class_score=zero_shot_metrics.get("can_true_class_score"),
-                can_best_other_score=zero_shot_metrics.get("can_best_other_score"),
-                can_score_margin=zero_shot_metrics.get("can_score_margin"),
-            )
-            if run_adaptation:
-                csv_writer.write_event(
-                    fold_idx=fold + 1,
-                    test_subject=test_subject,
-                    event_type="adaptation_phase",
-                    loss=fixed_adaptation_mean_loss,
-                )
-            csv_writer.write_event(
-                fold_idx=fold + 1,
-                test_subject=test_subject,
-                event_type="k_shot_summary",
-                loss=k_shot_loss,
-                task_loss=k_shot_metrics["task_loss"],
-                contrastive_loss=None
-                if "can_score_margin" in k_shot_metrics
-                else k_shot_metrics["contrastive_loss"],
-                triplet_loss=None
-                if "can_score_margin" in k_shot_metrics
-                else k_shot_metrics["triplet_loss"],
-                can_local_loss=k_shot_metrics["can_local_loss"],
-                can_global_loss=None
-                if "can_score_margin" in k_shot_metrics
-                else k_shot_metrics["can_global_loss"],
-                can_margin_loss=k_shot_metrics.get("can_margin_loss")
-                if "can_score_margin" in k_shot_metrics
-                else None,
-                accuracy=k_shot_metrics["accuracy"],
-                precision=k_shot_metrics["precision"],
-                recall=k_shot_metrics["recall"],
-                f1=k_shot_metrics["f1"],
-                intra_class_similarity=None
-                if "can_score_margin" in k_shot_metrics
-                else k_shot_metrics["intra_class_similarity"],
-                inter_class_similarity=None
-                if "can_score_margin" in k_shot_metrics
-                else k_shot_metrics["inter_class_similarity"],
-                can_true_class_score=k_shot_metrics.get("can_true_class_score"),
-                can_best_other_score=k_shot_metrics.get("can_best_other_score"),
-                can_score_margin=k_shot_metrics.get("can_score_margin"),
+                zero_shot_loss=zero_shot_loss,
+                zero_shot_metrics=zero_shot_metrics,
+                adaptation_mean_loss=fixed_adaptation_mean_loss,
+                k_shot_loss=k_shot_loss,
+                k_shot_metrics=k_shot_metrics,
+                run_adaptation=run_adaptation,
             )
 
             progress.log_subject_summary(
@@ -2748,66 +2269,14 @@ class FewShotPainLearner:
                 metrics=k_shot_metrics,
             )
 
-            cv_results["train_losses"].append(np.mean(fold_results["train_losses"]))
-            cv_results["train_accuracies"].append(
-                np.mean(fold_results["train_accuracies"])
-            )
-            cv_results["val_losses"].append(np.mean(fold_results["val_losses"]))
-            cv_results["val_accuracies"].append(np.mean(fold_results["val_accuracies"]))
-            cv_results["test_losses"].append(zero_shot_loss)
-            cv_results["test_accuracies"].append(zero_shot_metrics["accuracy"])
-            cv_results["zero_shot_losses"].append(zero_shot_loss)
-            cv_results["zero_shot_accuracies"].append(zero_shot_metrics["accuracy"])
-            cv_results["zero_shot_precisions"].append(zero_shot_metrics["precision"])
-            cv_results["zero_shot_recalls"].append(zero_shot_metrics["recall"])
-            cv_results["zero_shot_f1s"].append(zero_shot_metrics["f1"])
-            self._append_evaluation_diagnostics(
-                cv_results, "zero_shot", zero_shot_metrics
-            )
-            if "transductive_accuracy" in zero_shot_metrics:
-                cv_results["zero_shot_transductive_losses"].append(
-                    zero_shot_metrics["transductive_loss"]
-                )
-                cv_results["zero_shot_transductive_accuracies"].append(
-                    zero_shot_metrics["transductive_accuracy"]
-                )
-                cv_results["zero_shot_transductive_precisions"].append(
-                    zero_shot_metrics["transductive_precision"]
-                )
-                cv_results["zero_shot_transductive_recalls"].append(
-                    zero_shot_metrics["transductive_recall"]
-                )
-                cv_results["zero_shot_transductive_f1s"].append(
-                    zero_shot_metrics["transductive_f1"]
-                )
-            cv_results["k_shot_losses"].append(k_shot_loss)
-            cv_results["k_shot_accuracies"].append(k_shot_metrics["accuracy"])
-            cv_results["k_shot_precisions"].append(k_shot_metrics["precision"])
-            cv_results["k_shot_recalls"].append(k_shot_metrics["recall"])
-            cv_results["k_shot_f1s"].append(k_shot_metrics["f1"])
-            self._append_evaluation_diagnostics(cv_results, "k_shot", k_shot_metrics)
-            if "transductive_accuracy" in k_shot_metrics:
-                cv_results["k_shot_transductive_losses"].append(
-                    k_shot_metrics["transductive_loss"]
-                )
-                cv_results["k_shot_transductive_accuracies"].append(
-                    k_shot_metrics["transductive_accuracy"]
-                )
-                cv_results["k_shot_transductive_precisions"].append(
-                    k_shot_metrics["transductive_precision"]
-                )
-                cv_results["k_shot_transductive_recalls"].append(
-                    k_shot_metrics["transductive_recall"]
-                )
-                cv_results["k_shot_transductive_f1s"].append(
-                    k_shot_metrics["transductive_f1"]
-                )
-            csv_writer.write_event(
+            result_recorder.record_fold_result(
                 fold_idx=fold + 1,
                 test_subject=test_subject,
-                event_type="fold_summary",
-                loss=zero_shot_loss,
-                accuracy=zero_shot_metrics["accuracy"],
+                fold_results=fold_results,
+                zero_shot_loss=zero_shot_loss,
+                zero_shot_metrics=zero_shot_metrics,
+                k_shot_loss=k_shot_loss,
+                k_shot_metrics=k_shot_metrics,
             )
             can_alignment_file = self._write_can_alignment_summary(
                 progress_file=progress_file,
@@ -2819,7 +2288,7 @@ class FewShotPainLearner:
                 k_shot_metrics=k_shot_metrics,
             )
             if can_alignment_file is not None:
-                cv_results["can_alignment_summary_files"].append(can_alignment_file)
+                result_recorder.record_can_alignment_summary_file(can_alignment_file)
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
                     f"Saved CAN alignment summary to {can_alignment_file}"
@@ -2834,15 +2303,14 @@ class FewShotPainLearner:
                 k_shot_task_batch=k_shot_task_batch,
             )
             if can_sample_statistics_file is not None:
-                cv_results["can_sample_statistics_files"].append(
+                result_recorder.record_can_sample_statistics_file(
                     can_sample_statistics_file
                 )
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
                     f"Saved CAN sample statistics to {can_sample_statistics_file}"
                 )
-            csv_writer.close()
-            cv_results["training_progress_files"].append(progress_file)
+            result_recorder.close_fold()
             progress.log_fold_complete(
                 fold_idx=fold + 1,
                 total_folds=num_subjects,
@@ -2857,16 +2325,14 @@ class FewShotPainLearner:
             )
             if should_log_checkpoint_summary:
                 completion_pct = 100.0 * completed_folds / max(1, num_subjects)
-                self._log_cross_validation_aggregate(
-                    cv_results,
+                result_recorder.log_cross_validation_aggregate(
                     title=(
                         "CROSS-VALIDATION RESULTS "
                         f"({completed_folds}/{num_subjects} folds, {completion_pct:.1f}% complete)"
                     ),
                 )
 
-        self._log_cross_validation_aggregate(
-            cv_results,
+        result_recorder.log_cross_validation_aggregate(
             title="CROSS-VALIDATION RESULTS",
         )
 
