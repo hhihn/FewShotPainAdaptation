@@ -465,7 +465,7 @@ def main() -> None:
         help="Enable deterministic TensorFlow ops (slower but reproducible).",
     )
     parser.add_argument("--num-epochs", type=int, default=1)
-    parser.add_argument("--tasks-per-epoch", type=int, default=20_000)
+    parser.add_argument("--tasks-per-epoch", type=int, default=1)
     parser.add_argument("--task-batch-size", type=int, default=16)
     parser.add_argument(
         "--embedding-batch-size",

@@ -880,8 +880,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
 
         if self.can_support_mode == "learned_prototype_memory":
             outputs = self._forward_episode_batch_learned_prototype_memory_can(
-                support_x=support_x,
-                support_y=support_y,
                 query_x=query_x,
                 training=training,
             )
@@ -935,8 +933,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         if self.can_enabled:
             if self.can_support_mode == "learned_prototype_memory":
                 return self._forward_episode_batch_learned_prototype_memory_can(
-                    support_x=support_x,
-                    support_y=support_y,
                     query_x=query_x,
                     training=training,
                 )
