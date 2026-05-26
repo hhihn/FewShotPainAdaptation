@@ -73,6 +73,38 @@ class _FakeEngine:
         return tf.constant(float(self.calls), dtype=tf.float32), tf.constant(1.0)
 
 
+class _FakeEvaluationEngine:
+    def __init__(self):
+        self.model = SimpleNamespace(can_support_mode="learned_prototype_memory")
+        self.seen_support_modes = []
+
+    def forward_task(
+        self,
+        support_x,
+        support_y,
+        query_x,
+        query_y,
+        training=False,
+        return_similarity_scores=True,
+    ):
+        del support_x, support_y, training, return_similarity_scores
+        self.seen_support_modes.append(self.model.can_support_mode)
+        num_query = int(query_x.shape[0])
+        logits = tf.one_hot(query_y, depth=2, dtype=tf.float32) * 2.0
+        similarity_scores = tf.one_hot(query_y, depth=2, dtype=tf.float32)
+        return {
+            "loss": tf.constant(0.25, dtype=tf.float32),
+            "task_loss": tf.constant(0.2, dtype=tf.float32),
+            "contrastive_loss": tf.constant(0.0, dtype=tf.float32),
+            "triplet_loss": tf.constant(0.0, dtype=tf.float32),
+            "can_local_loss": tf.constant(0.01, dtype=tf.float32),
+            "can_global_loss": tf.constant(0.02, dtype=tf.float32),
+            "can_margin_loss": tf.constant(0.03, dtype=tf.float32),
+            "logits": tf.reshape(logits, (num_query, 2)),
+            "similarity_scores": tf.reshape(similarity_scores, (num_query, 2)),
+        }
+
+
 class _FakeDatasetForSampler:
     def __init__(self):
         self.config = SimpleNamespace(
@@ -122,6 +154,23 @@ class _FakeDatasetForSampler:
             "query_y": np.repeat(np.arange(self.config.n_way), int(q_query)).astype(
                 np.int32
             ),
+        }
+
+
+class _FakePrototypeDataset:
+    def build_all_query_task(
+        self,
+        subject,
+        split,
+        use_base_index,
+        normalize_with_query_subject_stats,
+    ):
+        del subject, split, use_base_index, normalize_with_query_subject_stats
+        return {
+            "support_X": np.zeros((0, 3, 1), dtype=np.float32),
+            "support_y": np.zeros((0,), dtype=np.int32),
+            "query_X": np.zeros((4, 3, 1), dtype=np.float32),
+            "query_y": np.array([0, 1, 0, 1], dtype=np.int32),
         }
 
 
@@ -350,6 +399,148 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             np.array([0.2, 0.4], dtype=np.float32),
         )
         self.assertAlmostEqual(similarity["similarity_margin"], 0.45, places=6)
+
+    def test_episode_evaluation_can_support_mode_override_restores_original(self):
+        engine = _FakeEvaluationEngine()
+        evaluator = EpisodeEvaluationService(
+            config=SimpleNamespace(
+                n_way=2,
+                attention_mode="can",
+                can_transductive_iterations=0,
+            ),
+            engine=engine,
+            task_pipeline=SimpleNamespace(
+                task_batch_has_uniform_shapes=lambda task_batch: False
+            ),
+        )
+        task = {
+            "support_X": np.zeros((2, 3, 1), dtype=np.float32),
+            "support_y": np.array([0, 1], dtype=np.int32),
+            "query_X": np.zeros((2, 3, 1), dtype=np.float32),
+            "query_y": np.array([0, 1], dtype=np.int32),
+        }
+
+        loss, metrics = evaluator.evaluate_task_batch_loss_and_metrics(
+            [task],
+            can_support_mode="sampled",
+        )
+
+        self.assertEqual(engine.seen_support_modes, ["sampled"])
+        self.assertEqual(engine.model.can_support_mode, "learned_prototype_memory")
+        self.assertEqual(loss, 0.25)
+        self.assertEqual(metrics["accuracy"], 1.0)
+
+    def test_learned_prototype_holdout_sweep_writes_sampled_support_rows(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pairs = [(1, 1), (5, 5), (10, 10)]
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=pairs,
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="f1",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_learned_prototype_sweep"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=7)
+
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.dataset = _FakePrototypeDataset()
+        learner.train_batch_size = 2
+        learner.logger = logging.getLogger("test_learned_prototype_sweep")
+        learner.evaluator = SimpleNamespace(
+            evaluate_prototype_memory_task_metrics=lambda task: (
+                0.6,
+                {
+                    "task_loss": 0.6,
+                    "contrastive_loss": 0.0,
+                    "triplet_loss": 0.0,
+                    "can_local_loss": 0.1,
+                    "can_global_loss": 0.2,
+                    "accuracy": 0.5,
+                    "precision": 0.5,
+                    "recall": 0.5,
+                    "f1": 0.5,
+                    "intra_class_similarity": 0.4,
+                    "inter_class_similarity": 0.2,
+                    "transductive_loss": 0.55,
+                    "transductive_accuracy": 0.75,
+                    "transductive_precision": 0.76,
+                    "transductive_recall": 0.74,
+                    "transductive_f1": 0.75,
+                },
+            )
+        )
+        support_modes = []
+
+        def fake_eval(task_batch, forward_batch_size=None, can_support_mode=None):
+            del forward_batch_size
+            support_modes.append(can_support_mode)
+            q_query = int(len(task_batch[0]["query_y"]) / 2)
+            return (
+                float(q_query),
+                {
+                    "task_loss": float(q_query),
+                    "contrastive_loss": 0.0,
+                    "triplet_loss": 0.0,
+                    "can_local_loss": 0.1,
+                    "can_global_loss": 0.2,
+                    "accuracy": 0.8,
+                    "precision": 0.8,
+                    "recall": 0.8,
+                    "f1": 0.8,
+                    "intra_class_similarity": 0.6,
+                    "inter_class_similarity": 0.1,
+                    "transductive_loss": 0.3,
+                    "transductive_accuracy": 0.9,
+                    "transductive_precision": 0.91,
+                    "transductive_recall": 0.89,
+                    "transductive_f1": 0.9,
+                },
+            )
+
+        learner._evaluate_task_batch_loss_and_metrics = fake_eval
+        learner._set_sampler_task_size = EpisodeEvaluationService.set_sampler_task_size
+        sampler = _FakeSampler()
+        sampler.data_split = "test"
+
+        sweep = learner._evaluate_learned_prototype_holdout_sweep(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            test_sampler=sampler,
+            heldout_eval_pairs=pairs,
+            configured_eval_pair=(1, 1),
+            heldout_eval_tasks=1,
+            result_recorder=recorder,
+        )
+        recorder.close_fold()
+
+        with open(progress_file, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        events = [row["event_type"] for row in rows]
+
+        self.assertEqual(
+            events,
+            ["k_shot_summary_k1_q1", "k_shot_summary_k5_q5", "k_shot_summary_k10_q10"],
+        )
+        self.assertEqual(support_modes, ["sampled", "sampled", "sampled"])
+        for row in rows:
+            self.assertEqual(row["transductive_accuracy"], "0.9")
+            self.assertEqual(row["transductive_f1"], "0.9")
+        self.assertEqual(set(sweep), {"k1_q1", "k5_q5", "k10_q10"})
+        self.assertEqual(
+            recorder.results["heldout_eval_by_task_size"]["k5_q5"][
+                "zero_shot_transductive_accuracies"
+            ],
+            [0.75],
+        )
+        self.assertEqual(
+            recorder.results["heldout_eval_by_task_size"]["k5_q5"][
+                "k_shot_transductive_accuracies"
+            ],
+            [0.9],
+        )
 
     def test_heldout_adaptation_restores_task_size_after_success_and_failure(self):
         evaluator = EpisodeEvaluationService(

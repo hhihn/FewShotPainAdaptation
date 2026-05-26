@@ -188,15 +188,22 @@ class EpisodeEvaluationService:
         task_batch: list[dict],
         *,
         forward_batch_size: int | None = None,
+        can_support_mode: str | None = None,
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate losses and metrics.
 
         Args:
             task_batch: List of episodic task dictionaries.
             forward_batch_size: Optional number of tasks per batched forward pass.
+            can_support_mode: Optional temporary CAN support mode override.
         """
         if not task_batch:
             raise ValueError("task_batch must contain at least one task")
+
+        original_support_mode = None
+        if can_support_mode is not None:
+            original_support_mode = self.engine.model.can_support_mode
+            self.engine.model.can_support_mode = can_support_mode
 
         losses = []
         task_losses = []
@@ -216,6 +223,51 @@ class EpisodeEvaluationService:
             forward_batch_size is not None and int(forward_batch_size) > 1
         )
 
+        try:
+            return self._evaluate_task_batch_loss_and_metrics_impl(
+                task_batch,
+                forward_batch_size=forward_batch_size,
+                use_batched_forward=use_batched_forward,
+                losses=losses,
+                task_losses=task_losses,
+                contrastive_losses=contrastive_losses,
+                triplet_losses=triplet_losses,
+                can_local_losses=can_local_losses,
+                can_global_losses=can_global_losses,
+                can_margin_losses=can_margin_losses,
+                all_true_tensors=all_true_tensors,
+                all_pred_tensors=all_pred_tensors,
+                all_intra_class_scores=all_intra_class_scores,
+                all_inter_class_scores=all_inter_class_scores,
+                all_can_true_scores=all_can_true_scores,
+                all_can_best_other_scores=all_can_best_other_scores,
+                all_can_score_margins=all_can_score_margins,
+            )
+        finally:
+            if original_support_mode is not None:
+                self.engine.model.can_support_mode = original_support_mode
+
+    def _evaluate_task_batch_loss_and_metrics_impl(
+        self,
+        task_batch: list[dict],
+        *,
+        forward_batch_size: int | None,
+        use_batched_forward: bool,
+        losses: list,
+        task_losses: list,
+        contrastive_losses: list,
+        triplet_losses: list,
+        can_local_losses: list,
+        can_global_losses: list,
+        can_margin_losses: list,
+        all_true_tensors: list,
+        all_pred_tensors: list,
+        all_intra_class_scores: list,
+        all_inter_class_scores: list,
+        all_can_true_scores: list,
+        all_can_best_other_scores: list,
+        all_can_score_margins: list,
+    ) -> tuple[float, dict]:
         if use_batched_forward and self.task_pipeline.task_batch_has_uniform_shapes(
             task_batch
         ):

@@ -977,16 +977,19 @@ class FewShotPainLearner:
         task_batch: list[dict],
         *,
         forward_batch_size: int | None = None,
+        can_support_mode: str | None = None,
     ) -> tuple[float, dict]:
         """Evaluate a task batch and aggregate metrics.
 
         Args:
             task_batch: List of task dictionaries.
             forward_batch_size: Optional tasks per batched forward pass.
+            can_support_mode: Optional temporary CAN support mode override.
         """
         return self.evaluator.evaluate_task_batch_loss_and_metrics(
             task_batch,
             forward_batch_size=forward_batch_size,
+            can_support_mode=can_support_mode,
         )
 
     def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -1086,6 +1089,89 @@ class FewShotPainLearner:
                 k_shot=original_k,
                 q_query=original_q,
             )
+
+    def _evaluate_learned_prototype_holdout_sweep(
+        self,
+        *,
+        fold: int,
+        num_subjects: int,
+        test_subject: int,
+        test_sampler,
+        heldout_eval_pairs: list[tuple[int, int]],
+        configured_eval_pair: tuple[int, int],
+        heldout_eval_tasks: int,
+        result_recorder,
+    ) -> dict:
+        """Evaluate learned-prototype zero-shot and sampled-support holdout sizes."""
+        query_task = self.dataset.build_all_query_task(
+            int(test_subject),
+            split=test_sampler.data_split,
+            use_base_index=True,
+            normalize_with_query_subject_stats=True,
+        )
+        zero_shot_loss, zero_shot_metrics = (
+            self.evaluator.evaluate_prototype_memory_task_metrics(query_task)
+        )
+        self.logger.info(
+            f"[Fold {fold + 1}/{num_subjects}] "
+            "Prototype-only holdout evaluated on all query samples: "
+            f"queries={len(query_task['query_y'])}, "
+            f"accuracy={zero_shot_metrics['accuracy']:.4f}"
+        )
+
+        sweep_metrics_by_size = {}
+        for eval_k_shot, eval_q_query in heldout_eval_pairs:
+            size_key = f"k{eval_k_shot}_q{eval_q_query}"
+            try:
+                k_shot_task_batch = self._sample_tasks_at_task_size(
+                    test_sampler,
+                    num_tasks=heldout_eval_tasks,
+                    k_shot=eval_k_shot,
+                    q_query=eval_q_query,
+                )
+                k_shot_loss, k_shot_metrics = (
+                    self._evaluate_task_batch_loss_and_metrics(
+                        k_shot_task_batch,
+                        forward_batch_size=self.train_batch_size,
+                        can_support_mode="sampled",
+                    )
+                )
+            except ValueError as exc:
+                if (eval_k_shot, eval_q_query) == configured_eval_pair:
+                    raise
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    f"Skipping optional learned-prototype held-out size "
+                    f"{size_key}: {exc}"
+                )
+                continue
+
+            result_recorder.write_metric_event(
+                fold_idx=fold + 1,
+                test_subject=test_subject,
+                event_type=f"k_shot_summary_{size_key}",
+                loss=k_shot_loss,
+                metrics=k_shot_metrics,
+            )
+            sweep_metrics_by_size[size_key] = (
+                result_recorder.record_heldout_size_result(
+                    size_key=size_key,
+                    zero_shot_loss=zero_shot_loss,
+                    zero_shot_metrics=zero_shot_metrics,
+                    adaptation_losses=[],
+                    k_shot_loss=k_shot_loss,
+                    k_shot_metrics=k_shot_metrics,
+                    zero_shot_task_batch=[query_task],
+                    k_shot_task_batch=k_shot_task_batch,
+                )
+            )
+            self.logger.info(
+                f"[Fold {fold + 1}/{num_subjects}] "
+                f"[Learned prototype heldout size {size_key}] "
+                f"zero_shot_acc={zero_shot_metrics['accuracy']:.4f}, "
+                f"support_conditioned_acc={k_shot_metrics['accuracy']:.4f}"
+            )
+        return sweep_metrics_by_size
 
     def _adapt_on_sampler_at_task_size(
         self,
@@ -2087,37 +2173,17 @@ class FewShotPainLearner:
             heldout_pairs_to_evaluate = heldout_eval_pairs
             if self.config.can_support_mode == "learned_prototype_memory":
                 run_adaptation = False
-                fixed_size_key = (
-                    f"k{configured_eval_pair[0]}_q{configured_eval_pair[1]}"
-                )
-                query_task = self.dataset.build_all_query_task(
-                    int(test_subject),
-                    split=test_sampler.data_split,
-                    use_base_index=True,
-                    normalize_with_query_subject_stats=True,
-                )
-                zero_shot_loss, zero_shot_metrics = (
-                    self.evaluator.evaluate_prototype_memory_task_metrics(query_task)
-                )
-                k_shot_loss = float(zero_shot_loss)
-                k_shot_metrics = dict(zero_shot_metrics)
-                sweep_metrics_by_size[fixed_size_key] = (
-                    result_recorder.record_heldout_size_result(
-                        size_key=fixed_size_key,
-                        zero_shot_loss=zero_shot_loss,
-                        zero_shot_metrics=zero_shot_metrics,
-                        adaptation_losses=[],
-                        k_shot_loss=k_shot_loss,
-                        k_shot_metrics=k_shot_metrics,
-                        zero_shot_task_batch=[query_task],
-                        k_shot_task_batch=[query_task],
+                sweep_metrics_by_size = (
+                    self._evaluate_learned_prototype_holdout_sweep(
+                        fold=fold,
+                        num_subjects=num_subjects,
+                        test_subject=test_subject,
+                        test_sampler=test_sampler,
+                        heldout_eval_pairs=heldout_eval_pairs,
+                        configured_eval_pair=configured_eval_pair,
+                        heldout_eval_tasks=heldout_eval_tasks,
+                        result_recorder=result_recorder,
                     )
-                )
-                self.logger.info(
-                    f"[Fold {fold + 1}/{num_subjects}] "
-                    "Prototype-only holdout evaluated on all query samples: "
-                    f"queries={len(query_task['query_y'])}, "
-                    f"accuracy={zero_shot_metrics['accuracy']:.4f}"
                 )
                 heldout_pairs_to_evaluate = []
             if not run_adaptation:
