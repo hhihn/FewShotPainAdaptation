@@ -22,8 +22,10 @@ class _FakeSampler:
         self.q_query = 1
         self.support_size = 2
         self.query_size = 2
+        self.rng = np.random.default_rng(123)
 
     def get_task(self):
+        self.rng.integers(0, 1_000_000)
         return {
             "support_X": np.zeros((self.support_size, 3, 1), dtype=np.float32),
             "support_y": np.repeat(np.arange(self.n_way), self.k_shot).astype(np.int32),
@@ -621,6 +623,83 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["transductive_loss"], "0.65")
         self.assertEqual(rows[0]["transductive_accuracy"], "0.55")
         self.assertEqual(rows[0]["transductive_f1"], "0.55")
+
+    def test_phase2_initial_sampled_support_evaluation_writes_progress_row_and_restores_rng(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(10, 10)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="f1",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_phase2_initial_sampled_support"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=7)
+
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.train_batch_size = 2
+        learner.logger = logging.getLogger("test_phase2_initial_sampled_support")
+        learner._set_sampler_task_size = EpisodeEvaluationService.set_sampler_task_size
+        support_modes = []
+        query_sizes = []
+
+        def fake_eval(task_batch, forward_batch_size=None, can_support_mode=None):
+            del forward_batch_size
+            support_modes.append(can_support_mode)
+            query_sizes.append(len(task_batch[0]["query_y"]))
+            return (
+                0.4,
+                {
+                    "task_loss": 0.4,
+                    "contrastive_loss": 0.0,
+                    "triplet_loss": 0.0,
+                    "can_local_loss": 0.1,
+                    "can_global_loss": 0.2,
+                    "accuracy": 0.83,
+                    "precision": 0.84,
+                    "recall": 0.82,
+                    "f1": 0.83,
+                    "intra_class_similarity": 0.6,
+                    "inter_class_similarity": 0.1,
+                    "transductive_loss": 0.35,
+                    "transductive_accuracy": 0.86,
+                    "transductive_precision": 0.87,
+                    "transductive_recall": 0.85,
+                    "transductive_f1": 0.86,
+                },
+            )
+
+        learner._evaluate_task_batch_loss_and_metrics = fake_eval
+        sampler = _FakeSampler()
+        sampler.data_split = "test"
+        initial_rng_state = sampler.rng.bit_generator.state
+
+        learner._write_phase2_initial_sampled_support_evaluation(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            test_sampler=sampler,
+            configured_eval_pair=(10, 10),
+            heldout_eval_tasks=1,
+            result_recorder=recorder,
+        )
+        recorder.close_fold()
+
+        with open(progress_file, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(support_modes, ["sampled"])
+        self.assertEqual(query_sizes, [20])
+        self.assertEqual(sampler.rng.bit_generator.state, initial_rng_state)
+        self.assertEqual((sampler.k_shot, sampler.q_query), (1, 1))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["event_type"],
+            "support_samples_phase2_initial_summary_k10_q10",
+        )
+        self.assertEqual(rows[0]["accuracy"], "0.83")
+        self.assertEqual(rows[0]["transductive_accuracy"], "0.86")
 
     def test_heldout_adaptation_restores_task_size_after_success_and_failure(self):
         evaluator = EpisodeEvaluationService(

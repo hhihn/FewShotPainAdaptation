@@ -1,10 +1,12 @@
-import numpy as np
-import tensorflow as tf
-from tensorflow import keras
 import csv
+import copy
 import json
 import time
 from pathlib import Path
+
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.pain_ds_config import PainDatasetConfig
@@ -1143,6 +1145,63 @@ class FewShotPainLearner:
         )
         return query_task, loss, metrics
 
+    def _write_phase2_initial_sampled_support_evaluation(
+        self,
+        *,
+        fold: int,
+        num_subjects: int,
+        test_subject: int,
+        test_sampler,
+        configured_eval_pair: tuple[int, int],
+        heldout_eval_tasks: int,
+        result_recorder,
+    ) -> tuple[float, dict]:
+        """Write pre-update sampled-support performance to progress CSV.
+
+        The sampler RNG is restored after this audit evaluation so adding the
+        phase-2 initial row does not change later hold-out evaluation draws.
+        """
+        eval_k_shot, eval_q_query = configured_eval_pair
+        rng_state = None
+        rng = getattr(test_sampler, "rng", None)
+        bit_generator = getattr(rng, "bit_generator", None)
+        if bit_generator is not None:
+            rng_state = copy.deepcopy(bit_generator.state)
+
+        try:
+            support_task_batch = self._sample_tasks_at_task_size(
+                test_sampler,
+                num_tasks=heldout_eval_tasks,
+                k_shot=eval_k_shot,
+                q_query=eval_q_query,
+            )
+            loss, metrics = self._evaluate_task_batch_loss_and_metrics(
+                support_task_batch,
+                forward_batch_size=self.train_batch_size,
+                can_support_mode="sampled",
+            )
+        finally:
+            if rng_state is not None:
+                bit_generator.state = rng_state
+
+        result_recorder.write_metric_event(
+            fold_idx=fold + 1,
+            test_subject=test_subject,
+            event_type=(
+                "support_samples_phase2_initial_summary_"
+                f"k{eval_k_shot}_q{eval_q_query}"
+            ),
+            loss=loss,
+            metrics=metrics,
+        )
+        self.logger.info(
+            f"[Fold {fold + 1}/{num_subjects}] "
+            "Phase-2 initial sampled-support hold-out evaluation: "
+            f"k={eval_k_shot}, q={eval_q_query}, tasks={heldout_eval_tasks}, "
+            f"accuracy={metrics['accuracy']:.4f}"
+        )
+        return loss, metrics
+
     def _evaluate_learned_prototype_holdout_sweep(
         self,
         *,
@@ -2059,6 +2118,15 @@ class FewShotPainLearner:
                         "Each phase-2 update uses one configured batched episodic task batch; "
                         "sampled support tensors are carried through the batch interface while "
                         "learned prototype memory supplies CAN support."
+                    )
+                    self._write_phase2_initial_sampled_support_evaluation(
+                        fold=fold,
+                        num_subjects=num_subjects,
+                        test_subject=test_subject,
+                        test_sampler=test_sampler,
+                        configured_eval_pair=configured_eval_pair,
+                        heldout_eval_tasks=heldout_eval_tasks,
+                        result_recorder=result_recorder,
                     )
                     self._write_phase2_initial_prototype_bank_evaluation(
                         fold=fold,
