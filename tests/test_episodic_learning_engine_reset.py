@@ -189,7 +189,52 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
         for tensor in train_outputs:
             self.assertTrue(np.all(np.isfinite(tensor.numpy())))
 
-    def test_compiled_prototype_memory_step_updates_phase2_variables(self):
+    def _assert_prototype_phase_updates_only_memory(self, learner, update_fn):
+        engine = learner.engine
+        batch = _episode_batch(learner, task_count=2)
+        prototype_variables = list(engine.model.prototype_memory.trainable_variables)
+        can_variables = list(engine.model.cross_attention.weights)
+        encoder_variables = list(engine.model.encoder.weights)
+        phase2_variables = engine.prototype_phase_trainable_variables()
+
+        self.assertEqual(
+            [id(variable) for variable in phase2_variables],
+            [id(variable) for variable in prototype_variables],
+        )
+
+        prototype_before = [tf.identity(variable) for variable in prototype_variables]
+        can_before = [tf.identity(variable) for variable in can_variables]
+        encoder_before = [tf.identity(variable) for variable in encoder_variables]
+        logit_scale_before = tf.identity(engine.model.logit_scale)
+        original_encoder_trainable = engine.model.encoder.trainable
+        original_can_trainable = engine.model.cross_attention.trainable
+
+        outputs = update_fn(*batch)
+
+        for tensor in outputs:
+            self.assertTrue(np.all(np.isfinite(tensor.numpy())))
+        self.assertTrue(
+            any(
+                not np.allclose(variable.numpy(), old_value.numpy())
+                for variable, old_value in zip(prototype_variables, prototype_before)
+            )
+        )
+        for variable, old_value in zip(can_variables, can_before):
+            np.testing.assert_allclose(variable.numpy(), old_value.numpy(), atol=1e-7)
+        for variable, old_value in zip(encoder_variables, encoder_before):
+            np.testing.assert_allclose(variable.numpy(), old_value.numpy(), atol=1e-7)
+        np.testing.assert_allclose(
+            engine.model.logit_scale.numpy(),
+            logit_scale_before.numpy(),
+            atol=1e-7,
+        )
+        self.assertEqual(engine.model.encoder.trainable, original_encoder_trainable)
+        self.assertEqual(
+            engine.model.cross_attention.trainable,
+            original_can_trainable,
+        )
+
+    def test_compiled_prototype_memory_step_updates_only_prototype_memory(self):
         learner = _make_tiny_learner(
             self.data_dir,
             train_batch_size=2,
@@ -198,20 +243,26 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
             learned_prototype_slots_per_class=2,
         )
         engine = learner.engine
-        batch = _episode_batch(learner, task_count=2)
-        phase2_variables = engine.prototype_phase_trainable_variables()
-        before = [tf.identity(variable) for variable in phase2_variables]
 
-        outputs = engine.train_prototype_memory_batch_step_tensors(*batch)
-
+        self._assert_prototype_phase_updates_only_memory(
+            learner,
+            engine.train_prototype_memory_batch_step_tensors,
+        )
         self.assertIsNotNone(engine._compiled_prototype_memory_batch_step)
-        for tensor in outputs:
-            self.assertTrue(np.all(np.isfinite(tensor.numpy())))
-        self.assertTrue(
-            any(
-                not np.allclose(variable.numpy(), old_value.numpy())
-                for variable, old_value in zip(phase2_variables, before)
-            )
+
+    def test_eager_prototype_memory_step_updates_only_prototype_memory(self):
+        learner = _make_tiny_learner(
+            self.data_dir,
+            train_batch_size=2,
+            embedding_batch_size=2,
+            can_support_mode="learned_prototype_memory",
+            learned_prototype_slots_per_class=2,
+        )
+        engine = learner.engine
+
+        self._assert_prototype_phase_updates_only_memory(
+            learner,
+            engine.train_prototype_memory_batch_step_eager_tensors,
         )
 
 

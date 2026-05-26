@@ -1090,6 +1090,59 @@ class FewShotPainLearner:
                 q_query=original_q,
             )
 
+    def _evaluate_learned_prototype_bank_reference(
+        self,
+        *,
+        fold: int,
+        num_subjects: int,
+        test_subject: int,
+        test_sampler,
+        label: str,
+    ) -> tuple[dict, float, dict]:
+        """Evaluate all held-out queries with learned prototype-memory support."""
+        query_task = self.dataset.build_all_query_task(
+            int(test_subject),
+            split=test_sampler.data_split,
+            use_base_index=True,
+            normalize_with_query_subject_stats=True,
+        )
+        loss, metrics = self.evaluator.evaluate_prototype_memory_task_metrics(
+            query_task
+        )
+        self.logger.info(
+            f"[Fold {fold + 1}/{num_subjects}] "
+            f"{label} learned-prototype bank evaluated on all query samples: "
+            f"queries={len(query_task['query_y'])}, "
+            f"accuracy={metrics['accuracy']:.4f}"
+        )
+        return query_task, loss, metrics
+
+    def _write_phase2_initial_prototype_bank_evaluation(
+        self,
+        *,
+        fold: int,
+        num_subjects: int,
+        test_subject: int,
+        test_sampler,
+        result_recorder,
+    ) -> tuple[dict, float, dict]:
+        """Write pre-update learned-prototype bank performance to progress CSV."""
+        query_task, loss, metrics = self._evaluate_learned_prototype_bank_reference(
+            fold=fold,
+            num_subjects=num_subjects,
+            test_subject=test_subject,
+            test_sampler=test_sampler,
+            label="Phase-2 initial",
+        )
+        result_recorder.write_metric_event(
+            fold_idx=fold + 1,
+            test_subject=test_subject,
+            event_type="prototype_bank_phase2_initial_summary",
+            loss=loss,
+            metrics=metrics,
+        )
+        return query_task, loss, metrics
+
     def _evaluate_learned_prototype_holdout_sweep(
         self,
         *,
@@ -1103,20 +1156,14 @@ class FewShotPainLearner:
         result_recorder,
     ) -> dict:
         """Evaluate learned-prototype zero-shot and sampled-support holdout sizes."""
-        query_task = self.dataset.build_all_query_task(
-            int(test_subject),
-            split=test_sampler.data_split,
-            use_base_index=True,
-            normalize_with_query_subject_stats=True,
-        )
-        zero_shot_loss, zero_shot_metrics = (
-            self.evaluator.evaluate_prototype_memory_task_metrics(query_task)
-        )
-        self.logger.info(
-            f"[Fold {fold + 1}/{num_subjects}] "
-            "Prototype-only holdout evaluated on all query samples: "
-            f"queries={len(query_task['query_y'])}, "
-            f"accuracy={zero_shot_metrics['accuracy']:.4f}"
+        query_task, zero_shot_loss, zero_shot_metrics = (
+            self._evaluate_learned_prototype_bank_reference(
+                fold=fold,
+                num_subjects=num_subjects,
+                test_subject=test_subject,
+                test_sampler=test_sampler,
+                label="Post-phase-2",
+            )
         )
 
         sweep_metrics_by_size = {}
@@ -2012,6 +2059,13 @@ class FewShotPainLearner:
                         "Each phase-2 update uses one configured batched episodic task batch; "
                         "sampled support tensors are carried through the batch interface while "
                         "learned prototype memory supplies CAN support."
+                    )
+                    self._write_phase2_initial_prototype_bank_evaluation(
+                        fold=fold,
+                        num_subjects=num_subjects,
+                        test_subject=test_subject,
+                        test_sampler=test_sampler,
+                        result_recorder=result_recorder,
                     )
                 for prototype_epoch in range(prototype_epochs):
                     epoch_start_time = time.perf_counter()

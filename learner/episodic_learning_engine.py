@@ -464,13 +464,16 @@ class EpisodicLearningEngine:
     def prototype_phase_trainable_variables(self) -> list[tf.Variable]:
         """Return variables updated during prototype-memory fine-tuning.
 
-        The encoder is intentionally excluded from this phase.
+        Phase 2 updates only the learned prototype bank. Encoder, CAN,
+        logit-scale, classifier, triplet-center, and other model variables are
+        intentionally excluded.
         """
-        variables: list[tf.Variable] = [self.model.logit_scale]
-        if getattr(self.model, "prototype_memory", None) is not None:
-            variables.extend(self.model.prototype_memory.trainable_variables)
-        if getattr(self.model, "cross_attention", None) is not None:
-            variables.extend(self.model.cross_attention.trainable_variables)
+        prototype_memory = getattr(self.model, "prototype_memory", None)
+        variables: list[tf.Variable] = (
+            list(prototype_memory.trainable_variables)
+            if prototype_memory is not None
+            else []
+        )
         seen = set()
         unique_variables = []
         for variable in variables:
@@ -1409,9 +1412,16 @@ class EpisodicLearningEngine:
         original_support_mode = self.model.can_support_mode
         original_triplet_weight = self.triplet_loss_weight
         original_encoder_trainable = self.model.encoder.trainable
+        original_can_trainable = (
+            self.model.cross_attention.trainable
+            if getattr(self.model, "cross_attention", None) is not None
+            else None
+        )
         self.model.can_support_mode = "learned_prototype_memory"
         self.triplet_loss_weight = 0.0
         self.model.encoder.trainable = False
+        if getattr(self.model, "cross_attention", None) is not None:
+            self.model.cross_attention.trainable = False
         try:
             with tf.GradientTape() as tape:
                 task_outputs = self.forward_task_batch(
@@ -1419,7 +1429,7 @@ class EpisodicLearningEngine:
                     support_y_batch=support_y_batch,
                     query_x_batch=query_x_batch,
                     query_y_batch=query_y_batch,
-                    training=True,
+                    training=False,
                 )
                 batch_loss = tf.reduce_mean(task_outputs["losses"])
                 batch_task_loss = tf.reduce_mean(task_outputs["task_losses"])
@@ -1455,6 +1465,11 @@ class EpisodicLearningEngine:
             )
         finally:
             self.model.encoder.trainable = original_encoder_trainable
+            if (
+                getattr(self.model, "cross_attention", None) is not None
+                and original_can_trainable is not None
+            ):
+                self.model.cross_attention.trainable = original_can_trainable
             self.triplet_loss_weight = original_triplet_weight
             self.model.can_support_mode = original_support_mode
 
@@ -1881,9 +1896,16 @@ class EpisodicLearningEngine:
         original_support_mode = self.model.can_support_mode
         original_triplet_weight = self.triplet_loss_weight
         original_encoder_trainable = self.model.encoder.trainable
+        original_can_trainable = (
+            self.model.cross_attention.trainable
+            if getattr(self.model, "cross_attention", None) is not None
+            else None
+        )
         self.model.can_support_mode = "learned_prototype_memory"
         self.triplet_loss_weight = 0.0
         self.model.encoder.trainable = False
+        if getattr(self.model, "cross_attention", None) is not None:
+            self.model.cross_attention.trainable = False
         try:
             with tf.GradientTape() as tape:
                 task_outputs = self.forward_task_batch(
@@ -1891,7 +1913,7 @@ class EpisodicLearningEngine:
                     support_y_batch=support_y_batch,
                     query_x_batch=query_x_batch,
                     query_y_batch=query_y_batch,
-                    training=True,
+                    training=False,
                 )
                 batch_loss = tf.reduce_mean(task_outputs["losses"])
                 batch_task_loss = tf.reduce_mean(task_outputs["task_losses"])
@@ -1927,6 +1949,11 @@ class EpisodicLearningEngine:
             )
         finally:
             self.model.encoder.trainable = original_encoder_trainable
+            if (
+                getattr(self.model, "cross_attention", None) is not None
+                and original_can_trainable is not None
+            ):
+                self.model.cross_attention.trainable = original_can_trainable
             self.triplet_loss_weight = original_triplet_weight
             self.model.can_support_mode = original_support_mode
 

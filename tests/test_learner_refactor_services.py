@@ -445,11 +445,19 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         progress_file = recorder.start_fold(fold_idx=1, test_subject=7)
 
         learner = FewShotPainLearner.__new__(FewShotPainLearner)
-        learner.dataset = _FakePrototypeDataset()
         learner.train_batch_size = 2
         learner.logger = logging.getLogger("test_learned_prototype_sweep")
-        learner.evaluator = SimpleNamespace(
-            evaluate_prototype_memory_task_metrics=lambda task: (
+        reference_calls = []
+
+        def fake_reference(**kwargs):
+            reference_calls.append(kwargs["label"])
+            return (
+                _FakePrototypeDataset().build_all_query_task(
+                    subject=kwargs["test_subject"],
+                    split=kwargs["test_sampler"].data_split,
+                    use_base_index=True,
+                    normalize_with_query_subject_stats=True,
+                ),
                 0.6,
                 {
                     "task_loss": 0.6,
@@ -470,7 +478,8 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                     "transductive_f1": 0.75,
                 },
             )
-        )
+
+        learner._evaluate_learned_prototype_bank_reference = fake_reference
         support_modes = []
 
         def fake_eval(task_batch, forward_batch_size=None, can_support_mode=None):
@@ -524,6 +533,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             events,
             ["k_shot_summary_k1_q1", "k_shot_summary_k5_q5", "k_shot_summary_k10_q10"],
         )
+        self.assertEqual(reference_calls, ["Post-phase-2"])
         self.assertEqual(support_modes, ["sampled", "sampled", "sampled"])
         for row in rows:
             self.assertEqual(row["transductive_accuracy"], "0.9")
@@ -541,6 +551,76 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             ],
             [0.9],
         )
+
+    def test_phase2_initial_prototype_bank_evaluation_writes_progress_row(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(1, 1)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="f1",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_phase2_initial_prototype_bank"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=7)
+
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.dataset = _FakePrototypeDataset()
+        learner.logger = logging.getLogger("test_phase2_initial_prototype_bank")
+        reference_calls = []
+        learner.evaluator = SimpleNamespace(
+            evaluate_prototype_memory_task_metrics=lambda task: (
+                reference_calls.append(len(task["query_y"]))
+                or (
+                    0.7,
+                    {
+                        "task_loss": 0.7,
+                        "contrastive_loss": 0.0,
+                        "triplet_loss": 0.0,
+                        "can_local_loss": 0.1,
+                        "can_global_loss": 0.2,
+                        "accuracy": 0.45,
+                        "precision": 0.46,
+                        "recall": 0.44,
+                        "f1": 0.45,
+                        "intra_class_similarity": 0.3,
+                        "inter_class_similarity": 0.2,
+                        "transductive_loss": 0.65,
+                        "transductive_accuracy": 0.55,
+                        "transductive_precision": 0.56,
+                        "transductive_recall": 0.54,
+                        "transductive_f1": 0.55,
+                    },
+                )
+            )
+        )
+        sampler = _FakeSampler()
+        sampler.data_split = "test"
+
+        learner._write_phase2_initial_prototype_bank_evaluation(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            test_sampler=sampler,
+            result_recorder=recorder,
+        )
+        recorder.close_fold()
+
+        with open(progress_file, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(reference_calls, [4])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["event_type"],
+            "prototype_bank_phase2_initial_summary",
+        )
+        self.assertEqual(rows[0]["loss"], "0.7")
+        self.assertEqual(rows[0]["accuracy"], "0.45")
+        self.assertEqual(rows[0]["transductive_loss"], "0.65")
+        self.assertEqual(rows[0]["transductive_accuracy"], "0.55")
+        self.assertEqual(rows[0]["transductive_f1"], "0.55")
 
     def test_heldout_adaptation_restores_task_size_after_success_and_failure(self):
         evaluator = EpisodeEvaluationService(
