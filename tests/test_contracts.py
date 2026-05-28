@@ -544,6 +544,34 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("query_embeddings", outputs)
         self.assertNotIn("prototypes", outputs)
 
+    def test_prototype_bank_initializer_config_validation(self):
+        self.assertEqual(PainDatasetConfig().prototype_bank_init_samples_per_class, 0)
+        config = PainDatasetConfig(
+            dataset_source="painmonit",
+            task_class_ids=(0, 5),
+            attention_mode="can",
+            classifier_mode="prototype",
+            can_support_mode="learned_prototype_memory",
+            prototype_bank_init_samples_per_class=2,
+        )
+
+        self.assertEqual(config.prototype_bank_init_samples_per_class, 2)
+        with self.assertRaisesRegex(
+            ValueError, "prototype_bank_init_samples_per_class must be >= 0"
+        ):
+            PainDatasetConfig(prototype_bank_init_samples_per_class=-1)
+        with self.assertRaisesRegex(
+            ValueError, "requires can_support_mode='learned_prototype_memory'"
+        ):
+            PainDatasetConfig(
+                dataset_source="painmonit",
+                task_class_ids=(0, 5),
+                attention_mode="can",
+                classifier_mode="prototype",
+                can_support_mode="sampled",
+                prototype_bank_init_samples_per_class=1,
+            )
+
     def test_learned_prototype_memory_gradients_reach_memory_and_can(self):
         model = self._small_can_model(
             can_support_mode="learned_prototype_memory",

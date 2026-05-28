@@ -83,3 +83,17 @@ class LearnedPrototypeMemory(keras.layers.Layer):
         )
         labels = tf.broadcast_to(labels[tf.newaxis, :], [task_count, slot_count])
         return task_maps, labels
+
+    def assign_prototype_maps(self, maps) -> None:
+        """Assign a full prototype-map tensor after validating its shape."""
+        if self.prototype_maps is None:
+            raise RuntimeError("Cannot assign prototype maps before the layer is built.")
+        maps = tf.convert_to_tensor(maps, dtype=self.prototype_maps.dtype)
+        expected_shape = tuple(int(dim) for dim in self.prototype_maps.shape)
+        actual_shape = tuple(int(dim) for dim in maps.shape)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                "prototype maps shape mismatch: "
+                f"expected {expected_shape}, got {actual_shape}"
+            )
+        self.prototype_maps.assign(maps)

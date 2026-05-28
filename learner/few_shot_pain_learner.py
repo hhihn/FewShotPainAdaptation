@@ -170,6 +170,7 @@ class FewShotPainLearner:
             "can_margin_target": self.config.can_margin_target,
             "can_support_mode": self.config.can_support_mode,
             "learned_prototype_slots_per_class": self.config.learned_prototype_slots_per_class,
+            "prototype_bank_init_samples_per_class": self.config.prototype_bank_init_samples_per_class,
             "prototype_finetune_epochs": self.config.prototype_finetune_epochs,
             "prototype_finetune_tasks_per_epoch": self.config.prototype_finetune_tasks_per_epoch,
             "prototype_phase2_loss_mode": self.config.prototype_phase2_loss_mode,
@@ -429,6 +430,221 @@ class FewShotPainLearner:
             return max(1, int(configured_tasks))
         active_subject_count = int(len(train_sampler.active_subjects_array))
         return max(1, active_subject_count)
+
+    @staticmethod
+    def _rng_for_prototype_bank_initializer(
+        seed: int,
+        fold: int,
+        test_subject: int,
+    ) -> np.random.Generator:
+        """Return a local deterministic RNG for bank initialization."""
+        seed_sequence = np.random.SeedSequence(
+            [int(seed), int(fold) + 1, int(test_subject)]
+        )
+        return np.random.default_rng(seed_sequence)
+
+    @staticmethod
+    def _draw_even_subject_stratified_refs(
+        subject_ref_pools: dict[int, np.ndarray],
+        total_to_draw: int,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Draw references as evenly as possible across subject pools."""
+        total_to_draw = int(total_to_draw)
+        if total_to_draw <= 0:
+            raise ValueError("total_to_draw must be > 0")
+        available_total = sum(len(refs) for refs in subject_ref_pools.values())
+        if available_total < total_to_draw:
+            raise ValueError(
+                f"Only {available_total} samples available, but {total_to_draw} are required."
+            )
+
+        shuffled_pools: dict[int, np.ndarray] = {}
+        cursors: dict[int, int] = {}
+        selected_counts: dict[int, int] = {}
+        for subject, refs in subject_ref_pools.items():
+            refs = np.asarray(refs)
+            if len(refs) == 0:
+                continue
+            order = rng.permutation(len(refs))
+            shuffled_pools[int(subject)] = refs[order]
+            cursors[int(subject)] = 0
+            selected_counts[int(subject)] = 0
+
+        selected_refs = []
+        selected_subjects = []
+        while len(selected_refs) < total_to_draw:
+            eligible_subjects = [
+                subject
+                for subject, refs in shuffled_pools.items()
+                if cursors[subject] < len(refs)
+            ]
+            if not eligible_subjects:
+                raise ValueError(
+                    f"Could not draw {total_to_draw} stratified non-overlapping samples."
+                )
+            min_count = min(selected_counts[subject] for subject in eligible_subjects)
+            candidate_subjects = [
+                subject
+                for subject in eligible_subjects
+                if selected_counts[subject] == min_count
+            ]
+            subject = int(rng.choice(np.asarray(candidate_subjects, dtype=np.int32)))
+            ref = shuffled_pools[subject][cursors[subject]]
+            cursors[subject] += 1
+            selected_counts[subject] += 1
+            selected_refs.append(ref)
+            selected_subjects.append(subject)
+
+        if np.asarray(selected_refs[0]).ndim == 0:
+            refs_out = np.asarray(selected_refs, dtype=np.int64)
+        else:
+            refs_out = np.stack(selected_refs, axis=0).astype(np.int64, copy=False)
+        subjects_out = np.asarray(selected_subjects, dtype=np.int32)
+        permutation = rng.permutation(total_to_draw)
+        return refs_out[permutation], subjects_out[permutation]
+
+    def _normalize_prototype_bank_initializer_batch(
+        self,
+        batch_x: np.ndarray,
+        batch_subjects: np.ndarray,
+        *,
+        train_subjects: list[int],
+        train_split: str,
+        train_sampler,
+    ) -> np.ndarray:
+        """Normalize initializer windows according to episodic task semantics."""
+        normalize_mode = str(self.config.task_normalize_mode)
+        if normalize_mode == "subject":
+            return self.dataset._normalize_data_by_subjects(batch_x, batch_subjects)
+        if normalize_mode == "split":
+            stats = getattr(train_sampler, "split_normalization_stats", None)
+            if stats is None:
+                stats = self.dataset.compute_split_normalization_stats(
+                    train_subjects,
+                    split=train_split,
+                )
+            return self.dataset._apply_stats(batch_x, stats)
+        if normalize_mode == "support":
+            stats = self.dataset._compute_batch_stats(batch_x)
+            return self.dataset._apply_stats(batch_x, stats)
+        if normalize_mode == "none":
+            return batch_x
+        raise ValueError(
+            f"Unknown task_normalize_mode: {normalize_mode}. "
+            "Use 'subject', 'split', 'support', or 'none'."
+        )
+
+    def _initialize_prototype_bank_from_training_samples(
+        self,
+        *,
+        fold: int,
+        test_subject: int,
+        train_sampler,
+    ) -> dict:
+        """Initialize learned prototype-memory slots from training feature means."""
+        samples_per_slot = int(self.config.prototype_bank_init_samples_per_class)
+        if samples_per_slot == 0:
+            return {"enabled": False}
+        if self.config.can_support_mode != "learned_prototype_memory":
+            raise ValueError(
+                "prototype_bank_init_samples_per_class > 0 requires "
+                "can_support_mode='learned_prototype_memory'"
+            )
+
+        prototype_memory = getattr(self.model, "prototype_memory", None)
+        if prototype_memory is None:
+            raise ValueError("Model does not expose learned prototype memory.")
+
+        slots_per_class = int(self.config.learned_prototype_slots_per_class)
+        total_per_class = samples_per_slot * slots_per_class
+        train_subjects = [
+            int(subject)
+            for subject in np.asarray(train_sampler.active_subjects_array).tolist()
+            if int(subject) != int(test_subject)
+        ]
+        if not train_subjects:
+            raise ValueError("No LOSO training subjects available for prototype init.")
+
+        train_split = str(getattr(train_sampler, "data_split", "all"))
+        split_index = self.dataset._get_sampling_index_for_split(
+            train_split,
+            use_base_index=False,
+        )
+        rng = self._rng_for_prototype_bank_initializer(
+            self.seed,
+            fold,
+            test_subject,
+        )
+        class_slot_maps = []
+        metadata = {
+            "enabled": True,
+            "samples_per_slot": samples_per_slot,
+            "slots_per_class": slots_per_class,
+            "train_subjects": train_subjects,
+            "classes": {},
+        }
+
+        for class_id in range(int(self.config.n_way)):
+            subject_ref_pools = {
+                subject: np.asarray(split_index[subject][class_id])
+                for subject in train_subjects
+            }
+            available_count = int(sum(len(refs) for refs in subject_ref_pools.values()))
+            if available_count < total_per_class:
+                raise ValueError(
+                    "Insufficient training samples for prototype bank initialization: "
+                    f"class={class_id}, available={available_count}, "
+                    f"required={total_per_class} "
+                    f"({samples_per_slot} samples_per_slot * {slots_per_class} slots)."
+                )
+
+            selected_refs, selected_subjects = self._draw_even_subject_stratified_refs(
+                subject_ref_pools,
+                total_per_class,
+                rng,
+            )
+            class_maps = []
+            class_metadata = {"slots": []}
+            for slot_id in range(slots_per_class):
+                start = slot_id * samples_per_slot
+                stop = start + samples_per_slot
+                slot_refs = selected_refs[start:stop]
+                slot_subjects = selected_subjects[start:stop]
+                slot_x = self.dataset._gather_samples(slot_refs).astype(
+                    np.float32,
+                    copy=False,
+                )
+                slot_x = self._normalize_prototype_bank_initializer_batch(
+                    slot_x,
+                    slot_subjects,
+                    train_subjects=train_subjects,
+                    train_split=train_split,
+                    train_sampler=train_sampler,
+                ).astype(np.float32, copy=False)
+                slot_feature_maps = self.model.encode_feature_map(
+                    tf.convert_to_tensor(slot_x, dtype=tf.float32),
+                    training=False,
+                )
+                mean_map = tf.reduce_mean(slot_feature_maps, axis=0)
+                class_maps.append(mean_map)
+                class_metadata["slots"].append(
+                    {
+                        "refs": np.array(slot_refs, copy=True),
+                        "subjects": np.array(slot_subjects, copy=True),
+                    }
+                )
+            metadata["classes"][class_id] = class_metadata
+            class_slot_maps.append(tf.stack(class_maps, axis=0))
+
+        prototype_maps = tf.stack(class_slot_maps, axis=0)
+        prototype_memory.assign_prototype_maps(prototype_maps)
+        self.logger.info(
+            "Initialized learned prototype bank from training feature means: "
+            f"samples_per_slot={samples_per_slot}, slots_per_class={slots_per_class}, "
+            f"train_subjects={len(train_subjects)}, split={train_split}."
+        )
+        return metadata
 
     def _iter_prototype_finetune_task_batches(
         self,
@@ -2151,6 +2367,11 @@ class FewShotPainLearner:
                 )
 
             if self.config.can_support_mode == "learned_prototype_memory":
+                self._initialize_prototype_bank_from_training_samples(
+                    fold=fold,
+                    test_subject=test_subject,
+                    train_sampler=train_sampler,
+                )
                 prototype_epochs = max(0, int(self.config.prototype_finetune_epochs))
                 prototype_updates_per_epoch = (
                     self._resolve_prototype_finetune_tasks_per_epoch(train_sampler)

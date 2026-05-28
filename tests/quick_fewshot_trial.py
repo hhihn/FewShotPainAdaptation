@@ -142,6 +142,13 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
         can_margin_loss_weight=float(getattr(args, "can_margin_loss_weight", 0.2)),
         can_margin_target=float(getattr(args, "can_margin_target", 0.3)),
+        can_support_mode=str(getattr(args, "can_support_mode", "sampled")),
+        learned_prototype_slots_per_class=int(
+            getattr(args, "learned_prototype_slots_per_class", 1)
+        ),
+        prototype_bank_init_samples_per_class=int(
+            getattr(args, "prototype_bank_init_samples_per_class", 0)
+        ),
         train_batch_size=args.task_batch_size,
         embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
         tasks_per_epoch=max(1, args.updates * args.task_batch_size),
@@ -330,6 +337,13 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "can_global_loss_weight": float(config.can_global_loss_weight),
         "can_margin_loss_weight": float(config.can_margin_loss_weight),
         "can_margin_target": float(config.can_margin_target),
+        "can_support_mode": str(config.can_support_mode),
+        "learned_prototype_slots_per_class": int(
+            config.learned_prototype_slots_per_class
+        ),
+        "prototype_bank_init_samples_per_class": int(
+            config.prototype_bank_init_samples_per_class
+        ),
         "learning_rate": float(args.learning_rate),
         "lr_schedule": str(config.lr_schedule),
         "lr_decay_alpha": float(config.lr_decay_alpha),
@@ -620,6 +634,14 @@ def main() -> None:
     parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
     parser.add_argument("--can-margin-loss-weight", type=float, default=0.2)
     parser.add_argument("--can-margin-target", type=float, default=0.3)
+    parser.add_argument(
+        "--can-support-mode",
+        type=str,
+        default="sampled",
+        choices=("sampled", "learned_prototype_memory"),
+    )
+    parser.add_argument("--learned-prototype-slots-per-class", type=int, default=1)
+    parser.add_argument("--prototype-bank-init-samples-per-class", type=int, default=0)
     parser.add_argument(
         "--normalize-mode",
         type=str,

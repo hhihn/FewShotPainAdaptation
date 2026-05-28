@@ -220,6 +220,116 @@ class _FakePrototypeDataset:
         }
 
 
+class _InitializerPrototypeMemory:
+    def __init__(self, shape):
+        self.shape = tuple(shape)
+        self.assigned = np.zeros(self.shape, dtype=np.float32)
+
+    def assign_prototype_maps(self, maps):
+        maps = np.asarray(maps, dtype=np.float32)
+        if maps.shape != self.shape:
+            raise ValueError(f"expected {self.shape}, got {maps.shape}")
+        self.assigned = maps
+
+
+class _InitializerModel:
+    def __init__(self, num_classes=2, slots_per_class=2, feature_time=2, feature_dim=1):
+        self.prototype_memory = _InitializerPrototypeMemory(
+            (num_classes, slots_per_class, feature_time, feature_dim)
+        )
+        self.encoded_batches = []
+
+    def encode_feature_map(self, x, training=False):
+        self.encoded_batches.append(np.asarray(x.numpy(), dtype=np.float32))
+        return x
+
+
+class _InitializerDataset:
+    def __init__(self, samples_per_subject_class=6, num_subjects=4, n_way=2):
+        self.config = SimpleNamespace(n_way=n_way, task_normalize_mode="none")
+        self.X = []
+        self.subjects = []
+        self.index_by_split = {"train": {}}
+        row = 0
+        for subject in range(num_subjects):
+            self.index_by_split["train"][subject] = {}
+            for class_id in range(n_way):
+                refs = []
+                for rep in range(samples_per_subject_class):
+                    value = float(subject * 100 + class_id * 10 + rep)
+                    self.X.append(np.full((2, 1), value, dtype=np.float32))
+                    self.subjects.append(subject)
+                    refs.append(row)
+                    row += 1
+                self.index_by_split["train"][subject][class_id] = np.asarray(
+                    refs,
+                    dtype=np.int64,
+                )
+        self.X = np.stack(self.X, axis=0)
+        self.subjects = np.asarray(self.subjects, dtype=np.int32)
+
+    def _get_sampling_index_for_split(self, split, use_base_index=False):
+        del use_base_index
+        return self.index_by_split[split]
+
+    def _gather_samples(self, refs):
+        return self.X[np.asarray(refs, dtype=np.int64)]
+
+    def _normalize_data_by_subjects(self, data, subjects):
+        del subjects
+        return data
+
+    @staticmethod
+    def _compute_batch_stats(data):
+        return {
+            "mean": np.mean(data, axis=(0, 1), keepdims=True),
+            "std": np.std(data, axis=(0, 1), keepdims=True) + 1e-8,
+        }
+
+    @staticmethod
+    def _apply_stats(data, stats):
+        return (data - stats["mean"]) / stats["std"]
+
+    def compute_split_normalization_stats(self, subjects, split="train"):
+        refs = []
+        for subject in subjects:
+            for class_id in range(self.config.n_way):
+                refs.extend(self.index_by_split[split][int(subject)][class_id])
+        return self._compute_batch_stats(self._gather_samples(np.asarray(refs)))
+
+
+def _make_initializer_learner(
+    *,
+    samples_per_slot=2,
+    slots_per_class=2,
+    samples_per_subject_class=6,
+    normalize_mode="none",
+):
+    learner = FewShotPainLearner.__new__(FewShotPainLearner)
+    learner.seed = 17
+    learner.config = SimpleNamespace(
+        n_way=2,
+        task_normalize_mode=normalize_mode,
+        can_support_mode="learned_prototype_memory",
+        learned_prototype_slots_per_class=slots_per_class,
+        prototype_bank_init_samples_per_class=samples_per_slot,
+    )
+    learner.dataset = _InitializerDataset(
+        samples_per_subject_class=samples_per_subject_class,
+        n_way=2,
+    )
+    learner.dataset.config.task_normalize_mode = normalize_mode
+    learner.model = _InitializerModel(num_classes=2, slots_per_class=slots_per_class)
+    learner.logger = logging.getLogger("test_prototype_bank_initializer")
+    train_sampler = SimpleNamespace(
+        active_subjects_array=np.asarray([0, 1, 2, 3], dtype=np.int32),
+        data_split="train",
+        split_normalization_stats=None,
+        rng=np.random.default_rng(99),
+    )
+    return learner, train_sampler
+
+
 class LearnerRefactorServiceTests(unittest.TestCase):
     def _make_recorder(self):
         tmp = tempfile.TemporaryDirectory()
@@ -251,6 +361,68 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertIn("k_shot_accuracies", size_bucket)
         self.assertEqual(results["validation_checkpoint_metric"], "f1")
         self.assertEqual(results["validation_checkpoint_mode"], "max")
+
+    def test_prototype_bank_initializer_uses_training_subjects_stratified_nonoverlap(self):
+        learner, train_sampler = _make_initializer_learner(samples_per_slot=2)
+        rng_state_before = train_sampler.rng.bit_generator.state
+
+        metadata = learner._initialize_prototype_bank_from_training_samples(
+            fold=0,
+            test_subject=3,
+            train_sampler=train_sampler,
+        )
+
+        self.assertTrue(metadata["enabled"])
+        self.assertEqual(train_sampler.rng.bit_generator.state, rng_state_before)
+        self.assertEqual(metadata["train_subjects"], [0, 1, 2])
+        assigned = learner.model.prototype_memory.assigned
+        for class_id, class_metadata in metadata["classes"].items():
+            refs_by_slot = [
+                slot["refs"].astype(np.int64).tolist()
+                for slot in class_metadata["slots"]
+            ]
+            flattened_refs = [ref for refs in refs_by_slot for ref in refs]
+            self.assertEqual(len(flattened_refs), len(set(flattened_refs)))
+            subjects = np.concatenate(
+                [slot["subjects"] for slot in class_metadata["slots"]], axis=0
+            )
+            self.assertNotIn(3, subjects.tolist())
+            counts = [int(np.sum(subjects == subject)) for subject in (0, 1, 2)]
+            self.assertLessEqual(max(counts) - min(counts), 1)
+            for slot_id, refs in enumerate(refs_by_slot):
+                expected = np.mean(learner.dataset.X[np.asarray(refs)], axis=0)
+                np.testing.assert_allclose(
+                    assigned[int(class_id), slot_id],
+                    expected,
+                    atol=1e-6,
+                )
+
+    def test_prototype_bank_initializer_zero_samples_leaves_memory_unchanged(self):
+        learner, train_sampler = _make_initializer_learner(samples_per_slot=0)
+        before = learner.model.prototype_memory.assigned.copy()
+
+        metadata = learner._initialize_prototype_bank_from_training_samples(
+            fold=0,
+            test_subject=3,
+            train_sampler=train_sampler,
+        )
+
+        self.assertFalse(metadata["enabled"])
+        np.testing.assert_allclose(learner.model.prototype_memory.assigned, before)
+
+    def test_prototype_bank_initializer_rejects_insufficient_nonoverlap_samples(self):
+        learner, train_sampler = _make_initializer_learner(
+            samples_per_slot=5,
+            slots_per_class=2,
+            samples_per_subject_class=3,
+        )
+
+        with self.assertRaisesRegex(ValueError, "Insufficient training samples"):
+            learner._initialize_prototype_bank_from_training_samples(
+                fold=0,
+                test_subject=3,
+                train_sampler=train_sampler,
+            )
 
     def test_cv_result_recorder_records_standard_diagnostics(self):
         recorder = self._make_recorder()

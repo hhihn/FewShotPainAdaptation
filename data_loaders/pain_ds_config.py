@@ -109,6 +109,7 @@ class PainDatasetConfig:
     can_margin_target: float = 0.3
     can_support_mode: str = "sampled"
     learned_prototype_slots_per_class: int = 1
+    prototype_bank_init_samples_per_class: int = 0
     prototype_finetune_epochs: int = 1
     prototype_finetune_tasks_per_epoch: Optional[int] = None
     prototype_phase2_loss_mode: str = "ce_can"
@@ -289,6 +290,11 @@ class PainDatasetConfig:
         )
         if self.learned_prototype_slots_per_class <= 0:
             raise ValueError("learned_prototype_slots_per_class must be > 0")
+        self.prototype_bank_init_samples_per_class = int(
+            self.prototype_bank_init_samples_per_class
+        )
+        if self.prototype_bank_init_samples_per_class < 0:
+            raise ValueError("prototype_bank_init_samples_per_class must be >= 0")
         self.prototype_finetune_epochs = int(self.prototype_finetune_epochs)
         if self.prototype_finetune_epochs < 0:
             raise ValueError("prototype_finetune_epochs must be non-negative")
@@ -315,6 +321,11 @@ class PainDatasetConfig:
                 raise ValueError(
                     "can_support_mode='learned_prototype_memory' requires classifier_mode='prototype'"
                 )
+        elif self.prototype_bank_init_samples_per_class > 0:
+            raise ValueError(
+                "prototype_bank_init_samples_per_class > 0 requires "
+                "can_support_mode='learned_prototype_memory'"
+            )
         if self.triplet_loss_weight < 0:
             raise ValueError("triplet_loss_weight must be non-negative")
         if self.triplet_margin < 0:

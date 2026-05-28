@@ -111,6 +111,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         learned_prototype_slots_per_class=int(
             getattr(args, "learned_prototype_slots_per_class", 2)
         ),
+        prototype_bank_init_samples_per_class=int(
+            getattr(args, "prototype_bank_init_samples_per_class", 0)
+        ),
         prototype_finetune_epochs=int(getattr(args, "prototype_finetune_epochs", 1)),
         prototype_finetune_tasks_per_epoch=getattr(
             args,
@@ -240,6 +243,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "can_support_mode": str(config.can_support_mode),
         "learned_prototype_slots_per_class": int(
             config.learned_prototype_slots_per_class
+        ),
+        "prototype_bank_init_samples_per_class": int(
+            config.prototype_bank_init_samples_per_class
         ),
         "prototype_finetune_epochs": int(config.prototype_finetune_epochs),
         "prototype_finetune_tasks_per_epoch": (
@@ -380,6 +386,7 @@ def main() -> None:
         choices=("sampled", "learned_prototype_memory"),
     )
     parser.add_argument("--learned-prototype-slots-per-class", type=int, default=2)
+    parser.add_argument("--prototype-bank-init-samples-per-class", type=int, default=86*3)
     parser.add_argument("--prototype-finetune-epochs", type=int, default=1)
     parser.add_argument("--prototype-finetune-tasks-per-epoch", type=int, default=50)
     parser.add_argument(
