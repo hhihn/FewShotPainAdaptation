@@ -153,6 +153,12 @@ class PainDatasetConfig:
         10  # Persist train_update CSV rows every N train batches
     )
     csv_flush_every_events: int = 100  # Flush CSV file handle every N written events
+    export_can_feature_maps: bool = (
+        True  # Write compact CAN feature-map exports for research diagnostics
+    )
+    export_raw_can_feature_maps: bool = (
+        False  # If True, include raw temporal CAN feature maps in diagnostic NPZs
+    )
     seed: int = 42  # Global seed for reproducible runs
     deterministic_ops: bool = True  # TensorFlow deterministic op mode
     enable_window_shift_augmentation: bool = (

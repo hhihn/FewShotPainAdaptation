@@ -198,6 +198,8 @@ class FewShotPainLearner:
             "train_prefetch_batches": self.train_prefetch_batches,
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
             "csv_flush_every_events": self.config.csv_flush_every_events,
+            "export_can_feature_maps": self.config.export_can_feature_maps,
+            "export_raw_can_feature_maps": self.config.export_raw_can_feature_maps,
             "embedding_dim": self.embedding_dim,
             "encoder_backend": self.config.encoder_backend,
             "eegnet_temporal_filters": self.config.eegnet_temporal_filters,
@@ -1340,6 +1342,8 @@ class FewShotPainLearner:
         q_query: int,
         zero_shot_metrics: dict,
         k_shot_metrics: dict,
+        zero_shot_support_mode: str | None = None,
+        k_shot_support_mode: str | None = None,
     ) -> str | None:
         """Write per-fold CAN alignment summary CSV.
 
@@ -1403,11 +1407,12 @@ class FewShotPainLearner:
                         "can_true_class_score": metrics.get("can_true_class_score"),
                         "can_best_other_score": metrics.get("can_best_other_score"),
                         "can_score_margin": metrics.get("can_score_margin"),
-                        "can_support_mode": getattr(
-                            self.config,
-                            "can_support_mode",
-                            "sampled",
-                        ),
+                        "can_support_mode": (
+                            zero_shot_support_mode
+                            if phase == "zero_shot"
+                            else k_shot_support_mode
+                        )
+                        or getattr(self.config, "can_support_mode", "sampled"),
                     }
                 )
         return str(output_path)
@@ -1422,6 +1427,8 @@ class FewShotPainLearner:
         q_query: int,
         zero_shot_task_batch: list[dict],
         k_shot_task_batch: list[dict],
+        zero_shot_support_mode: str | None = None,
+        k_shot_support_mode: str | None = None,
     ) -> str | None:
         """Write per-sample CAN diagnostic statistics.
 
@@ -1437,20 +1444,19 @@ class FewShotPainLearner:
         if getattr(self.config, "attention_mode", "none") != "can":
             return None
 
-        can_support_mode = getattr(self.config, "can_support_mode", "sampled")
         rows = []
         rows.extend(
             self.evaluator.collect_can_sample_statistics(
                 zero_shot_task_batch,
                 phase="zero_shot",
-                can_support_mode=can_support_mode,
+                can_support_mode=zero_shot_support_mode,
             )
         )
         rows.extend(
             self.evaluator.collect_can_sample_statistics(
                 k_shot_task_batch,
                 phase="k_shot",
-                can_support_mode=can_support_mode,
+                can_support_mode=k_shot_support_mode,
             )
         )
         if not rows:
@@ -1499,6 +1505,64 @@ class FewShotPainLearner:
                         **row,
                     }
                 )
+        return str(output_path)
+
+    def _write_can_feature_export(
+        self,
+        *,
+        progress_file: str,
+        fold_idx: int,
+        test_subject: int,
+        k_shot: int,
+        q_query: int,
+        zero_shot_task_batch: list[dict],
+        k_shot_task_batch: list[dict],
+        zero_shot_support_mode: str | None = None,
+        k_shot_support_mode: str | None = None,
+    ) -> str | None:
+        """Write compact CAN feature-map exports for subject-adaptation analysis."""
+        if getattr(self.config, "attention_mode", "none") != "can":
+            return None
+        if not bool(getattr(self.config, "export_can_feature_maps", True)):
+            return None
+
+        include_raw = bool(getattr(self.config, "export_raw_can_feature_maps", False))
+        phase_exports = {
+            "zero_shot": self.evaluator.collect_can_feature_export(
+                zero_shot_task_batch,
+                phase="zero_shot",
+                can_support_mode=zero_shot_support_mode,
+                include_raw_feature_maps=include_raw,
+            ),
+            "k_shot": self.evaluator.collect_can_feature_export(
+                k_shot_task_batch,
+                phase="k_shot",
+                can_support_mode=k_shot_support_mode,
+                include_raw_feature_maps=include_raw,
+            ),
+        }
+        if not any(phase_exports.values()):
+            return None
+
+        payload = {
+            "fold": np.array(int(fold_idx), dtype=np.int32),
+            "test_subject": np.array(int(test_subject), dtype=np.int32),
+            "k_shot": np.array(int(k_shot), dtype=np.int32),
+            "q_query": np.array(int(q_query), dtype=np.int32),
+            "include_raw_feature_maps": np.array(include_raw),
+        }
+        for phase, export in phase_exports.items():
+            for key, value in export.items():
+                payload[f"{phase}_{key}"] = value
+
+        progress_path = Path(progress_file)
+        output_path = progress_path.with_name(
+            progress_path.name.replace(
+                "_training_progress.csv",
+                "_can_feature_exports.npz",
+            )
+        )
+        np.savez_compressed(output_path, **payload)
         return str(output_path)
 
     def train(
@@ -2466,6 +2530,14 @@ class FewShotPainLearner:
                 k_shot_loss=k_shot_loss,
                 k_shot_metrics=k_shot_metrics,
             )
+            zero_shot_support_mode = getattr(
+                self.config,
+                "can_support_mode",
+                "sampled",
+            )
+            k_shot_support_mode = zero_shot_support_mode
+            if self.config.can_support_mode == "learned_prototype_memory":
+                k_shot_support_mode = "sampled"
             can_alignment_file = self._write_can_alignment_summary(
                 progress_file=progress_file,
                 fold_idx=fold + 1,
@@ -2474,6 +2546,8 @@ class FewShotPainLearner:
                 q_query=configured_eval_pair[1],
                 zero_shot_metrics=zero_shot_metrics,
                 k_shot_metrics=k_shot_metrics,
+                zero_shot_support_mode=zero_shot_support_mode,
+                k_shot_support_mode=k_shot_support_mode,
             )
             if can_alignment_file is not None:
                 result_recorder.record_can_alignment_summary_file(can_alignment_file)
@@ -2489,6 +2563,8 @@ class FewShotPainLearner:
                 q_query=configured_eval_pair[1],
                 zero_shot_task_batch=zero_shot_task_batch,
                 k_shot_task_batch=k_shot_task_batch,
+                zero_shot_support_mode=zero_shot_support_mode,
+                k_shot_support_mode=k_shot_support_mode,
             )
             if can_sample_statistics_file is not None:
                 result_recorder.record_can_sample_statistics_file(
@@ -2497,6 +2573,23 @@ class FewShotPainLearner:
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
                     f"Saved CAN sample statistics to {can_sample_statistics_file}"
+                )
+            can_feature_export_file = self._write_can_feature_export(
+                progress_file=progress_file,
+                fold_idx=fold + 1,
+                test_subject=int(test_subject),
+                k_shot=configured_eval_pair[0],
+                q_query=configured_eval_pair[1],
+                zero_shot_task_batch=zero_shot_task_batch,
+                k_shot_task_batch=k_shot_task_batch,
+                zero_shot_support_mode=zero_shot_support_mode,
+                k_shot_support_mode=k_shot_support_mode,
+            )
+            if can_feature_export_file is not None:
+                result_recorder.record_can_feature_export_file(can_feature_export_file)
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    f"Saved CAN feature export to {can_feature_export_file}"
                 )
             result_recorder.close_fold()
             progress.log_fold_complete(

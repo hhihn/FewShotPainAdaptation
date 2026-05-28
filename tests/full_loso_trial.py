@@ -169,6 +169,12 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             1, int(args.train_progress_write_every_n_batches)
         ),
         csv_flush_every_events=max(1, int(args.csv_flush_every_events)),
+        export_can_feature_maps=not bool(
+            getattr(args, "disable_can_feature_export", False)
+        ),
+        export_raw_can_feature_maps=bool(
+            getattr(args, "export_raw_can_feature_maps", False)
+        ),
         single_loso_fold=False,  # Full LOSO over all available subjects.
         loso_start_index=args.loso_start_index,
         loso_stop_index=args.loso_stop_index,
@@ -304,6 +310,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
         "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
         "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
+        "export_can_feature_maps": bool(config.export_can_feature_maps),
+        "export_raw_can_feature_maps": bool(config.export_raw_can_feature_maps),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
         "deterministic_ops": bool(config.deterministic_ops),
@@ -511,6 +519,16 @@ def main() -> None:
         "--csv-flush-every-events",
         type=int,
         default=100,
+    )
+    parser.add_argument(
+        "--disable-can-feature-export",
+        action="store_true",
+        help="Disable compact CAN feature-map NPZ exports.",
+    )
+    parser.add_argument(
+        "--export-raw-can-feature-maps",
+        action="store_true",
+        help="Include raw temporal CAN feature maps in diagnostic NPZ exports.",
     )
     parser.add_argument("--disable-window-shift", action="store_true")
     parser.add_argument(

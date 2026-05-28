@@ -107,6 +107,50 @@ class _FakeEvaluationEngine:
         }
 
 
+class _FakeFeatureExportEngine:
+    def __init__(self):
+        self.model = SimpleNamespace(can_support_mode="learned_prototype_memory")
+        self.triplet_loss_weight = 1.0
+
+    def forward_task(
+        self,
+        support_x,
+        support_y,
+        query_x,
+        query_y,
+        training=False,
+        return_similarity_scores=True,
+    ):
+        del support_x, training, return_similarity_scores
+        support_size = int(support_y.shape[0])
+        query_size = int(query_y.shape[0])
+        logits = tf.one_hot(query_y, depth=2, dtype=tf.float32) * 2.0
+        return {
+            "logits": logits,
+            "loss": tf.constant(0.2, dtype=tf.float32),
+            "task_loss": tf.constant(0.2, dtype=tf.float32),
+            "contrastive_loss": tf.constant(0.0, dtype=tf.float32),
+            "triplet_loss": tf.constant(0.0, dtype=tf.float32),
+            "can_local_loss": tf.constant(0.0, dtype=tf.float32),
+            "can_global_loss": tf.constant(0.0, dtype=tf.float32),
+            "can_margin_loss": tf.constant(0.0, dtype=tf.float32),
+            "model_aux_loss": tf.constant(0.0, dtype=tf.float32),
+            "support_feature_maps": tf.reshape(
+                tf.range(support_size * 3 * 2, dtype=tf.float32),
+                (support_size, 3, 2),
+            ),
+            "query_feature_maps": tf.reshape(
+                tf.range(query_size * 3 * 2, dtype=tf.float32),
+                (query_size, 3, 2),
+            ),
+            "prototype_feature_maps": tf.reshape(
+                tf.range(2 * 3 * 2, dtype=tf.float32),
+                (2, 3, 2),
+            ),
+            "similarity_scores": tf.one_hot(query_y, depth=2, dtype=tf.float32),
+        }
+
+
 class _FakeDatasetForSampler:
     def __init__(self):
         self.config = SimpleNamespace(
@@ -200,6 +244,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "k_shot_transductive_accuracies",
             "can_alignment_summary_files",
             "can_sample_statistics_files",
+            "can_feature_export_files",
             "validation_checkpoint_values",
             "validation_checkpoint_metrics",
         ):
@@ -431,6 +476,36 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertEqual(engine.model.can_support_mode, "learned_prototype_memory")
         self.assertEqual(loss, 0.25)
         self.assertEqual(metrics["accuracy"], 1.0)
+
+    def test_episode_evaluation_collects_compact_can_feature_export(self):
+        engine = _FakeFeatureExportEngine()
+        evaluator = EpisodeEvaluationService(
+            config=SimpleNamespace(n_way=2, attention_mode="can"),
+            engine=engine,
+            task_pipeline=None,
+        )
+        task = {
+            "support_X": np.zeros((2, 3, 1), dtype=np.float32),
+            "support_y": np.array([0, 1], dtype=np.int32),
+            "query_X": np.zeros((2, 3, 1), dtype=np.float32),
+            "query_y": np.array([0, 1], dtype=np.int32),
+        }
+
+        export = evaluator.collect_can_feature_export(
+            [task],
+            phase="k_shot",
+            can_support_mode="sampled",
+        )
+
+        self.assertEqual(engine.model.can_support_mode, "learned_prototype_memory")
+        self.assertEqual(engine.triplet_loss_weight, 1.0)
+        self.assertEqual(export["query_features"].shape, (2, 2))
+        self.assertEqual(export["support_features"].shape, (2, 2))
+        self.assertEqual(export["prototype_features"].shape, (2, 2))
+        self.assertTrue(np.array_equal(export["query_y"], np.array([0, 1])))
+        self.assertTrue(np.array_equal(export["query_pred"], np.array([0, 1])))
+        self.assertEqual(str(export["phase"]), "k_shot")
+        self.assertEqual(str(export["can_support_mode"]), "sampled")
 
     def test_learned_prototype_holdout_sweep_writes_sampled_support_rows(self):
         tmp = tempfile.TemporaryDirectory()

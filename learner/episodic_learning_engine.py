@@ -914,6 +914,10 @@ class EpisodicLearningEngine:
             "support_embeddings",
             "query_embeddings",
             "prototypes",
+            "support_feature_maps",
+            "query_feature_maps",
+            "prototype_feature_maps",
+            "prototype_support_y",
             "can_proto_attention",
             "can_query_attention",
         ):
@@ -969,6 +973,10 @@ class EpisodicLearningEngine:
             "support_embeddings",
             "query_embeddings",
             "prototypes",
+            "support_feature_maps",
+            "query_feature_maps",
+            "prototype_feature_maps",
+            "prototype_support_y",
             "can_proto_attention",
             "can_query_attention",
         ):
@@ -1549,6 +1557,10 @@ class EpisodicLearningEngine:
                 "support_embeddings",
                 "query_embeddings",
                 "prototypes",
+                "support_feature_maps",
+                "query_feature_maps",
+                "prototype_feature_maps",
+                "prototype_support_y",
                 "can_proto_attention",
                 "can_query_attention",
             ):
