@@ -240,8 +240,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         size_bucket = results["heldout_eval_by_task_size"]["k2_q3"]
 
         for key in (
-            "zero_shot_transductive_accuracies",
-            "k_shot_transductive_accuracies",
             "can_alignment_summary_files",
             "can_sample_statistics_files",
             "can_feature_export_files",
@@ -249,12 +247,12 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "validation_checkpoint_metrics",
         ):
             self.assertIn(key, results)
-        self.assertIn("zero_shot_transductive_accuracies", size_bucket)
-        self.assertIn("k_shot_transductive_accuracies", size_bucket)
+        self.assertIn("zero_shot_accuracies", size_bucket)
+        self.assertIn("k_shot_accuracies", size_bucket)
         self.assertEqual(results["validation_checkpoint_metric"], "f1")
         self.assertEqual(results["validation_checkpoint_mode"], "max")
 
-    def test_cv_result_recorder_records_standard_diagnostics_and_transductive(self):
+    def test_cv_result_recorder_records_standard_diagnostics(self):
         recorder = self._make_recorder()
         metrics = {
             "task_loss": 0.4,
@@ -268,11 +266,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "f1": 0.74,
             "intra_class_similarity": 0.9,
             "inter_class_similarity": 0.2,
-            "transductive_loss": 0.35,
-            "transductive_accuracy": 0.8,
-            "transductive_precision": 0.81,
-            "transductive_recall": 0.79,
-            "transductive_f1": 0.8,
         }
 
         recorder.record_heldout_size_result(
@@ -289,8 +282,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         bucket = recorder.results["heldout_eval_by_task_size"]["k2_q3"]
         self.assertEqual(bucket["zero_shot_accuracies"], [0.75])
         self.assertEqual(bucket["zero_shot_intra_class_similarities"], [0.9])
-        self.assertEqual(bucket["zero_shot_transductive_accuracies"], [0.8])
-        self.assertEqual(bucket["k_shot_transductive_f1s"], [0.8])
+        self.assertEqual(bucket["k_shot_f1s"], [0.74])
 
     def test_cv_result_recorder_metric_kwargs_leave_non_can_margin_blank(self):
         kwargs = CrossValidationResultRecorder._metric_event_kwargs(
@@ -317,7 +309,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertIsNone(kwargs["can_margin_loss"])
         self.assertEqual(kwargs["similarity_margin"], 0.7)
 
-    def test_cv_result_recorder_writes_transductive_metrics_to_progress_csv(self):
+    def test_cv_result_recorder_writes_standard_metrics_to_progress_csv(self):
         recorder = self._make_recorder()
         progress_file = recorder.start_fold(fold_idx=1, test_subject=2)
         recorder.write_metric_event(
@@ -337,15 +329,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                 "f1": 0.74,
                 "intra_class_similarity": 0.9,
                 "inter_class_similarity": 0.2,
-                "transductive_loss": 0.35,
-                "transductive_accuracy": 0.8,
-                "transductive_precision": 0.81,
-                "transductive_recall": 0.79,
-                "transductive_f1": 0.8,
-                "transductive_intra_class_similarity": 0.88,
-                "transductive_inter_class_similarity": 0.18,
-                "transductive_similarity_margin": 0.7,
-                "transductive_selected_count": 6,
             },
         )
         recorder.close_fold()
@@ -354,15 +337,10 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
 
         self.assertEqual(rows[0]["event_type"], "k_shot_summary_k2_q3")
-        self.assertEqual(rows[0]["transductive_loss"], "0.35")
-        self.assertEqual(rows[0]["transductive_accuracy"], "0.8")
-        self.assertEqual(rows[0]["transductive_precision"], "0.81")
-        self.assertEqual(rows[0]["transductive_recall"], "0.79")
-        self.assertEqual(rows[0]["transductive_f1"], "0.8")
-        self.assertEqual(rows[0]["transductive_intra_class_similarity"], "0.88")
-        self.assertEqual(rows[0]["transductive_inter_class_similarity"], "0.18")
-        self.assertEqual(rows[0]["transductive_similarity_margin"], "0.7")
-        self.assertEqual(rows[0]["transductive_selected_count"], "6")
+        self.assertEqual(rows[0]["accuracy"], "0.75")
+        self.assertEqual(rows[0]["precision"], "0.7")
+        self.assertEqual(rows[0]["recall"], "0.8")
+        self.assertEqual(rows[0]["f1"], "0.74")
 
     def test_task_batch_pipeline_stacks_and_prefetches_batch_sizes(self):
         tasks = [
@@ -453,7 +431,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             config=SimpleNamespace(
                 n_way=2,
                 attention_mode="can",
-                can_transductive_iterations=0,
             ),
             engine=engine,
             task_pipeline=SimpleNamespace(
@@ -548,11 +525,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                     "f1": 0.5,
                     "intra_class_similarity": 0.4,
                     "inter_class_similarity": 0.2,
-                    "transductive_loss": 0.55,
-                    "transductive_accuracy": 0.75,
-                    "transductive_precision": 0.76,
-                    "transductive_recall": 0.74,
-                    "transductive_f1": 0.75,
                 },
             )
 
@@ -577,11 +549,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                     "f1": 0.8,
                     "intra_class_similarity": 0.6,
                     "inter_class_similarity": 0.1,
-                    "transductive_loss": 0.3,
-                    "transductive_accuracy": 0.9,
-                    "transductive_precision": 0.91,
-                    "transductive_recall": 0.89,
-                    "transductive_f1": 0.9,
                 },
             )
 
@@ -613,20 +580,20 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertEqual(reference_calls, ["Post-phase-2"])
         self.assertEqual(support_modes, ["sampled", "sampled", "sampled"])
         for row in rows:
-            self.assertEqual(row["transductive_accuracy"], "0.9")
-            self.assertEqual(row["transductive_f1"], "0.9")
+            self.assertEqual(row["accuracy"], "0.8")
+            self.assertEqual(row["f1"], "0.8")
         self.assertEqual(set(sweep), {"k1_q1", "k5_q5", "k10_q10"})
         self.assertEqual(
             recorder.results["heldout_eval_by_task_size"]["k5_q5"][
-                "zero_shot_transductive_accuracies"
+                "zero_shot_accuracies"
             ],
-            [0.75],
+            [0.5],
         )
         self.assertEqual(
             recorder.results["heldout_eval_by_task_size"]["k5_q5"][
-                "k_shot_transductive_accuracies"
+                "k_shot_accuracies"
             ],
-            [0.9],
+            [0.8],
         )
 
     def test_phase2_initial_prototype_bank_evaluation_writes_progress_row(self):
@@ -663,11 +630,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                         "f1": 0.45,
                         "intra_class_similarity": 0.3,
                         "inter_class_similarity": 0.2,
-                        "transductive_loss": 0.65,
-                        "transductive_accuracy": 0.55,
-                        "transductive_precision": 0.56,
-                        "transductive_recall": 0.54,
-                        "transductive_f1": 0.55,
                     },
                 )
             )
@@ -695,9 +657,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["loss"], "0.7")
         self.assertEqual(rows[0]["accuracy"], "0.45")
-        self.assertEqual(rows[0]["transductive_loss"], "0.65")
-        self.assertEqual(rows[0]["transductive_accuracy"], "0.55")
-        self.assertEqual(rows[0]["transductive_f1"], "0.55")
+        self.assertEqual(rows[0]["f1"], "0.45")
 
     def test_phase2_initial_sampled_support_evaluation_writes_progress_row_and_restores_rng(self):
         tmp = tempfile.TemporaryDirectory()
@@ -737,11 +697,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                     "f1": 0.83,
                     "intra_class_similarity": 0.6,
                     "inter_class_similarity": 0.1,
-                    "transductive_loss": 0.35,
-                    "transductive_accuracy": 0.86,
-                    "transductive_precision": 0.87,
-                    "transductive_recall": 0.85,
-                    "transductive_f1": 0.86,
                 },
             )
 
@@ -774,7 +729,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "support_samples_phase2_initial_summary_k10_q10",
         )
         self.assertEqual(rows[0]["accuracy"], "0.83")
-        self.assertEqual(rows[0]["transductive_accuracy"], "0.86")
+        self.assertEqual(rows[0]["f1"], "0.83")
 
     def test_heldout_adaptation_restores_task_size_after_success_and_failure(self):
         evaluator = EpisodeEvaluationService(

@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from architecture.cnn import CrossModFeatureMapEncoder, EEGNetStyleEncoder
+from architecture.crossmod_feature_map_encoder import CrossModFeatureMapEncoder
+from architecture.eegnet_style_encoder import EEGNetStyleEncoder
 from architecture.multimodal_proto_net import MultimodalPrototypicalNetwork
 from data_loaders.loso_cross_validator import LOSOCrossValidator
 from data_loaders.meta_ds_sampler import SixWayKShotSampler
@@ -405,7 +406,6 @@ class ContractTests(unittest.TestCase):
             eegnet_dropout_rate=0.0,
             attention_mode="can",
             can_meta_hidden_dim=4,
-            can_transductive_iterations=2,
             can_support_mode=can_support_mode,
             learned_prototype_slots_per_class=learned_prototype_slots_per_class,
             encoder_backend=encoder_backend,
@@ -506,11 +506,14 @@ class ContractTests(unittest.TestCase):
             for variable, gradient in zip(model.trainable_variables, gradients)
             if gradient is not None
         }
-        self.assertTrue(
-            any("eda_frontend_temporal_conv" in name for name in gradients_by_name)
-        )
-        self.assertTrue(
-            any("ecg_frontend_temporal_conv" in name for name in gradients_by_name)
+        gradient_names = [
+            getattr(variable, "path", variable.name)
+            for variable, gradient in zip(model.trainable_variables, gradients)
+            if gradient is not None
+        ]
+        self.assertGreaterEqual(
+            sum("temporal_conv/kernel" in name for name in gradient_names),
+            2,
         )
         self.assertTrue(
             any("crossmod_eda_to_ecg_attention" in name for name in gradients_by_name)
@@ -767,11 +770,11 @@ class ContractTests(unittest.TestCase):
 
         np.testing.assert_allclose(objective["can_margin_losses"].numpy(), [0.0])
 
-    def test_can_transductive_outputs_are_reported_separately(self):
+    def test_can_batch_forward_outputs_standard_logits(self):
         model = self._small_can_model()
         support_x, support_y, query_x, _ = self._small_episode_batch()
 
-        outputs = model.forward_episode_batch_transductive(
+        outputs = model.forward_episode_batch(
             support_x=support_x,
             support_y=support_y,
             query_x=query_x,
@@ -779,9 +782,7 @@ class ContractTests(unittest.TestCase):
         )
 
         self.assertEqual(outputs["logits"].shape, (2, 4, 2))
-        self.assertEqual(outputs["transductive_logits"].shape, (2, 4, 2))
-        self.assertEqual(outputs["transductive_similarity_scores"].shape, (2, 4, 2))
-        self.assertEqual(outputs["transductive_selected_mask"].shape, (2, 4))
+        self.assertEqual(outputs["similarity_scores"].shape, (2, 4, 2))
 
     def test_batch_hard_triplet_loss_uses_hardest_positive_and_negative(self):
         learner = FewShotPainLearner.__new__(FewShotPainLearner)

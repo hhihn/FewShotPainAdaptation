@@ -107,9 +107,6 @@ class PainDatasetConfig:
     can_global_loss_weight: float = 0.1
     can_margin_loss_weight: float = 0.2
     can_margin_target: float = 0.3
-    can_transductive_iterations: int = 3
-    can_transductive_top_k_per_class: int = 1
-    can_transductive_min_confidence: float = 0.0
     can_support_mode: str = "sampled"
     learned_prototype_slots_per_class: int = 1
     prototype_finetune_epochs: int = 1
@@ -282,17 +279,6 @@ class PainDatasetConfig:
         self.can_margin_target = float(self.can_margin_target)
         if self.can_margin_target < 0:
             raise ValueError("can_margin_target must be non-negative")
-        self.can_transductive_iterations = int(self.can_transductive_iterations)
-        if self.can_transductive_iterations < 0:
-            raise ValueError("can_transductive_iterations must be non-negative")
-        self.can_transductive_top_k_per_class = int(
-            self.can_transductive_top_k_per_class
-        )
-        if self.can_transductive_top_k_per_class <= 0:
-            raise ValueError("can_transductive_top_k_per_class must be > 0")
-        self.can_transductive_min_confidence = float(
-            self.can_transductive_min_confidence
-        )
         self.can_support_mode = str(self.can_support_mode).strip().lower()
         if self.can_support_mode not in CAN_SUPPORT_MODES:
             raise ValueError(

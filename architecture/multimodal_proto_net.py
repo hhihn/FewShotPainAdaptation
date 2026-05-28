@@ -42,9 +42,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         attention_mode: str = "none",
         can_attention_temperature: float = 1.0,
         can_meta_hidden_dim: int = 32,
-        can_transductive_iterations: int = 3,
-        can_transductive_top_k_per_class: int = 1,
-        can_transductive_min_confidence: float = 0.0,
         can_support_mode: str = "sampled",
         learned_prototype_slots_per_class: int = 1,
         seed: int = 0,
@@ -79,9 +76,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.attention_mode = str(attention_mode).strip().lower()
         self.can_attention_temperature = float(can_attention_temperature)
         self.can_meta_hidden_dim = int(can_meta_hidden_dim)
-        self.can_transductive_iterations = int(can_transductive_iterations)
-        self.can_transductive_top_k_per_class = int(can_transductive_top_k_per_class)
-        self.can_transductive_min_confidence = float(can_transductive_min_confidence)
         self.can_support_mode = str(can_support_mode).strip().lower()
         self.learned_prototype_slots_per_class = int(learned_prototype_slots_per_class)
         self.can_enabled = self.attention_mode == "can"
@@ -763,160 +757,6 @@ class MultimodalPrototypicalNetwork(keras.Model):
             "logits": logits,
             "similarity_scores": similarity_scores,
         }
-
-    def _prototype_maps_with_pseudo_labels(
-        self,
-        support_feature_maps: tf.Tensor,
-        support_y: tf.Tensor,
-        query_feature_maps: tf.Tensor,
-        pseudo_labels: tf.Tensor,
-        selected_mask: tf.Tensor,
-    ) -> tf.Tensor:
-        """Recompute prototype maps with selected query pseudo-labels.
-
-        Support labels always contribute, while query maps contribute only where
-        the transductive selection mask is true.
-        """
-        class_ids = tf.range(self.num_classes, dtype=support_y.dtype)
-        support_class_mask = tf.equal(
-            support_y[:, :, tf.newaxis],
-            class_ids[tf.newaxis, tf.newaxis, :],
-        )
-        support_weights = tf.cast(support_class_mask, support_feature_maps.dtype)
-        support_sums = tf.einsum(
-            "bstd,bsc->bctd", support_feature_maps, support_weights
-        )
-        support_counts = tf.reduce_sum(support_weights, axis=1)
-
-        pseudo_class_mask = tf.equal(
-            pseudo_labels[:, :, tf.newaxis],
-            class_ids[tf.newaxis, tf.newaxis, :],
-        )
-        pseudo_weights = tf.cast(pseudo_class_mask, query_feature_maps.dtype) * tf.cast(
-            selected_mask[:, :, tf.newaxis], query_feature_maps.dtype
-        )
-        pseudo_sums = tf.einsum("bqtd,bqc->bctd", query_feature_maps, pseudo_weights)
-        pseudo_counts = tf.reduce_sum(pseudo_weights, axis=1)
-        counts = support_counts + pseudo_counts
-        return (support_sums + pseudo_sums) / (
-            counts[:, :, tf.newaxis, tf.newaxis] + 1e-8
-        )
-
-    def _select_transductive_pseudo_labels(
-        self,
-        similarity_scores: tf.Tensor,
-        selected_mask: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Select confident pseudo-labels for transductive CAN updates.
-
-        The method selects up to the configured top-k queries per predicted class
-        while avoiding queries already selected in earlier iterations.
-        """
-        pseudo_labels = tf.argmax(similarity_scores, axis=2, output_type=tf.int32)
-        top_values = tf.nn.top_k(similarity_scores, k=2).values
-        confidence = top_values[:, :, 0] - top_values[:, :, 1]
-        confidence = tf.where(
-            selected_mask,
-            tf.fill(tf.shape(confidence), tf.constant(-1e9, confidence.dtype)),
-            confidence,
-        )
-        confidence = tf.where(
-            confidence
-            >= tf.cast(self.can_transductive_min_confidence, confidence.dtype),
-            confidence,
-            tf.fill(tf.shape(confidence), tf.constant(-1e9, confidence.dtype)),
-        )
-        query_size = tf.shape(similarity_scores)[1]
-        top_k = tf.minimum(
-            query_size,
-            tf.constant(
-                max(1, int(self.can_transductive_top_k_per_class)),
-                dtype=tf.int32,
-            ),
-        )
-        class_selected_masks = []
-        for class_id in range(self.num_classes):
-            class_scores = tf.where(
-                tf.equal(pseudo_labels, class_id),
-                confidence,
-                tf.fill(tf.shape(confidence), tf.constant(-1e9, confidence.dtype)),
-            )
-            selected_values, selected_indices = tf.nn.top_k(
-                class_scores,
-                k=top_k,
-            )
-            valid = selected_values > tf.constant(-1e8, selected_values.dtype)
-            class_selected = tf.reduce_any(
-                (tf.one_hot(selected_indices, depth=query_size, dtype=tf.int32) > 0)
-                & valid[:, :, tf.newaxis],
-                axis=1,
-            )
-            class_selected_masks.append(class_selected)
-        new_selected_mask = selected_mask | tf.reduce_any(
-            tf.stack(class_selected_masks, axis=0),
-            axis=0,
-        )
-        return pseudo_labels, new_selected_mask
-
-    def forward_episode_batch_transductive(
-        self,
-        support_x: tf.Tensor,
-        support_y: tf.Tensor,
-        query_x: tf.Tensor,
-        training: bool = False,
-    ) -> dict[str, tf.Tensor]:
-        """Run transductive CAN inference over unlabeled query sets.
-
-        When transduction is disabled, this method falls back to the standard
-        batched episode forward pass.
-        """
-        if not self.can_enabled or self.can_transductive_iterations <= 0:
-            return self.forward_episode_batch(
-                support_x=support_x,
-                support_y=support_y,
-                query_x=query_x,
-                training=training,
-            )
-
-        if self.can_support_mode == "learned_prototype_memory":
-            outputs = self._forward_episode_batch_learned_prototype_memory_can(
-                query_x=query_x,
-                training=training,
-            )
-        else:
-            outputs = self._forward_episode_batch_can(
-                support_x=support_x,
-                support_y=support_y,
-                query_x=query_x,
-                training=training,
-            )
-        support_feature_maps = outputs["support_feature_maps"]
-        query_feature_maps = outputs["query_feature_maps"]
-        similarity_scores = outputs["similarity_scores"]
-        transductive_support_y = outputs.get("prototype_support_y", support_y)
-        selected_mask = tf.zeros(tf.shape(similarity_scores)[:2], dtype=tf.bool)
-        pseudo_labels = tf.argmax(similarity_scores, axis=2, output_type=tf.int32)
-
-        for _ in range(max(0, int(self.can_transductive_iterations))):
-            pseudo_labels, selected_mask = self._select_transductive_pseudo_labels(
-                similarity_scores,
-                selected_mask,
-            )
-            prototype_maps = self._prototype_maps_with_pseudo_labels(
-                support_feature_maps=support_feature_maps,
-                support_y=transductive_support_y,
-                query_feature_maps=query_feature_maps,
-                pseudo_labels=pseudo_labels,
-                selected_mask=selected_mask,
-            )
-            cam_outputs = self.cross_attention((prototype_maps, query_feature_maps))
-            similarity_scores = cam_outputs["similarity_scores"]
-
-        outputs["transductive_similarity_scores"] = similarity_scores
-        outputs["transductive_logits"] = similarity_scores * self.logit_scale
-        outputs["transductive_selected_mask"] = selected_mask
-        outputs["transductive_pseudo_labels"] = pseudo_labels
-        return outputs
 
     def forward_episode_batch(
         self,

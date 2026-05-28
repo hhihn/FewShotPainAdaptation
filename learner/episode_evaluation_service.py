@@ -96,78 +96,6 @@ class EpisodeEvaluationService:
             "f1": float(np.mean(f1_per_class)),
         }
 
-    def evaluate_transductive_task_batch_metrics(self, task_batch: list[dict]) -> dict:
-        """Evaluate CAN transductive predictions for a task batch.
-
-        Args:
-            task_batch: List of episodic task dictionaries.
-        """
-        if getattr(self.config, "attention_mode", "none") != "can":
-            return {}
-        if int(getattr(self.config, "can_transductive_iterations", 0)) <= 0:
-            return {}
-
-        losses = []
-        all_true = []
-        all_pred = []
-        all_intra_scores = []
-        all_inter_scores = []
-        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)[tf.newaxis, :]
-        for task_dict in task_batch:
-            support_x = tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32)
-            support_y = tf.convert_to_tensor(task_dict["support_y"], dtype=tf.int32)
-            query_x = tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32)
-            query_y = tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32)
-            outputs = self.engine.model.forward_episode_batch_transductive(
-                support_x=support_x[tf.newaxis, ...],
-                support_y=support_y[tf.newaxis, ...],
-                query_x=query_x[tf.newaxis, ...],
-                training=False,
-            )
-            logits = outputs["transductive_logits"][0]
-            similarity_scores = outputs["transductive_similarity_scores"][0]
-            pred = tf.argmax(logits, axis=1, output_type=tf.int32)
-            losses.append(
-                tf.reshape(
-                    tf.keras.losses.sparse_categorical_crossentropy(
-                        query_y,
-                        logits,
-                        from_logits=True,
-                    ),
-                    [-1],
-                )
-            )
-            row_indices = tf.range(tf.shape(query_y)[0], dtype=tf.int32)
-            intra_class_scores = tf.gather_nd(
-                similarity_scores,
-                tf.stack([row_indices, query_y], axis=1),
-            )
-            inter_class_mask = tf.not_equal(class_ids, query_y[:, tf.newaxis])
-            all_intra_scores.append(tf.reshape(intra_class_scores, [-1]))
-            all_inter_scores.append(
-                tf.reshape(tf.boolean_mask(similarity_scores, inter_class_mask), [-1])
-            )
-            all_true.append(tf.reshape(query_y, [-1]))
-            all_pred.append(tf.reshape(pred, [-1]))
-
-        y_true = tf.concat(all_true, axis=0).numpy().astype(np.int32, copy=False)
-        y_pred = tf.concat(all_pred, axis=0).numpy().astype(np.int32, copy=False)
-        macro = self.compute_macro_metrics(y_true, y_pred)
-        similarity = self.compute_similarity_metrics(
-            tf.concat(all_intra_scores, axis=0).numpy(),
-            tf.concat(all_inter_scores, axis=0).numpy(),
-        )
-        return {
-            "transductive_loss": float(tf.reduce_mean(tf.concat(losses, axis=0))),
-            "transductive_accuracy": macro["accuracy"],
-            "transductive_precision": macro["precision"],
-            "transductive_recall": macro["recall"],
-            "transductive_f1": macro["f1"],
-            "transductive_intra_class_similarity": similarity["intra_class_similarity"],
-            "transductive_inter_class_similarity": similarity["inter_class_similarity"],
-            "transductive_similarity_margin": similarity["similarity_margin"],
-        }
-
     @staticmethod
     def set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
         """Update sampler task size in-place for temporary sweeps.
@@ -457,7 +385,6 @@ class EpisodeEvaluationService:
             metrics["can_mean_alignment"] = float(
                 tf.reduce_mean(tf.concat([intra_scores, inter_scores], axis=0))
             )
-        metrics.update(self.evaluate_transductive_task_batch_metrics(task_batch))
         return float(tf.reduce_mean(tf.concat(losses, axis=0))), metrics
 
     def evaluate_sampler_loss_and_metrics(
@@ -585,69 +512,6 @@ class EpisodeEvaluationService:
                 tf.reduce_mean(outputs["can_margin_losses"])
             )
 
-            if (
-                getattr(self.config, "attention_mode", "none") == "can"
-                and int(getattr(self.config, "can_transductive_iterations", 0)) > 0
-            ):
-                transductive = self.engine.model.forward_episode_batch_transductive(
-                    support_x=support_x,
-                    support_y=support_y,
-                    query_x=query_x,
-                    training=False,
-                )
-                transductive_logits = transductive["transductive_logits"][0]
-                transductive_scores = transductive["transductive_similarity_scores"][0]
-                transductive_pred = tf.argmax(
-                    transductive_logits,
-                    axis=1,
-                    output_type=tf.int32,
-                )
-                transductive_macro = self.compute_macro_metrics(
-                    y_true,
-                    transductive_pred.numpy().astype(np.int32, copy=False),
-                )
-                trans_intra, trans_inter = self.split_similarity_scores(
-                    transductive_scores.numpy(),
-                    y_true,
-                )
-                trans_similarity = self.compute_similarity_metrics(
-                    trans_intra,
-                    trans_inter,
-                )
-                metrics.update(
-                    {
-                        "transductive_loss": float(
-                            tf.reduce_mean(
-                                tf.keras.losses.sparse_categorical_crossentropy(
-                                    query_y_flat,
-                                    transductive_logits,
-                                    from_logits=True,
-                                )
-                            )
-                        ),
-                        "transductive_accuracy": transductive_macro["accuracy"],
-                        "transductive_precision": transductive_macro["precision"],
-                        "transductive_recall": transductive_macro["recall"],
-                        "transductive_f1": transductive_macro["f1"],
-                        "transductive_intra_class_similarity": trans_similarity[
-                            "intra_class_similarity"
-                        ],
-                        "transductive_inter_class_similarity": trans_similarity[
-                            "inter_class_similarity"
-                        ],
-                        "transductive_similarity_margin": trans_similarity[
-                            "similarity_margin"
-                        ],
-                        "transductive_selected_count": int(
-                            tf.reduce_sum(
-                                tf.cast(
-                                    transductive["transductive_selected_mask"],
-                                    tf.int32,
-                                )
-                            )
-                        ),
-                    }
-                )
             return float(tf.reduce_mean(per_query_loss)), metrics
         finally:
             self.engine.triplet_loss_weight = original_triplet_weight

@@ -62,22 +62,6 @@ def _build_summary(cv_results: dict[str, Any]) -> dict[str, Any]:
         "zero_shot_f1": _metric_summary(cv_results.get("zero_shot_f1s", [])),
         "k_shot_f1": _metric_summary(cv_results.get("k_shot_f1s", [])),
     }
-    transductive_summary_keys = {
-        "zero_shot_transductive_losses": "zero_shot_transductive_loss",
-        "zero_shot_transductive_accuracies": "zero_shot_transductive_accuracy",
-        "zero_shot_transductive_precisions": "zero_shot_transductive_precision",
-        "zero_shot_transductive_recalls": "zero_shot_transductive_recall",
-        "zero_shot_transductive_f1s": "zero_shot_transductive_f1",
-        "k_shot_transductive_losses": "k_shot_transductive_loss",
-        "k_shot_transductive_accuracies": "k_shot_transductive_accuracy",
-        "k_shot_transductive_precisions": "k_shot_transductive_precision",
-        "k_shot_transductive_recalls": "k_shot_transductive_recall",
-        "k_shot_transductive_f1s": "k_shot_transductive_f1",
-    }
-    for key, summary_key in transductive_summary_keys.items():
-        values = cv_results.get(key, [])
-        if len(values) > 0:
-            summary[summary_key] = _metric_summary(values)
     return summary
 
 
@@ -121,15 +105,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
         can_margin_loss_weight=float(getattr(args, "can_margin_loss_weight", 0.2)),
         can_margin_target=float(getattr(args, "can_margin_target", 0.3)),
-        can_transductive_iterations=int(
-            getattr(args, "can_transductive_iterations", 1)
-        ),
-        can_transductive_top_k_per_class=int(
-            getattr(args, "can_transductive_top_k_per_class", 1)
-        ),
-        can_transductive_min_confidence=float(
-            getattr(args, "can_transductive_min_confidence", 0.0)
-        ),
         can_support_mode=str(
             getattr(args, "can_support_mode", "learned_prototype_memory")
         ),
@@ -262,13 +237,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         else float(config.can_global_loss_weight),
         "can_margin_loss_weight": float(config.can_margin_loss_weight),
         "can_margin_target": float(config.can_margin_target),
-        "can_transductive_iterations": int(config.can_transductive_iterations),
-        "can_transductive_top_k_per_class": int(
-            config.can_transductive_top_k_per_class
-        ),
-        "can_transductive_min_confidence": float(
-            config.can_transductive_min_confidence
-        ),
         "can_support_mode": str(config.can_support_mode),
         "learned_prototype_slots_per_class": int(
             config.learned_prototype_slots_per_class
@@ -405,9 +373,6 @@ def main() -> None:
     parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
     parser.add_argument("--can-margin-loss-weight", type=float, default=0.2)
     parser.add_argument("--can-margin-target", type=float, default=0.3)
-    parser.add_argument("--can-transductive-iterations", type=int, default=1)
-    parser.add_argument("--can-transductive-top-k-per-class", type=int, default=1)
-    parser.add_argument("--can-transductive-min-confidence", type=float, default=0.0)
     parser.add_argument(
         "--can-support-mode",
         type=str,
