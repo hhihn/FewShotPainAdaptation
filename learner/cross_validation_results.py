@@ -107,6 +107,7 @@ class CrossValidationResultRecorder:
             "can_alignment_summary_files": [],
             "can_sample_statistics_files": [],
             "can_feature_export_files": [],
+            "source_subject_prototype_vote_weight_files": [],
             "model_architecture_file": None,
             "validation_checkpoint_metric": self.validation_checkpoint_metric,
             "validation_checkpoint_mode": self.validation_checkpoint_mode,
@@ -463,6 +464,14 @@ class CrossValidationResultRecorder:
         """Record a generated CAN feature export path when present."""
         if path is not None:
             self.cv_results["can_feature_export_files"].append(path)
+
+    def record_source_subject_prototype_vote_weight_file(
+        self,
+        path: str | None,
+    ) -> None:
+        """Record a generated source-subject prototype vote weight path."""
+        if path is not None:
+            self.cv_results["source_subject_prototype_vote_weight_files"].append(path)
 
     def record_heldout_size_result(
         self,

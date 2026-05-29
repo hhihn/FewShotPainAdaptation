@@ -394,6 +394,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "validation_checkpoint_values",
             "validation_checkpoint_metrics",
             "source_subject_prototype_vote_accuracies",
+            "source_subject_prototype_vote_weight_files",
         ):
             self.assertIn(key, results)
         self.assertIn("zero_shot_accuracies", size_bucket)
@@ -501,6 +502,77 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             np.ones(2),
             atol=1e-6,
         )
+
+    def test_source_subject_prototype_vote_weights_aggregate_to_subject_row(self):
+        diagnostics = {
+            "prototype_vote_weights": np.asarray(
+                [
+                    [0.10, 0.20, 0.30, 0.40],
+                    [0.25, 0.25, 0.10, 0.40],
+                ],
+                dtype=np.float32,
+            ),
+            "prototype_subjects": np.asarray([1, 1, 3, 3], dtype=np.int32),
+            "train_subjects": np.asarray([1, 3], dtype=np.int32),
+        }
+
+        row = FewShotPainLearner._aggregate_source_subject_prototype_vote_weights(
+            diagnostics=diagnostics,
+            test_subject=2,
+        )
+
+        self.assertEqual(list(row), [1, 2, 3])
+        self.assertAlmostEqual(row[1], 0.4)
+        self.assertEqual(row[2], 0.0)
+        self.assertAlmostEqual(row[3], 0.6)
+        self.assertAlmostEqual(sum(row.values()), 1.0)
+
+    def test_source_subject_prototype_vote_weight_writer_records_one_fold_matrix(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(1, 1)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="accuracy",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_source_subject_vote_weights"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=2)
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        diagnostics = {
+            "prototype_vote_weights": np.asarray(
+                [
+                    [0.10, 0.20, 0.30, 0.40],
+                    [0.25, 0.25, 0.10, 0.40],
+                ],
+                dtype=np.float32,
+            ),
+            "prototype_subjects": np.asarray([1, 1, 3, 3], dtype=np.int32),
+            "train_subjects": np.asarray([1, 3], dtype=np.int32),
+        }
+
+        path = learner._write_source_subject_prototype_vote_weights(
+            progress_file=progress_file,
+            test_subject=2,
+            diagnostics=diagnostics,
+        )
+        recorder.record_source_subject_prototype_vote_weight_file(path)
+        recorder.close_fold()
+
+        self.assertTrue(path.endswith("_source_subject_prototype_vote_weights.csv"))
+        self.assertEqual(
+            recorder.results["source_subject_prototype_vote_weight_files"],
+            [path],
+        )
+        with open(path, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(list(rows[0]), ["subject_1", "subject_2", "subject_3"])
+        self.assertAlmostEqual(float(rows[0]["subject_1"]), 0.4)
+        self.assertEqual(float(rows[0]["subject_2"]), 0.0)
+        self.assertAlmostEqual(float(rows[0]["subject_3"]), 0.6)
 
     def test_prototype_bank_initializer_zero_samples_leaves_memory_unchanged(self):
         learner, train_sampler = _make_initializer_learner(samples_per_slot=0)

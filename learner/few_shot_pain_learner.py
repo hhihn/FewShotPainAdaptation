@@ -1908,6 +1908,89 @@ class FewShotPainLearner:
                 )
         return str(output_path)
 
+    @staticmethod
+    def _aggregate_source_subject_prototype_vote_weights(
+        *,
+        diagnostics: dict[str, np.ndarray],
+        test_subject: int,
+    ) -> dict[int, float]:
+        """Collapse per-query prototype vote weights into one subject vector."""
+        vote_weights = np.asarray(
+            diagnostics["prototype_vote_weights"],
+            dtype=np.float64,
+        )
+        prototype_subjects = np.asarray(
+            diagnostics["prototype_subjects"],
+            dtype=np.int32,
+        )
+        train_subjects = np.asarray(
+            diagnostics["train_subjects"],
+            dtype=np.int32,
+        )
+        if vote_weights.ndim != 2:
+            raise ValueError("prototype_vote_weights must be a 2D array.")
+        if vote_weights.shape[1] != len(prototype_subjects):
+            raise ValueError(
+                "prototype_vote_weights columns must match prototype_subjects."
+            )
+        subject_ids = sorted(
+            {int(subject) for subject in train_subjects.tolist()}
+            | {int(test_subject)}
+        )
+        if vote_weights.shape[0] == 0:
+            raise ValueError("Cannot aggregate empty source-subject vote weights.")
+
+        row: dict[int, float] = {}
+        for subject in subject_ids:
+            if int(subject) == int(test_subject):
+                row[int(subject)] = 0.0
+                continue
+            subject_mask = prototype_subjects == int(subject)
+            if not np.any(subject_mask):
+                row[int(subject)] = 0.0
+            else:
+                per_query_weights = np.sum(vote_weights[:, subject_mask], axis=1)
+                row[int(subject)] = float(np.mean(per_query_weights))
+
+        total = float(sum(row.values()))
+        if total > 0:
+            row = {subject: float(weight / total) for subject, weight in row.items()}
+        return row
+
+    def _write_source_subject_prototype_vote_weights(
+        self,
+        *,
+        progress_file: str,
+        test_subject: int,
+        diagnostics: dict[str, np.ndarray] | None,
+    ) -> str | None:
+        """Write one fold-level source-subject prototype vote weight row."""
+        if diagnostics is None:
+            return None
+
+        subject_weights = self._aggregate_source_subject_prototype_vote_weights(
+            diagnostics=diagnostics,
+            test_subject=test_subject,
+        )
+        progress_path = Path(progress_file)
+        output_path = progress_path.with_name(
+            progress_path.name.replace(
+                "_training_progress.csv",
+                "_source_subject_prototype_vote_weights.csv",
+            )
+        )
+        fieldnames = [f"subject_{subject}" for subject in sorted(subject_weights)]
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow(
+                {
+                    f"subject_{subject}": subject_weights[subject]
+                    for subject in sorted(subject_weights)
+                }
+            )
+        return str(output_path)
+
     def _write_can_feature_export(
         self,
         *,
@@ -3063,6 +3146,22 @@ class FewShotPainLearner:
                 self.logger.info(
                     f"[Fold {fold + 1}/{num_subjects}] "
                     f"Saved CAN sample statistics to {can_sample_statistics_file}"
+                )
+            source_vote_weight_file = (
+                self._write_source_subject_prototype_vote_weights(
+                    progress_file=progress_file,
+                    test_subject=int(test_subject),
+                    diagnostics=source_vote_diagnostics,
+                )
+            )
+            if source_vote_weight_file is not None:
+                result_recorder.record_source_subject_prototype_vote_weight_file(
+                    source_vote_weight_file
+                )
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    "Saved source-subject prototype vote weights to "
+                    f"{source_vote_weight_file}"
                 )
             can_feature_export_file = self._write_can_feature_export(
                 progress_file=progress_file,
