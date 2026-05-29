@@ -444,6 +444,83 @@ class MultimodalPrototypicalNetwork(keras.Model):
             "slot_similarity_scores": cam_outputs["similarity_scores"],
         }
 
+    def forward_source_subject_prototype_vote_can(
+        self,
+        *,
+        prototype_maps: tf.Tensor,
+        prototype_y: tf.Tensor,
+        query_x: tf.Tensor,
+        training: bool = False,
+    ) -> dict[str, tf.Tensor]:
+        """Run CAN against external source-subject prototypes.
+
+        Prototype alignment scores are normalized with one global softmax over
+        every source-subject/class prototype. Class probabilities are the sum of
+        those prototype weights per class.
+        """
+        if not self.can_enabled:
+            raise ValueError("Source-subject prototype voting requires CAN.")
+
+        prototype_maps = tf.convert_to_tensor(prototype_maps, dtype=tf.float32)
+        prototype_y = tf.reshape(
+            tf.convert_to_tensor(prototype_y, dtype=tf.int32),
+            [-1],
+        )
+        query_x = tf.convert_to_tensor(query_x, dtype=tf.float32)
+        if prototype_maps.shape.rank != 3:
+            raise ValueError(
+                "prototype_maps must have shape [prototypes, time, channels]"
+            )
+
+        query_feature_maps = self._encode_query_feature_maps(
+            query_x[tf.newaxis, ...],
+            training=training,
+        )
+        task_prototype_maps = tf.broadcast_to(
+            prototype_maps[tf.newaxis, ...],
+            [
+                1,
+                tf.shape(prototype_maps)[0],
+                tf.shape(prototype_maps)[1],
+                tf.shape(prototype_maps)[2],
+            ],
+        )
+        cam_outputs = self.cross_attention((task_prototype_maps, query_feature_maps))
+        prototype_similarity_scores = cam_outputs["similarity_scores"][0]
+        prototype_vote_weights = tf.nn.softmax(prototype_similarity_scores, axis=1)
+        class_probabilities = tf.math.unsorted_segment_sum(
+            data=tf.transpose(prototype_vote_weights, [1, 0]),
+            segment_ids=prototype_y,
+            num_segments=self.num_classes,
+        )
+        class_probabilities = tf.transpose(class_probabilities, [1, 0])
+        class_probabilities = class_probabilities / (
+            tf.reduce_sum(class_probabilities, axis=1, keepdims=True) + 1e-8
+        )
+        logits = tf.math.log(class_probabilities + 1e-8)
+
+        return {
+            "support_feature_maps": task_prototype_maps[0],
+            "query_feature_maps": query_feature_maps[0],
+            "prototype_feature_maps": task_prototype_maps[0],
+            "prototype_support_y": prototype_y,
+            "prototype_similarity_scores": prototype_similarity_scores,
+            "prototype_vote_weights": prototype_vote_weights,
+            "distances": 1.0 - class_probabilities,
+            "logits": logits,
+            "similarity_scores": class_probabilities,
+            "can_local_logits": tf.transpose(
+                tf.math.unsorted_segment_sum(
+                    data=tf.transpose(cam_outputs["local_logits"][0], [2, 0, 1]),
+                    segment_ids=prototype_y,
+                    num_segments=self.num_classes,
+                ),
+                [1, 2, 0],
+            ),
+            "can_proto_attention": cam_outputs["proto_attention"][0],
+            "can_query_attention": cam_outputs["query_attention"][0],
+        }
+
     def compute_distances(self, query_embeddings, prototype_embeddings):
         """Compute distances between query embeddings and class prototypes.
 

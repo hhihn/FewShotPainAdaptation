@@ -544,8 +544,59 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("query_embeddings", outputs)
         self.assertNotIn("prototypes", outputs)
 
+    def test_source_subject_prototype_vote_can_uses_global_softmax(self):
+        model = self._small_can_model()
+        rng = np.random.default_rng(1123)
+        prototype_maps = tf.constant(rng.normal(size=(4, 8, 4)), dtype=tf.float32)
+        prototype_y = tf.constant([0, 1, 0, 1], dtype=tf.int32)
+        query_x = tf.constant(rng.normal(size=(3, 32, 3)), dtype=tf.float32)
+
+        outputs = model.forward_source_subject_prototype_vote_can(
+            prototype_maps=prototype_maps,
+            prototype_y=prototype_y,
+            query_x=query_x,
+            training=False,
+        )
+
+        self.assertEqual(outputs["logits"].shape, (3, 2))
+        self.assertEqual(outputs["prototype_vote_weights"].shape, (3, 4))
+        self.assertEqual(outputs["similarity_scores"].shape, (3, 2))
+        np.testing.assert_allclose(
+            tf.reduce_sum(outputs["prototype_vote_weights"], axis=1).numpy(),
+            np.ones(3),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            tf.reduce_sum(outputs["similarity_scores"], axis=1).numpy(),
+            np.ones(3),
+            atol=1e-6,
+        )
+        expected_class_scores = np.stack(
+            [
+                np.sum(outputs["prototype_vote_weights"].numpy()[:, [0, 2]], axis=1),
+                np.sum(outputs["prototype_vote_weights"].numpy()[:, [1, 3]], axis=1),
+            ],
+            axis=1,
+        )
+        np.testing.assert_allclose(
+            outputs["similarity_scores"].numpy(),
+            expected_class_scores,
+            atol=1e-6,
+        )
+
     def test_prototype_bank_initializer_config_validation(self):
         self.assertEqual(PainDatasetConfig().prototype_bank_init_samples_per_class, 0)
+        self.assertTrue(PainDatasetConfig().source_subject_prototype_vote_enabled)
+        self.assertTrue(
+            PainDatasetConfig().source_subject_prototype_vote_use_base_index
+        )
+        self.assertTrue(
+            PainDatasetConfig().source_subject_prototype_vote_query_normalize_with_subject_stats
+        )
+        self.assertEqual(
+            PainDatasetConfig().source_subject_prototype_vote_softmax_scope,
+            "global",
+        )
         config = PainDatasetConfig(
             dataset_source="painmonit",
             task_class_ids=(0, 5),
@@ -556,6 +607,10 @@ class ContractTests(unittest.TestCase):
         )
 
         self.assertEqual(config.prototype_bank_init_samples_per_class, 2)
+        with self.assertRaisesRegex(
+            ValueError, "source_subject_prototype_vote_softmax_scope"
+        ):
+            PainDatasetConfig(source_subject_prototype_vote_softmax_scope="per_subject")
         with self.assertRaisesRegex(
             ValueError, "prototype_bank_init_samples_per_class must be >= 0"
         ):

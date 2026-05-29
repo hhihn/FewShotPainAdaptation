@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from data_loaders.pain_ds_config import (
     PainDatasetConfig,
+    SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES,
     SUPPORTED_VALIDATION_CHECKPOINT_METRICS,
     VALIDATION_CHECKPOINT_MODES,
 )
@@ -61,6 +62,15 @@ def _build_summary(cv_results: dict[str, Any]) -> dict[str, Any]:
         "k_shot_loss": _metric_summary(cv_results.get("k_shot_losses", [])),
         "zero_shot_f1": _metric_summary(cv_results.get("zero_shot_f1s", [])),
         "k_shot_f1": _metric_summary(cv_results.get("k_shot_f1s", [])),
+        "source_subject_prototype_vote_accuracy": _metric_summary(
+            cv_results.get("source_subject_prototype_vote_accuracies", [])
+        ),
+        "source_subject_prototype_vote_loss": _metric_summary(
+            cv_results.get("source_subject_prototype_vote_losses", [])
+        ),
+        "source_subject_prototype_vote_f1": _metric_summary(
+            cv_results.get("source_subject_prototype_vote_f1s", [])
+        ),
     }
     return summary
 
@@ -122,6 +132,28 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         ),
         prototype_phase2_loss_mode=str(
             getattr(args, "prototype_phase2_loss_mode", "ce_can")
+        ),
+        source_subject_prototype_vote_enabled=bool(
+            getattr(
+                args,
+                "source_subject_prototype_vote_enabled",
+                not bool(
+                    getattr(args, "disable_source_subject_prototype_vote", False)
+                ),
+            )
+        ),
+        source_subject_prototype_vote_use_base_index=bool(
+            getattr(args, "source_subject_prototype_vote_use_base_index", True)
+        ),
+        source_subject_prototype_vote_query_normalize_with_subject_stats=bool(
+            getattr(
+                args,
+                "source_subject_prototype_vote_query_normalize_with_subject_stats",
+                True,
+            )
+        ),
+        source_subject_prototype_vote_softmax_scope=str(
+            getattr(args, "source_subject_prototype_vote_softmax_scope", "global")
         ),
         train_batch_size=args.task_batch_size,
         embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
@@ -254,6 +286,18 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             else None
         ),
         "prototype_phase2_loss_mode": str(config.prototype_phase2_loss_mode),
+        "source_subject_prototype_vote_enabled": bool(
+            config.source_subject_prototype_vote_enabled
+        ),
+        "source_subject_prototype_vote_use_base_index": bool(
+            config.source_subject_prototype_vote_use_base_index
+        ),
+        "source_subject_prototype_vote_query_normalize_with_subject_stats": bool(
+            config.source_subject_prototype_vote_query_normalize_with_subject_stats
+        ),
+        "source_subject_prototype_vote_softmax_scope": str(
+            config.source_subject_prototype_vote_softmax_scope
+        ),
         "learning_rate": float(args.learning_rate),
         "lr_schedule": str(config.lr_schedule),
         "lr_decay_alpha": float(config.lr_decay_alpha),
@@ -394,6 +438,29 @@ def main() -> None:
         type=str,
         default="ce_can",
         choices=("ce_can",),
+    )
+    parser.add_argument(
+        "--disable-source-subject-prototype-vote",
+        action="store_true",
+        help="Disable post-training source-subject prototype vote inference.",
+    )
+    parser.add_argument(
+        "--source-subject-prototype-vote-use-base-index",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use base, non-augmented source samples when building vote prototypes.",
+    )
+    parser.add_argument(
+        "--source-subject-prototype-vote-query-normalize-with-subject-stats",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize held-out vote queries with held-out subject statistics.",
+    )
+    parser.add_argument(
+        "--source-subject-prototype-vote-softmax-scope",
+        type=str,
+        default="global",
+        choices=SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES,
     )
     parser.add_argument(
         "--normalize-mode",
