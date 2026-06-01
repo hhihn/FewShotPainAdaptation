@@ -244,6 +244,41 @@ class _InitializerModel:
         return x
 
 
+class _FakeSourceVoteModel:
+    def forward_source_subject_prototype_vote_can(
+        self,
+        *,
+        prototype_maps,
+        prototype_y,
+        query_x,
+        training=False,
+    ):
+        del prototype_maps, prototype_y, training
+        query_count = int(query_x.shape[0])
+        class_probabilities = tf.constant(
+            [[0.8, 0.2], [0.35, 0.65]],
+            dtype=tf.float32,
+        )[:query_count]
+        prototype_scores = tf.constant(
+            [[3.0, 1.0, 0.5, 0.0], [0.1, 0.2, 2.0, 2.1]],
+            dtype=tf.float32,
+        )[:query_count]
+        vote_weights = tf.nn.softmax(prototype_scores, axis=1)
+        return {
+            "logits": tf.math.log(class_probabilities),
+            "similarity_scores": class_probabilities,
+            "query_feature_maps": tf.ones((query_count, 2, 1), dtype=tf.float32),
+            "prototype_feature_maps": tf.ones((4, 2, 1), dtype=tf.float32),
+            "prototype_similarity_scores": prototype_scores,
+            "prototype_vote_weights": vote_weights,
+        }
+
+
+class _FakeSourceVoteEngine:
+    def __init__(self):
+        self.model = _FakeSourceVoteModel()
+
+
 class _InitializerDataset:
     def __init__(self, samples_per_subject_class=6, num_subjects=4, n_way=2):
         self.config = SimpleNamespace(n_way=n_way, task_normalize_mode="none")
@@ -269,7 +304,7 @@ class _InitializerDataset:
         self.subjects = np.asarray(self.subjects, dtype=np.int32)
 
     def _get_sampling_index_for_split(self, split, use_base_index=False):
-        del use_base_index
+        self.last_use_base_index = bool(use_base_index)
         return self.index_by_split[split]
 
     def _gather_samples(self, refs):
@@ -313,6 +348,9 @@ def _make_initializer_learner(
         can_support_mode="learned_prototype_memory",
         learned_prototype_slots_per_class=slots_per_class,
         prototype_bank_init_samples_per_class=samples_per_slot,
+        source_subject_prototype_vote_use_base_index=True,
+        source_subject_prototype_vote_query_normalize_with_subject_stats=True,
+        source_subject_prototype_vote_softmax_scope="global",
     )
     learner.dataset = _InitializerDataset(
         samples_per_subject_class=samples_per_subject_class,
@@ -355,6 +393,8 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "can_feature_export_files",
             "validation_checkpoint_values",
             "validation_checkpoint_metrics",
+            "source_subject_prototype_vote_accuracies",
+            "source_subject_prototype_vote_weight_files",
         ):
             self.assertIn(key, results)
         self.assertIn("zero_shot_accuracies", size_bucket)
@@ -396,6 +436,143 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                     expected,
                     atol=1e-6,
                 )
+
+    def test_source_subject_prototype_builder_uses_all_base_train_samples(self):
+        learner, train_sampler = _make_initializer_learner(
+            samples_per_slot=0,
+            slots_per_class=1,
+            samples_per_subject_class=3,
+        )
+        learner.config.attention_mode = "can"
+
+        prototypes = learner._build_source_subject_class_prototypes(
+            test_subject=3,
+            train_sampler=train_sampler,
+        )
+
+        self.assertTrue(learner.dataset.last_use_base_index)
+        self.assertEqual(prototypes["train_subjects"].tolist(), [0, 1, 2])
+        self.assertEqual(prototypes["prototype_y"].tolist(), [0, 1, 0, 1, 0, 1])
+        self.assertEqual(
+            prototypes["prototype_subjects"].tolist(),
+            [0, 0, 1, 1, 2, 2],
+        )
+        self.assertTrue(np.all(prototypes["prototype_sample_counts"] == 3))
+        for idx, (subject, class_id) in enumerate(
+            zip(prototypes["prototype_subjects"], prototypes["prototype_y"])
+        ):
+            refs = learner.dataset.index_by_split["train"][int(subject)][
+                int(class_id)
+            ]
+            expected = np.mean(learner.dataset.X[refs], axis=0)
+            np.testing.assert_allclose(
+                prototypes["prototype_maps"][idx],
+                expected,
+                atol=1e-6,
+            )
+
+    def test_source_subject_prototype_vote_evaluator_returns_vote_metrics(self):
+        evaluator = EpisodeEvaluationService(
+            config=SimpleNamespace(n_way=2, attention_mode="can"),
+            engine=_FakeSourceVoteEngine(),
+            task_pipeline=None,
+        )
+        task = {
+            "query_X": np.zeros((2, 3, 1), dtype=np.float32),
+            "query_y": np.array([0, 1], dtype=np.int32),
+        }
+        prototype_maps = np.zeros((4, 2, 1), dtype=np.float32)
+        prototype_y = np.array([0, 1, 0, 1], dtype=np.int32)
+
+        loss, metrics, diagnostics = (
+            evaluator.evaluate_source_subject_prototype_vote_task_metrics(
+                task_dict=task,
+                prototype_maps=prototype_maps,
+                prototype_y=prototype_y,
+            )
+        )
+
+        self.assertAlmostEqual(loss, float(-np.mean(np.log([0.8, 0.65]))), places=6)
+        self.assertEqual(metrics["accuracy"], 1.0)
+        self.assertAlmostEqual(metrics["can_true_class_score"], 0.725, places=6)
+        self.assertEqual(diagnostics["query_pred"].tolist(), [0, 1])
+        self.assertEqual(diagnostics["prototype_y"].tolist(), [0, 1, 0, 1])
+        np.testing.assert_allclose(
+            np.sum(diagnostics["prototype_vote_weights"], axis=1),
+            np.ones(2),
+            atol=1e-6,
+        )
+
+    def test_source_subject_prototype_vote_weights_aggregate_to_subject_row(self):
+        diagnostics = {
+            "prototype_vote_weights": np.asarray(
+                [
+                    [0.10, 0.20, 0.30, 0.40],
+                    [0.25, 0.25, 0.10, 0.40],
+                ],
+                dtype=np.float32,
+            ),
+            "prototype_subjects": np.asarray([1, 1, 3, 3], dtype=np.int32),
+            "train_subjects": np.asarray([1, 3], dtype=np.int32),
+        }
+
+        row = FewShotPainLearner._aggregate_source_subject_prototype_vote_weights(
+            diagnostics=diagnostics,
+            test_subject=2,
+        )
+
+        self.assertEqual(list(row), [1, 2, 3])
+        self.assertAlmostEqual(row[1], 0.4)
+        self.assertEqual(row[2], 0.0)
+        self.assertAlmostEqual(row[3], 0.6)
+        self.assertAlmostEqual(sum(row.values()), 1.0)
+
+    def test_source_subject_prototype_vote_weight_writer_records_one_fold_matrix(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(1, 1)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="accuracy",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_source_subject_vote_weights"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=2)
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        diagnostics = {
+            "prototype_vote_weights": np.asarray(
+                [
+                    [0.10, 0.20, 0.30, 0.40],
+                    [0.25, 0.25, 0.10, 0.40],
+                ],
+                dtype=np.float32,
+            ),
+            "prototype_subjects": np.asarray([1, 1, 3, 3], dtype=np.int32),
+            "train_subjects": np.asarray([1, 3], dtype=np.int32),
+        }
+
+        path = learner._write_source_subject_prototype_vote_weights(
+            progress_file=progress_file,
+            test_subject=2,
+            diagnostics=diagnostics,
+        )
+        recorder.record_source_subject_prototype_vote_weight_file(path)
+        recorder.close_fold()
+
+        self.assertTrue(path.endswith("_source_subject_prototype_vote_weights.csv"))
+        self.assertEqual(
+            recorder.results["source_subject_prototype_vote_weight_files"],
+            [path],
+        )
+        with open(path, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(list(rows[0]), ["subject_1", "subject_2", "subject_3"])
+        self.assertAlmostEqual(float(rows[0]["subject_1"]), 0.4)
+        self.assertEqual(float(rows[0]["subject_2"]), 0.0)
+        self.assertAlmostEqual(float(rows[0]["subject_3"]), 0.6)
 
     def test_prototype_bank_initializer_zero_samples_leaves_memory_unchanged(self):
         learner, train_sampler = _make_initializer_learner(samples_per_slot=0)

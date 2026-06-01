@@ -34,6 +34,7 @@ CAN_DISABLED_VALIDATION_CHECKPOINT_METRICS = {
 VALIDATION_CHECKPOINT_MODES = ("auto", "min", "max")
 CAN_SUPPORT_MODES = ("sampled", "learned_prototype_memory")
 PROTOTYPE_PHASE2_LOSS_MODES = ("ce_can",)
+SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES = ("global",)
 
 
 @dataclass
@@ -113,6 +114,10 @@ class PainDatasetConfig:
     prototype_finetune_epochs: int = 1
     prototype_finetune_tasks_per_epoch: Optional[int] = None
     prototype_phase2_loss_mode: str = "ce_can"
+    source_subject_prototype_vote_enabled: bool = True
+    source_subject_prototype_vote_use_base_index: bool = True
+    source_subject_prototype_vote_query_normalize_with_subject_stats: bool = True
+    source_subject_prototype_vote_softmax_scope: str = "global"
     triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
     triplet_margin: float = 0.1  # Margin used by triplet loss
     triplet_mining_strategy: str = (
@@ -311,6 +316,26 @@ class PainDatasetConfig:
             raise ValueError(
                 "prototype_phase2_loss_mode must be one of: "
                 + ", ".join(PROTOTYPE_PHASE2_LOSS_MODES)
+            )
+        self.source_subject_prototype_vote_enabled = bool(
+            self.source_subject_prototype_vote_enabled
+        )
+        self.source_subject_prototype_vote_use_base_index = bool(
+            self.source_subject_prototype_vote_use_base_index
+        )
+        self.source_subject_prototype_vote_query_normalize_with_subject_stats = bool(
+            self.source_subject_prototype_vote_query_normalize_with_subject_stats
+        )
+        self.source_subject_prototype_vote_softmax_scope = (
+            str(self.source_subject_prototype_vote_softmax_scope).strip().lower()
+        )
+        if (
+            self.source_subject_prototype_vote_softmax_scope
+            not in SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES
+        ):
+            raise ValueError(
+                "source_subject_prototype_vote_softmax_scope must be one of: "
+                + ", ".join(SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES)
             )
         if self.can_support_mode == "learned_prototype_memory":
             if self.attention_mode != "can":

@@ -517,6 +517,130 @@ class EpisodeEvaluationService:
             self.engine.triplet_loss_weight = original_triplet_weight
             self.engine.model.can_support_mode = original_support_mode
 
+    def evaluate_source_subject_prototype_vote_task_metrics(
+        self,
+        *,
+        task_dict: dict,
+        prototype_maps: np.ndarray,
+        prototype_y: np.ndarray,
+    ) -> tuple[float, dict, dict[str, np.ndarray]]:
+        """Evaluate held-out queries with source-subject prototype voting."""
+        if getattr(self.config, "attention_mode", "none") != "can":
+            raise ValueError("Source-subject prototype voting requires CAN.")
+        softmax_scope = str(
+            getattr(
+                self.config,
+                "source_subject_prototype_vote_softmax_scope",
+                "global",
+            )
+        ).strip().lower()
+        if softmax_scope != "global":
+            raise ValueError(
+                "source_subject_prototype_vote_softmax_scope='global' is "
+                "currently the only supported source-subject prototype vote mode."
+            )
+
+        query_x = tf.convert_to_tensor(task_dict["query_X"], dtype=tf.float32)
+        query_y = tf.convert_to_tensor(task_dict["query_y"], dtype=tf.int32)
+        outputs = self.engine.model.forward_source_subject_prototype_vote_can(
+            prototype_maps=tf.convert_to_tensor(prototype_maps, dtype=tf.float32),
+            prototype_y=tf.convert_to_tensor(prototype_y, dtype=tf.int32),
+            query_x=query_x,
+            training=False,
+        )
+        class_probabilities = outputs["similarity_scores"]
+        pred = tf.argmax(class_probabilities, axis=1, output_type=tf.int32)
+        per_query_loss = tf.keras.losses.sparse_categorical_crossentropy(
+            query_y,
+            class_probabilities,
+            from_logits=False,
+        )
+
+        y_true = query_y.numpy().astype(np.int32, copy=False)
+        y_pred = pred.numpy().astype(np.int32, copy=False)
+        class_scores = class_probabilities.numpy()
+        macro = self.compute_macro_metrics(y_true, y_pred)
+        intra, inter = self.split_similarity_scores(class_scores, y_true)
+        metrics = dict(macro)
+        metrics.update(self.compute_similarity_metrics(intra, inter))
+        metrics["can_true_class_score"] = float(np.mean(intra))
+        best_other_scores = []
+        for row_idx, truth in enumerate(y_true):
+            row_scores = np.array(class_scores[row_idx], copy=True)
+            row_scores[int(truth)] = -np.inf
+            best_other_scores.append(float(np.max(row_scores)))
+        metrics["can_best_other_score"] = float(np.mean(best_other_scores))
+        metrics["can_score_margin"] = (
+            metrics["can_true_class_score"] - metrics["can_best_other_score"]
+        )
+        metrics["can_mean_alignment"] = float(
+            tf.reduce_mean(outputs["prototype_similarity_scores"])
+        )
+        metrics["task_loss"] = float(tf.reduce_mean(per_query_loss))
+        metrics["contrastive_loss"] = 0.0
+        metrics["triplet_loss"] = 0.0
+        metrics["can_local_loss"] = 0.0
+        metrics["can_global_loss"] = 0.0
+        metrics["can_margin_loss"] = 0.0
+
+        diagnostics = {
+            "query_y": y_true,
+            "query_pred": y_pred,
+            "query_loss": per_query_loss.numpy(),
+            "query_similarity_scores": class_scores,
+            "query_feature_maps": outputs["query_feature_maps"].numpy(),
+            "prototype_feature_maps": outputs["prototype_feature_maps"].numpy(),
+            "prototype_y": np.asarray(prototype_y, dtype=np.int32),
+            "prototype_similarity_scores": outputs[
+                "prototype_similarity_scores"
+            ].numpy(),
+            "prototype_vote_weights": outputs["prototype_vote_weights"].numpy(),
+        }
+        return float(tf.reduce_mean(per_query_loss)), metrics, diagnostics
+
+    def collect_source_subject_prototype_vote_statistics(
+        self,
+        *,
+        diagnostics: dict[str, np.ndarray],
+        phase: str,
+    ) -> list[dict]:
+        """Collect per-query diagnostics for source-subject prototype voting."""
+        rows = []
+        query_y = np.asarray(diagnostics["query_y"], dtype=np.int32)
+        query_pred = np.asarray(diagnostics["query_pred"], dtype=np.int32)
+        losses = np.asarray(diagnostics["query_loss"], dtype=np.float64)
+        class_scores = np.asarray(
+            diagnostics["query_similarity_scores"], dtype=np.float64
+        )
+        for sample_index, truth in enumerate(query_y):
+            sample_scores = class_scores[sample_index]
+            true_score = float(sample_scores[int(truth)])
+            other_scores = sample_scores.copy()
+            other_scores[int(truth)] = -np.inf
+            best_other_score = float(np.max(other_scores))
+            row = {
+                "phase": phase,
+                "task_index": 0,
+                "sample_index": sample_index,
+                "true_label": int(truth),
+                "pred_label": int(query_pred[sample_index]),
+                "correct": int(query_pred[sample_index] == int(truth)),
+                "loss": float(losses[sample_index]),
+                "can_mean_alignment": float(np.mean(sample_scores)),
+                "can_true_class_score": true_score,
+                "can_best_other_score": best_other_score,
+                "can_score_margin": true_score - best_other_score,
+            }
+            for class_index in range(int(self.config.n_way)):
+                row[f"logit_class_{class_index}"] = float(
+                    np.log(sample_scores[class_index] + 1e-8)
+                )
+                row[f"can_score_class_{class_index}"] = float(
+                    sample_scores[class_index]
+                )
+            rows.append(row)
+        return rows
+
     def collect_can_sample_statistics(
         self,
         task_batch: list[dict],

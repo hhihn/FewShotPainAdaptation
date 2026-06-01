@@ -174,6 +174,10 @@ class FewShotPainLearner:
             "prototype_finetune_epochs": self.config.prototype_finetune_epochs,
             "prototype_finetune_tasks_per_epoch": self.config.prototype_finetune_tasks_per_epoch,
             "prototype_phase2_loss_mode": self.config.prototype_phase2_loss_mode,
+            "source_subject_prototype_vote_enabled": self.config.source_subject_prototype_vote_enabled,
+            "source_subject_prototype_vote_use_base_index": self.config.source_subject_prototype_vote_use_base_index,
+            "source_subject_prototype_vote_query_normalize_with_subject_stats": self.config.source_subject_prototype_vote_query_normalize_with_subject_stats,
+            "source_subject_prototype_vote_softmax_scope": self.config.source_subject_prototype_vote_softmax_scope,
             "triplet_loss_weight": self.triplet_loss_weight,
             "triplet_margin": self.triplet_margin,
             "triplet_mining_strategy": self.triplet_mining_strategy,
@@ -645,6 +649,170 @@ class FewShotPainLearner:
             f"train_subjects={len(train_subjects)}, split={train_split}."
         )
         return metadata
+
+    def _normalize_source_subject_prototype_batch(
+        self,
+        batch_x: np.ndarray,
+        batch_subjects: np.ndarray,
+        *,
+        train_subjects: list[int],
+        train_split: str,
+        train_sampler,
+    ) -> np.ndarray:
+        """Normalize source-subject prototype samples for inference."""
+        normalize_mode = str(self.config.task_normalize_mode)
+        if normalize_mode == "subject":
+            return self.dataset._normalize_data_by_subjects(batch_x, batch_subjects)
+        if normalize_mode == "split":
+            stats = getattr(train_sampler, "split_normalization_stats", None)
+            if stats is None:
+                stats = self.dataset.compute_split_normalization_stats(
+                    train_subjects,
+                    split=train_split,
+                )
+            return self.dataset._apply_stats(batch_x, stats)
+        if normalize_mode == "support":
+            stats = self.dataset._compute_batch_stats(batch_x)
+            return self.dataset._apply_stats(batch_x, stats)
+        if normalize_mode == "none":
+            return batch_x
+        raise ValueError(
+            f"Unknown task_normalize_mode: {normalize_mode}. "
+            "Use 'subject', 'split', 'support', or 'none'."
+        )
+
+    def _build_source_subject_class_prototypes(
+        self,
+        *,
+        test_subject: int,
+        train_sampler,
+    ) -> dict[str, np.ndarray]:
+        """Build one feature-map prototype per source subject and class."""
+        if getattr(self.config, "attention_mode", "none") != "can":
+            raise ValueError("Source-subject prototype voting requires CAN.")
+
+        train_subjects = [
+            int(subject)
+            for subject in np.asarray(train_sampler.active_subjects_array).tolist()
+            if int(subject) != int(test_subject)
+        ]
+        if not train_subjects:
+            raise ValueError("No LOSO training subjects available for prototypes.")
+
+        train_split = str(getattr(train_sampler, "data_split", "all"))
+        use_base_index = bool(
+            getattr(self.config, "source_subject_prototype_vote_use_base_index", True)
+        )
+        split_index = self.dataset._get_sampling_index_for_split(
+            train_split,
+            use_base_index=use_base_index,
+        )
+        prototype_maps = []
+        prototype_y = []
+        prototype_subjects = []
+        sample_counts = []
+
+        for subject in train_subjects:
+            subject_refs = []
+            subject_labels = []
+            for class_id in range(int(self.config.n_way)):
+                refs = np.asarray(split_index[subject][class_id])
+                if len(refs) == 0:
+                    raise ValueError(
+                        "Cannot build source-subject prototype: "
+                        f"subject={subject}, class={class_id} has no samples."
+                    )
+                subject_refs.append(refs)
+                subject_labels.extend([class_id] * len(refs))
+
+            flat_refs = np.concatenate(subject_refs, axis=0)
+            subject_x = self.dataset._gather_samples(flat_refs).astype(
+                np.float32,
+                copy=False,
+            )
+            subject_ids = np.full(len(subject_x), subject, dtype=np.int32)
+            subject_x = self._normalize_source_subject_prototype_batch(
+                subject_x,
+                subject_ids,
+                train_subjects=train_subjects,
+                train_split=train_split,
+                train_sampler=train_sampler,
+            ).astype(np.float32, copy=False)
+            subject_maps = self.model.encode_feature_map(
+                tf.convert_to_tensor(subject_x, dtype=tf.float32),
+                training=False,
+            )
+            subject_labels = np.asarray(subject_labels, dtype=np.int32)
+            for class_id in range(int(self.config.n_way)):
+                mask = subject_labels == class_id
+                class_maps = tf.boolean_mask(subject_maps, mask)
+                prototype_maps.append(tf.reduce_mean(class_maps, axis=0).numpy())
+                prototype_y.append(class_id)
+                prototype_subjects.append(subject)
+                sample_counts.append(int(np.sum(mask)))
+
+        prototype_maps_np = np.stack(prototype_maps, axis=0).astype(
+            np.float32,
+            copy=False,
+        )
+        prototype_y_np = np.asarray(prototype_y, dtype=np.int32)
+        prototype_subjects_np = np.asarray(prototype_subjects, dtype=np.int32)
+        sample_counts_np = np.asarray(sample_counts, dtype=np.int32)
+        self.logger.info(
+            "Built source-subject class prototypes: "
+            f"subjects={len(train_subjects)}, prototypes={len(prototype_y_np)}, "
+            f"split={train_split}, base_index={use_base_index}."
+        )
+        return {
+            "prototype_maps": prototype_maps_np,
+            "prototype_y": prototype_y_np,
+            "prototype_subjects": prototype_subjects_np,
+            "prototype_sample_counts": sample_counts_np,
+            "train_subjects": np.asarray(train_subjects, dtype=np.int32),
+        }
+
+    def _evaluate_source_subject_prototype_vote_reference(
+        self,
+        *,
+        fold: int,
+        num_subjects: int,
+        test_subject: int,
+        train_sampler,
+        test_sampler,
+    ) -> tuple[dict, float, dict, dict[str, np.ndarray]]:
+        """Evaluate all held-out queries with source-subject prototype voting."""
+        prototypes = self._build_source_subject_class_prototypes(
+            test_subject=test_subject,
+            train_sampler=train_sampler,
+        )
+        query_task = self.dataset.build_all_query_task(
+            int(test_subject),
+            split=test_sampler.data_split,
+            use_base_index=True,
+            normalize_with_query_subject_stats=bool(
+                getattr(
+                    self.config,
+                    "source_subject_prototype_vote_query_normalize_with_subject_stats",
+                    True,
+                )
+            ),
+        )
+        loss, metrics, diagnostics = (
+            self.evaluator.evaluate_source_subject_prototype_vote_task_metrics(
+                task_dict=query_task,
+                prototype_maps=prototypes["prototype_maps"],
+                prototype_y=prototypes["prototype_y"],
+            )
+        )
+        diagnostics.update(prototypes)
+        self.logger.info(
+            f"[Fold {fold + 1}/{num_subjects}] "
+            "Source-subject prototype vote evaluated on all query samples: "
+            f"queries={len(query_task['query_y'])}, "
+            f"prototypes={len(prototypes['prototype_y'])}, "
+            f"accuracy={metrics['accuracy']:.4f}"
+        )
+        return query_task, loss, metrics, diagnostics
 
     def _iter_prototype_finetune_task_batches(
         self,
@@ -1555,6 +1723,7 @@ class FewShotPainLearner:
         q_query: int,
         zero_shot_metrics: dict,
         k_shot_metrics: dict,
+        source_subject_prototype_vote_metrics: dict | None = None,
         zero_shot_support_mode: str | None = None,
         k_shot_support_mode: str | None = None,
     ) -> str | None:
@@ -1601,6 +1770,13 @@ class FewShotPainLearner:
             ("zero_shot", zero_shot_metrics),
             ("k_shot", k_shot_metrics),
         ]
+        if source_subject_prototype_vote_metrics is not None:
+            rows.append(
+                (
+                    "source_subject_prototype_vote",
+                    source_subject_prototype_vote_metrics,
+                )
+            )
         with output_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
@@ -1623,7 +1799,11 @@ class FewShotPainLearner:
                         "can_support_mode": (
                             zero_shot_support_mode
                             if phase == "zero_shot"
-                            else k_shot_support_mode
+                            else (
+                                k_shot_support_mode
+                                if phase == "k_shot"
+                                else "source_subject_prototype_vote"
+                            )
                         )
                         or getattr(self.config, "can_support_mode", "sampled"),
                     }
@@ -1640,6 +1820,7 @@ class FewShotPainLearner:
         q_query: int,
         zero_shot_task_batch: list[dict],
         k_shot_task_batch: list[dict],
+        source_subject_prototype_vote_diagnostics: dict[str, np.ndarray] | None = None,
         zero_shot_support_mode: str | None = None,
         k_shot_support_mode: str | None = None,
     ) -> str | None:
@@ -1672,6 +1853,13 @@ class FewShotPainLearner:
                 can_support_mode=k_shot_support_mode,
             )
         )
+        if source_subject_prototype_vote_diagnostics is not None:
+            rows.extend(
+                self.evaluator.collect_source_subject_prototype_vote_statistics(
+                    diagnostics=source_subject_prototype_vote_diagnostics,
+                    phase="source_subject_prototype_vote",
+                )
+            )
         if not rows:
             return None
 
@@ -1720,6 +1908,89 @@ class FewShotPainLearner:
                 )
         return str(output_path)
 
+    @staticmethod
+    def _aggregate_source_subject_prototype_vote_weights(
+        *,
+        diagnostics: dict[str, np.ndarray],
+        test_subject: int,
+    ) -> dict[int, float]:
+        """Collapse per-query prototype vote weights into one subject vector."""
+        vote_weights = np.asarray(
+            diagnostics["prototype_vote_weights"],
+            dtype=np.float64,
+        )
+        prototype_subjects = np.asarray(
+            diagnostics["prototype_subjects"],
+            dtype=np.int32,
+        )
+        train_subjects = np.asarray(
+            diagnostics["train_subjects"],
+            dtype=np.int32,
+        )
+        if vote_weights.ndim != 2:
+            raise ValueError("prototype_vote_weights must be a 2D array.")
+        if vote_weights.shape[1] != len(prototype_subjects):
+            raise ValueError(
+                "prototype_vote_weights columns must match prototype_subjects."
+            )
+        subject_ids = sorted(
+            {int(subject) for subject in train_subjects.tolist()}
+            | {int(test_subject)}
+        )
+        if vote_weights.shape[0] == 0:
+            raise ValueError("Cannot aggregate empty source-subject vote weights.")
+
+        row: dict[int, float] = {}
+        for subject in subject_ids:
+            if int(subject) == int(test_subject):
+                row[int(subject)] = 0.0
+                continue
+            subject_mask = prototype_subjects == int(subject)
+            if not np.any(subject_mask):
+                row[int(subject)] = 0.0
+            else:
+                per_query_weights = np.sum(vote_weights[:, subject_mask], axis=1)
+                row[int(subject)] = float(np.mean(per_query_weights))
+
+        total = float(sum(row.values()))
+        if total > 0:
+            row = {subject: float(weight / total) for subject, weight in row.items()}
+        return row
+
+    def _write_source_subject_prototype_vote_weights(
+        self,
+        *,
+        progress_file: str,
+        test_subject: int,
+        diagnostics: dict[str, np.ndarray] | None,
+    ) -> str | None:
+        """Write one fold-level source-subject prototype vote weight row."""
+        if diagnostics is None:
+            return None
+
+        subject_weights = self._aggregate_source_subject_prototype_vote_weights(
+            diagnostics=diagnostics,
+            test_subject=test_subject,
+        )
+        progress_path = Path(progress_file)
+        output_path = progress_path.with_name(
+            progress_path.name.replace(
+                "_training_progress.csv",
+                "_source_subject_prototype_vote_weights.csv",
+            )
+        )
+        fieldnames = [f"subject_{subject}" for subject in sorted(subject_weights)]
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow(
+                {
+                    f"subject_{subject}": subject_weights[subject]
+                    for subject in sorted(subject_weights)
+                }
+            )
+        return str(output_path)
+
     def _write_can_feature_export(
         self,
         *,
@@ -1730,6 +2001,8 @@ class FewShotPainLearner:
         q_query: int,
         zero_shot_task_batch: list[dict],
         k_shot_task_batch: list[dict],
+        source_subject_prototype_vote_task: dict | None = None,
+        source_subject_prototype_vote_diagnostics: dict[str, np.ndarray] | None = None,
         zero_shot_support_mode: str | None = None,
         k_shot_support_mode: str | None = None,
     ) -> str | None:
@@ -1754,6 +2027,48 @@ class FewShotPainLearner:
                 include_raw_feature_maps=include_raw,
             ),
         }
+        if (
+            source_subject_prototype_vote_task is not None
+            and source_subject_prototype_vote_diagnostics is not None
+        ):
+            source_diag = source_subject_prototype_vote_diagnostics
+            source_export = {
+                "phase": np.array("source_subject_prototype_vote"),
+                "can_support_mode": np.array("source_subject_prototype_vote"),
+                "query_features": self.evaluator._time_pool_feature_maps(
+                    source_diag["query_feature_maps"]
+                ),
+                "query_y": source_diag["query_y"],
+                "query_pred": source_diag["query_pred"],
+                "query_correct": (
+                    source_diag["query_pred"] == source_diag["query_y"]
+                ).astype(np.int32),
+                "query_task_index": np.zeros(
+                    len(source_diag["query_y"]),
+                    dtype=np.int32,
+                ),
+                "query_similarity_scores": source_diag["query_similarity_scores"],
+                "prototype_features": self.evaluator._time_pool_feature_maps(
+                    source_diag["prototype_feature_maps"]
+                ),
+                "prototype_y": source_diag["prototype_y"],
+                "prototype_subjects": source_diag["prototype_subjects"],
+                "prototype_sample_counts": source_diag["prototype_sample_counts"],
+                "prototype_task_index": np.zeros(
+                    len(source_diag["prototype_y"]),
+                    dtype=np.int32,
+                ),
+                "prototype_vote_weights": source_diag["prototype_vote_weights"],
+                "prototype_similarity_scores": source_diag[
+                    "prototype_similarity_scores"
+                ],
+            }
+            if include_raw:
+                source_export["query_feature_maps"] = source_diag["query_feature_maps"]
+                source_export["prototype_feature_maps"] = source_diag[
+                    "prototype_feature_maps"
+                ]
+            phase_exports["source_subject_prototype_vote"] = source_export
         if not any(phase_exports.values()):
             return None
 
@@ -2567,6 +2882,44 @@ class FewShotPainLearner:
                             f"seconds_per_update={epoch_elapsed / max(1, phase_update_count):.2f}"
                         )
 
+            source_vote_task = None
+            source_vote_loss = None
+            source_vote_metrics = None
+            source_vote_diagnostics = None
+            if (
+                getattr(self.config, "attention_mode", "none") == "can"
+                and bool(
+                    getattr(
+                        self.config,
+                        "source_subject_prototype_vote_enabled",
+                        True,
+                    )
+                )
+            ):
+                (
+                    source_vote_task,
+                    source_vote_loss,
+                    source_vote_metrics,
+                    source_vote_diagnostics,
+                ) = self._evaluate_source_subject_prototype_vote_reference(
+                    fold=fold,
+                    num_subjects=num_subjects,
+                    test_subject=test_subject,
+                    train_sampler=train_sampler,
+                    test_sampler=test_sampler,
+                )
+                result_recorder.write_metric_event(
+                    fold_idx=fold + 1,
+                    test_subject=test_subject,
+                    event_type="source_subject_prototype_vote_summary",
+                    loss=source_vote_loss,
+                    metrics=source_vote_metrics,
+                )
+                result_recorder.record_source_subject_prototype_vote_result(
+                    loss=source_vote_loss,
+                    metrics=source_vote_metrics,
+                )
+
             # Held-out evaluation sweep across fixed and additional support/query sizes.
             pre_adaptation_weights = self.model.get_weights()
             pre_adaptation_optimizer_variables = self.engine.snapshot_variables(
@@ -2764,6 +3117,7 @@ class FewShotPainLearner:
                 q_query=configured_eval_pair[1],
                 zero_shot_metrics=zero_shot_metrics,
                 k_shot_metrics=k_shot_metrics,
+                source_subject_prototype_vote_metrics=source_vote_metrics,
                 zero_shot_support_mode=zero_shot_support_mode,
                 k_shot_support_mode=k_shot_support_mode,
             )
@@ -2781,6 +3135,7 @@ class FewShotPainLearner:
                 q_query=configured_eval_pair[1],
                 zero_shot_task_batch=zero_shot_task_batch,
                 k_shot_task_batch=k_shot_task_batch,
+                source_subject_prototype_vote_diagnostics=source_vote_diagnostics,
                 zero_shot_support_mode=zero_shot_support_mode,
                 k_shot_support_mode=k_shot_support_mode,
             )
@@ -2792,6 +3147,22 @@ class FewShotPainLearner:
                     f"[Fold {fold + 1}/{num_subjects}] "
                     f"Saved CAN sample statistics to {can_sample_statistics_file}"
                 )
+            source_vote_weight_file = (
+                self._write_source_subject_prototype_vote_weights(
+                    progress_file=progress_file,
+                    test_subject=int(test_subject),
+                    diagnostics=source_vote_diagnostics,
+                )
+            )
+            if source_vote_weight_file is not None:
+                result_recorder.record_source_subject_prototype_vote_weight_file(
+                    source_vote_weight_file
+                )
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] "
+                    "Saved source-subject prototype vote weights to "
+                    f"{source_vote_weight_file}"
+                )
             can_feature_export_file = self._write_can_feature_export(
                 progress_file=progress_file,
                 fold_idx=fold + 1,
@@ -2800,6 +3171,8 @@ class FewShotPainLearner:
                 q_query=configured_eval_pair[1],
                 zero_shot_task_batch=zero_shot_task_batch,
                 k_shot_task_batch=k_shot_task_batch,
+                source_subject_prototype_vote_task=source_vote_task,
+                source_subject_prototype_vote_diagnostics=source_vote_diagnostics,
                 zero_shot_support_mode=zero_shot_support_mode,
                 k_shot_support_mode=k_shot_support_mode,
             )

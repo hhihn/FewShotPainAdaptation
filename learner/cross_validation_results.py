@@ -74,6 +74,14 @@ class CrossValidationResultRecorder:
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
+            "source_subject_prototype_vote_losses": [],
+            "source_subject_prototype_vote_accuracies": [],
+            "source_subject_prototype_vote_precisions": [],
+            "source_subject_prototype_vote_recalls": [],
+            "source_subject_prototype_vote_f1s": [],
+            "source_subject_prototype_vote_can_true_class_scores": [],
+            "source_subject_prototype_vote_can_best_other_scores": [],
+            "source_subject_prototype_vote_can_score_margins": [],
             "k_shot_losses": [],
             "k_shot_accuracies": [],
             "k_shot_precisions": [],
@@ -99,6 +107,7 @@ class CrossValidationResultRecorder:
             "can_alignment_summary_files": [],
             "can_sample_statistics_files": [],
             "can_feature_export_files": [],
+            "source_subject_prototype_vote_weight_files": [],
             "model_architecture_file": None,
             "validation_checkpoint_metric": self.validation_checkpoint_metric,
             "validation_checkpoint_mode": self.validation_checkpoint_mode,
@@ -456,6 +465,14 @@ class CrossValidationResultRecorder:
         if path is not None:
             self.cv_results["can_feature_export_files"].append(path)
 
+    def record_source_subject_prototype_vote_weight_file(
+        self,
+        path: str | None,
+    ) -> None:
+        """Record a generated source-subject prototype vote weight path."""
+        if path is not None:
+            self.cv_results["source_subject_prototype_vote_weight_files"].append(path)
+
     def record_heldout_size_result(
         self,
         *,
@@ -497,6 +514,20 @@ class CrossValidationResultRecorder:
             "k_shot_metrics": k_shot_metrics,
             "k_shot_task_batch": k_shot_task_batch or [],
         }
+
+    def record_source_subject_prototype_vote_result(
+        self,
+        *,
+        loss: float,
+        metrics: dict,
+    ) -> None:
+        """Append one source-subject prototype vote result to CV payload."""
+        self._append_eval_result(
+            self.cv_results,
+            prefix="source_subject_prototype_vote",
+            loss=loss,
+            metrics=metrics,
+        )
 
     def write_legacy_heldout_events(
         self,
@@ -658,6 +689,20 @@ class CrossValidationResultRecorder:
                 f"best_other={np.mean(self.cv_results['zero_shot_can_best_other_scores']):.4f}, "
                 f"margin={np.mean(self.cv_results['zero_shot_can_score_margins']):.4f}"
             )
+            if self.cv_results.get("source_subject_prototype_vote_can_score_margins"):
+                self.logger.info(
+                    "Average Source-subject Prototype Vote CAN Scores: "
+                    f"true_class={np.mean(self.cv_results['source_subject_prototype_vote_can_true_class_scores']):.4f}, "
+                    f"best_other={np.mean(self.cv_results['source_subject_prototype_vote_can_best_other_scores']):.4f}, "
+                    f"margin={np.mean(self.cv_results['source_subject_prototype_vote_can_score_margins']):.4f}, "
+                    f"accuracy={np.mean(self.cv_results['source_subject_prototype_vote_accuracies']):.4f}"
+                )
+            elif self.cv_results.get("source_subject_prototype_vote_accuracies"):
+                self.logger.info(
+                    "Average Source-subject Prototype Vote Accuracy: "
+                    f"{np.mean(self.cv_results['source_subject_prototype_vote_accuracies']):.4f} "
+                    f"(±{np.std(self.cv_results['source_subject_prototype_vote_accuracies']):.4f})"
+                )
             self.logger.info(
                 "Average K-shot CAN Scores: "
                 f"true_class={np.mean(self.cv_results['k_shot_can_true_class_scores']):.4f}, "
