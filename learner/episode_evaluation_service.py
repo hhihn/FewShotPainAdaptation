@@ -111,6 +111,18 @@ class EpisodeEvaluationService:
             sampler.support_size = int(sampler.n_way * sampler.k_shot)
             sampler.query_size = int(sampler.n_way * sampler.q_query)
 
+    @staticmethod
+    def resolve_sampler_task_size(
+        sampler,
+        k_shot: int,
+        q_query: int,
+    ) -> tuple[int, int]:
+        """Return sampler-aware effective k/q values for temporary sweeps."""
+        resolver = getattr(sampler, "resolve_effective_task_size", None)
+        if callable(resolver):
+            return resolver(k_shot=k_shot, q_query=q_query)
+        return int(k_shot), int(q_query)
+
     def evaluate_task_batch_loss_and_metrics(
         self,
         task_batch: list[dict],
@@ -426,7 +438,12 @@ class EpisodeEvaluationService:
         """
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
-        self.set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
+        effective_k, effective_q = self.resolve_sampler_task_size(
+            sampler,
+            k_shot=k_shot,
+            q_query=q_query,
+        )
+        self.set_sampler_task_size(sampler, k_shot=effective_k, q_query=effective_q)
         try:
             return self.evaluate_sampler_loss_and_metrics(
                 sampler,

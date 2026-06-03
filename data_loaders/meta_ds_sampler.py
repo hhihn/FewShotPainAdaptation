@@ -164,25 +164,60 @@ class SixWayKShotSampler:
             for class_id in range(self.config.n_way)
         )
 
+    def resolve_effective_task_size(
+        self,
+        k_shot: int | None = None,
+        q_query: int | None = None,
+    ) -> tuple[int, int]:
+        """Return task size after applying evaluation-only fallback rules.
+
+        Training samplers keep the requested task size. Validation and test
+        samplers use fixed fallback sizes when the requested support+query total
+        exceeds the raw evaluation pool.
+        """
+        requested_k = int(self.k_shot if k_shot is None else k_shot)
+        requested_q = int(self.q_query if q_query is None else q_query)
+        if self.mode not in {"val", "test"}:
+            return requested_k, requested_q
+
+        fallback_total = int(self.VALIDATION_FALLBACK_K_SHOT) + int(
+            self.VALIDATION_FALLBACK_Q_QUERY
+        )
+        requested_total = requested_k + requested_q
+        if requested_total > fallback_total:
+            return self.VALIDATION_FALLBACK_K_SHOT, self.VALIDATION_FALLBACK_Q_QUERY
+
+        available_count = self._min_available_samples_per_class(
+            self.active_subjects,
+            use_base_index=True,
+            pool_subjects=self.task_construction_mode != "single_subject",
+        )
+        if requested_total <= available_count:
+            return requested_k, requested_q
+        return self.VALIDATION_FALLBACK_K_SHOT, self.VALIDATION_FALLBACK_Q_QUERY
+
     def _apply_eval_task_size_fallback(self) -> None:
         """Use fixed evaluation task sizes when configured sizes are too large.
 
         Validation and test tasks fall back to stable k/q defaults when raw
         per-class subject pools cannot satisfy the configured request.
         """
+        effective_k, effective_q = self.resolve_effective_task_size(
+            self.k_shot,
+            self.q_query,
+        )
+        if (effective_k, effective_q) == (int(self.k_shot), int(self.q_query)):
+            return
+
+        original_k = int(self.k_shot)
+        original_q = int(self.q_query)
         available_count = self._min_available_samples_per_class(
             self.active_subjects,
             use_base_index=True,
             pool_subjects=self.task_construction_mode != "single_subject",
         )
-        requested_total = int(self.k_shot) + int(self.q_query)
-        if requested_total <= available_count:
-            return
-
-        original_k = int(self.k_shot)
-        original_q = int(self.q_query)
-        self.k_shot = self.VALIDATION_FALLBACK_K_SHOT
-        self.q_query = self.VALIDATION_FALLBACK_Q_QUERY
+        self.k_shot = int(effective_k)
+        self.q_query = int(effective_q)
         self.logger.info(
             "%s task size k=%s, q=%s exceeds %s raw samples per class; "
             "using k=%s, q=%s for %s.",

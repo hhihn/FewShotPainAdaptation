@@ -34,6 +34,18 @@ class _FakeSampler:
         }
 
 
+class _CappedFakeSampler(_FakeSampler):
+    def __init__(self):
+        super().__init__()
+        self.mode = "test"
+        self.data_split = "test"
+
+    def resolve_effective_task_size(self, k_shot, q_query):
+        if int(k_shot) + int(q_query) > 20:
+            return 10, 10
+        return int(k_shot), int(q_query)
+
+
 class _CountingPhase2Sampler:
     def __init__(self):
         self.n_way = 2
@@ -1080,6 +1092,155 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["accuracy"], "0.83")
         self.assertEqual(rows[0]["f1"], "0.83")
 
+    def test_phase2_initial_sampled_support_caps_oversized_test_pair(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(10, 10)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="f1",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_phase2_initial_sampled_support_cap"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=7)
+
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.train_batch_size = 2
+        learner.logger = logging.getLogger("test_phase2_initial_sampled_support_cap")
+        query_sizes = []
+
+        def fake_eval(task_batch, forward_batch_size=None, can_support_mode=None):
+            del forward_batch_size
+            self.assertEqual(can_support_mode, "sampled")
+            query_sizes.append(len(task_batch[0]["query_y"]))
+            return (
+                0.4,
+                {
+                    "task_loss": 0.4,
+                    "contrastive_loss": 0.0,
+                    "triplet_loss": 0.0,
+                    "can_local_loss": 0.1,
+                    "can_global_loss": 0.2,
+                    "accuracy": 0.83,
+                    "precision": 0.84,
+                    "recall": 0.82,
+                    "f1": 0.83,
+                    "intra_class_similarity": 0.6,
+                    "inter_class_similarity": 0.1,
+                },
+            )
+
+        learner._evaluate_task_batch_loss_and_metrics = fake_eval
+        sampler = _CappedFakeSampler()
+
+        learner._write_phase2_initial_sampled_support_evaluation(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            test_sampler=sampler,
+            configured_eval_pair=(20, 20),
+            heldout_eval_tasks=1,
+            result_recorder=recorder,
+        )
+        recorder.close_fold()
+
+        with open(progress_file, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(query_sizes, [20])
+        self.assertEqual((sampler.k_shot, sampler.q_query), (1, 1))
+        self.assertEqual(
+            rows[0]["event_type"],
+            "support_samples_phase2_initial_summary_k10_q10",
+        )
+
+    def test_learned_prototype_holdout_sweep_caps_and_deduplicates_oversized_pair(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        recorder = CrossValidationResultRecorder(
+            heldout_eval_pairs=[(10, 10), (5, 5)],
+            training_progress_output_dir=tmp.name,
+            csv_flush_every_events=1,
+            validation_checkpoint_metric="f1",
+            validation_checkpoint_mode="max",
+            logger=logging.getLogger("test_learned_prototype_sweep_cap"),
+        )
+        progress_file = recorder.start_fold(fold_idx=1, test_subject=7)
+
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.train_batch_size = 2
+        learner.logger = logging.getLogger("test_learned_prototype_sweep_cap")
+        learner._evaluate_learned_prototype_bank_reference = lambda **kwargs: (
+            _FakePrototypeDataset().build_all_query_task(
+                subject=kwargs["test_subject"],
+                split=kwargs["test_sampler"].data_split,
+                use_base_index=True,
+                normalize_with_query_subject_stats=True,
+            ),
+            0.6,
+            {
+                "task_loss": 0.6,
+                "contrastive_loss": 0.0,
+                "triplet_loss": 0.0,
+                "can_local_loss": 0.1,
+                "can_global_loss": 0.2,
+                "accuracy": 0.5,
+                "precision": 0.5,
+                "recall": 0.5,
+                "f1": 0.5,
+                "intra_class_similarity": 0.4,
+                "inter_class_similarity": 0.2,
+            },
+        )
+        query_sizes = []
+
+        def fake_eval(task_batch, forward_batch_size=None, can_support_mode=None):
+            del forward_batch_size
+            self.assertEqual(can_support_mode, "sampled")
+            q_query = int(len(task_batch[0]["query_y"]) / 2)
+            query_sizes.append(q_query)
+            return (
+                float(q_query),
+                {
+                    "task_loss": float(q_query),
+                    "contrastive_loss": 0.0,
+                    "triplet_loss": 0.0,
+                    "can_local_loss": 0.1,
+                    "can_global_loss": 0.2,
+                    "accuracy": 0.8,
+                    "precision": 0.8,
+                    "recall": 0.8,
+                    "f1": 0.8,
+                    "intra_class_similarity": 0.6,
+                    "inter_class_similarity": 0.1,
+                },
+            )
+
+        learner._evaluate_task_batch_loss_and_metrics = fake_eval
+        sampler = _CappedFakeSampler()
+        sweep = learner._evaluate_learned_prototype_holdout_sweep(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            test_sampler=sampler,
+            heldout_eval_pairs=[(20, 20), (10, 10), (5, 5)],
+            configured_eval_pair=(20, 20),
+            heldout_eval_tasks=1,
+            result_recorder=recorder,
+        )
+        recorder.close_fold()
+
+        with open(progress_file, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(
+            [row["event_type"] for row in rows],
+            ["k_shot_summary_k10_q10", "k_shot_summary_k5_q5"],
+        )
+        self.assertEqual(query_sizes, [10, 5])
+        self.assertEqual(set(sweep), {"k10_q10", "k5_q5"})
+
     def test_heldout_adaptation_restores_task_size_after_success_and_failure(self):
         evaluator = EpisodeEvaluationService(
             config=SimpleNamespace(n_way=2),
@@ -1114,6 +1275,43 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             )
         self.assertEqual((sampler.k_shot, sampler.q_query), (1, 1))
         self.assertEqual((sampler.support_size, sampler.query_size), (2, 2))
+
+    def test_heldout_adaptation_caps_oversized_test_pair(self):
+        seen_shapes = []
+
+        class ShapeRecordingEngine:
+            def train_step(self, support_x, support_y, query_x, query_y):
+                seen_shapes.append(
+                    (
+                        int(support_y.shape[0]),
+                        int(query_y.shape[0]),
+                        int(support_x.shape[0]),
+                        int(query_x.shape[0]),
+                    )
+                )
+                return tf.constant(1.0, dtype=tf.float32), tf.constant(1.0)
+
+        evaluator = EpisodeEvaluationService(
+            config=SimpleNamespace(n_way=2),
+            engine=None,
+            task_pipeline=None,
+        )
+        sampler = _CappedFakeSampler()
+        service = HeldoutAdaptationService(
+            engine=ShapeRecordingEngine(),
+            evaluator=evaluator,
+        )
+
+        losses = service.adapt_on_sampler_at_task_size(
+            sampler,
+            adaptation_steps=1,
+            k_shot=20,
+            q_query=20,
+        )
+
+        self.assertEqual(losses, [1.0])
+        self.assertEqual(seen_shapes, [(20, 20, 20, 20)])
+        self.assertEqual((sampler.k_shot, sampler.q_query), (1, 1))
 
     def test_validation_sampler_maps_oversized_raw_tasks_to_ten_shot_ten_query(self):
         dataset = _FakeDatasetForSampler()

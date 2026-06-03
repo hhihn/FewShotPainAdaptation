@@ -9,6 +9,7 @@ import tensorflow as tf
 from tensorflow import keras
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
+from data_loaders.meta_ds_sampler import SixWayKShotSampler
 from data_loaders.pain_ds_config import PainDatasetConfig
 from utils.logger import setup_logger
 from utils.reproducibility import set_global_reproducibility
@@ -1421,6 +1422,33 @@ class FewShotPainLearner:
             q_query=q_query,
         )
 
+    @staticmethod
+    def _resolve_sampler_task_size(
+        sampler,
+        k_shot: int,
+        q_query: int,
+    ) -> tuple[int, int]:
+        """Return sampler-aware effective k/q values for temporary eval sweeps."""
+        return EpisodeEvaluationService.resolve_sampler_task_size(
+            sampler,
+            k_shot=k_shot,
+            q_query=q_query,
+        )
+
+    def _resolve_configured_holdout_eval_pair(self) -> tuple[int, int]:
+        """Return the effective configured k/q pair used for hold-out eval."""
+        requested_k = int(self.config.k_shot)
+        requested_q = int(self.config.q_query)
+        fallback_total = int(SixWayKShotSampler.VALIDATION_FALLBACK_K_SHOT) + int(
+            SixWayKShotSampler.VALIDATION_FALLBACK_Q_QUERY
+        )
+        if requested_k + requested_q > fallback_total:
+            return (
+                int(SixWayKShotSampler.VALIDATION_FALLBACK_K_SHOT),
+                int(SixWayKShotSampler.VALIDATION_FALLBACK_Q_QUERY),
+            )
+        return requested_k, requested_q
+
     def _evaluate_sampler_loss_and_metrics_at_task_size(
         self,
         sampler,
@@ -1465,7 +1493,12 @@ class FewShotPainLearner:
         """
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
-        self._set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
+        effective_k, effective_q = self._resolve_sampler_task_size(
+            sampler,
+            k_shot=k_shot,
+            q_query=q_query,
+        )
+        self._set_sampler_task_size(sampler, k_shot=effective_k, q_query=effective_q)
         try:
             return [sampler.get_task() for _ in range(num_tasks)]
         finally:
@@ -1544,7 +1577,11 @@ class FewShotPainLearner:
         The sampler RNG is restored after this audit evaluation so adding the
         phase-2 initial row does not change later hold-out evaluation draws.
         """
-        eval_k_shot, eval_q_query = configured_eval_pair
+        eval_k_shot, eval_q_query = self._resolve_sampler_task_size(
+            test_sampler,
+            k_shot=configured_eval_pair[0],
+            q_query=configured_eval_pair[1],
+        )
         rng_state = None
         rng = getattr(test_sampler, "rng", None)
         bit_generator = getattr(rng, "bit_generator", None)
@@ -1608,8 +1645,22 @@ class FewShotPainLearner:
             )
         )
 
+        configured_eval_pair = self._resolve_sampler_task_size(
+            test_sampler,
+            k_shot=configured_eval_pair[0],
+            q_query=configured_eval_pair[1],
+        )
         sweep_metrics_by_size = {}
-        for eval_k_shot, eval_q_query in heldout_eval_pairs:
+        resolved_pairs: list[tuple[int, int]] = []
+        for requested_k_shot, requested_q_query in heldout_eval_pairs:
+            eval_k_shot, eval_q_query = self._resolve_sampler_task_size(
+                test_sampler,
+                k_shot=requested_k_shot,
+                q_query=requested_q_query,
+            )
+            if (eval_k_shot, eval_q_query) in resolved_pairs:
+                continue
+            resolved_pairs.append((eval_k_shot, eval_q_query))
             size_key = f"k{eval_k_shot}_q{eval_q_query}"
             try:
                 k_shot_task_batch = self._sample_tasks_at_task_size(
@@ -2134,7 +2185,7 @@ class FewShotPainLearner:
         eval_log_every = max(1, int(self.config.eval_log_every))
         val_batch_size = max(1, int(self.config.val_batch_size))
         val_every_n_train_steps = max(1, int(self.config.val_every_n_train_steps))
-        configured_eval_pair = (int(self.config.k_shot), int(self.config.q_query))
+        configured_eval_pair = self._resolve_configured_holdout_eval_pair()
         heldout_eval_pairs = [configured_eval_pair, (1, 1), (5, 5), (10, 10)]
         dedup_pairs: list[tuple[int, int]] = []
         for eval_pair in heldout_eval_pairs:
@@ -2949,7 +3000,16 @@ class FewShotPainLearner:
                     "Skipping held-out adaptation sweep because "
                     "k_shot_adaptation_steps=0."
                 )
-            for eval_k_shot, eval_q_query in heldout_pairs_to_evaluate:
+            resolved_heldout_pairs: list[tuple[int, int]] = []
+            for requested_k_shot, requested_q_query in heldout_pairs_to_evaluate:
+                eval_k_shot, eval_q_query = self._resolve_sampler_task_size(
+                    test_sampler,
+                    k_shot=requested_k_shot,
+                    q_query=requested_q_query,
+                )
+                if (eval_k_shot, eval_q_query) in resolved_heldout_pairs:
+                    continue
+                resolved_heldout_pairs.append((eval_k_shot, eval_q_query))
                 size_key = f"k{eval_k_shot}_q{eval_q_query}"
 
                 self.model.set_weights(pre_adaptation_weights)

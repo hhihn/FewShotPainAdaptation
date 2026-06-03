@@ -36,7 +36,16 @@ class HeldoutAdaptationService:
         """
         original_k = int(sampler.k_shot)
         original_q = int(sampler.q_query)
-        self.evaluator.set_sampler_task_size(sampler, k_shot=k_shot, q_query=q_query)
+        effective_k, effective_q = self.evaluator.resolve_sampler_task_size(
+            sampler,
+            k_shot=k_shot,
+            q_query=q_query,
+        )
+        self.evaluator.set_sampler_task_size(
+            sampler,
+            k_shot=effective_k,
+            q_query=effective_q,
+        )
         adaptation_losses = []
         try:
             for _ in range(max(0, int(adaptation_steps))):
