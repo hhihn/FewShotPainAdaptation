@@ -147,10 +147,7 @@ class EpisodeEvaluationService:
 
         losses = []
         task_losses = []
-        contrastive_losses = []
-        triplet_losses = []
         can_local_losses = []
-        can_global_losses = []
         can_margin_losses = []
         all_true_tensors = []
         all_pred_tensors = []
@@ -170,10 +167,7 @@ class EpisodeEvaluationService:
                 use_batched_forward=use_batched_forward,
                 losses=losses,
                 task_losses=task_losses,
-                contrastive_losses=contrastive_losses,
-                triplet_losses=triplet_losses,
                 can_local_losses=can_local_losses,
-                can_global_losses=can_global_losses,
                 can_margin_losses=can_margin_losses,
                 all_true_tensors=all_true_tensors,
                 all_pred_tensors=all_pred_tensors,
@@ -195,10 +189,7 @@ class EpisodeEvaluationService:
         use_batched_forward: bool,
         losses: list,
         task_losses: list,
-        contrastive_losses: list,
-        triplet_losses: list,
         can_local_losses: list,
-        can_global_losses: list,
         can_margin_losses: list,
         all_true_tensors: list,
         all_pred_tensors: list,
@@ -224,10 +215,7 @@ class EpisodeEvaluationService:
                 (
                     batch_losses,
                     batch_task_losses,
-                    batch_contrastive_losses,
-                    batch_triplet_losses,
                     batch_can_local_losses,
-                    batch_can_global_losses,
                     batch_can_margin_losses,
                     batch_y_true,
                     batch_y_pred,
@@ -244,10 +232,7 @@ class EpisodeEvaluationService:
                 )
                 losses.append(tf.reshape(batch_losses, [-1]))
                 task_losses.append(tf.reshape(batch_task_losses, [-1]))
-                contrastive_losses.append(tf.reshape(batch_contrastive_losses, [-1]))
-                triplet_losses.append(tf.reshape(batch_triplet_losses, [-1]))
                 can_local_losses.append(tf.reshape(batch_can_local_losses, [-1]))
-                can_global_losses.append(tf.reshape(batch_can_global_losses, [-1]))
                 can_margin_losses.append(tf.reshape(batch_can_margin_losses, [-1]))
                 all_true_tensors.append(tf.reshape(batch_y_true, [-1]))
                 all_pred_tensors.append(tf.reshape(batch_y_pred, [-1]))
@@ -324,21 +309,8 @@ class EpisodeEvaluationService:
                 task_losses.append(
                     tf.reshape(tf.cast(task_outputs["task_loss"], tf.float32), [1])
                 )
-                contrastive_losses.append(
-                    tf.reshape(
-                        tf.cast(task_outputs["contrastive_loss"], tf.float32), [1]
-                    )
-                )
-                triplet_losses.append(
-                    tf.reshape(tf.cast(task_outputs["triplet_loss"], tf.float32), [1])
-                )
                 can_local_losses.append(
                     tf.reshape(tf.cast(task_outputs["can_local_loss"], tf.float32), [1])
-                )
-                can_global_losses.append(
-                    tf.reshape(
-                        tf.cast(task_outputs["can_global_loss"], tf.float32), [1]
-                    )
                 )
                 can_margin_losses.append(
                     tf.reshape(
@@ -369,17 +341,8 @@ class EpisodeEvaluationService:
             )
         )
         metrics["task_loss"] = float(tf.reduce_mean(tf.concat(task_losses, axis=0)))
-        metrics["contrastive_loss"] = float(
-            tf.reduce_mean(tf.concat(contrastive_losses, axis=0))
-        )
-        metrics["triplet_loss"] = float(
-            tf.reduce_mean(tf.concat(triplet_losses, axis=0))
-        )
         metrics["can_local_loss"] = float(
             tf.reduce_mean(tf.concat(can_local_losses, axis=0))
-        )
-        metrics["can_global_loss"] = float(
-            tf.reduce_mean(tf.concat(can_global_losses, axis=0))
         )
         metrics["can_margin_loss"] = float(
             tf.reduce_mean(tf.concat(can_margin_losses, axis=0))
@@ -462,9 +425,7 @@ class EpisodeEvaluationService:
             task_dict: Query-only task dictionary with placeholder support tensors.
         """
         original_support_mode = self.engine.model.can_support_mode
-        original_triplet_weight = self.engine.triplet_loss_weight
         self.engine.model.can_support_mode = "learned_prototype_memory"
-        self.engine.triplet_loss_weight = 0.0
         try:
             support_x = tf.convert_to_tensor(task_dict["support_X"], dtype=tf.float32)[
                 tf.newaxis, ...
@@ -517,13 +478,8 @@ class EpisodeEvaluationService:
             )
             metrics["can_mean_alignment"] = float(tf.reduce_mean(similarity_scores))
             metrics["task_loss"] = float(tf.reduce_mean(per_query_loss))
-            metrics["contrastive_loss"] = 0.0
-            metrics["triplet_loss"] = 0.0
             metrics["can_local_loss"] = float(
                 tf.reduce_mean(outputs["can_local_losses"])
-            )
-            metrics["can_global_loss"] = float(
-                tf.reduce_mean(outputs["can_global_losses"])
             )
             metrics["can_margin_loss"] = float(
                 tf.reduce_mean(outputs["can_margin_losses"])
@@ -531,7 +487,6 @@ class EpisodeEvaluationService:
 
             return float(tf.reduce_mean(per_query_loss)), metrics
         finally:
-            self.engine.triplet_loss_weight = original_triplet_weight
             self.engine.model.can_support_mode = original_support_mode
 
     def evaluate_source_subject_prototype_vote_task_metrics(
@@ -594,10 +549,7 @@ class EpisodeEvaluationService:
             tf.reduce_mean(outputs["prototype_similarity_scores"])
         )
         metrics["task_loss"] = float(tf.reduce_mean(per_query_loss))
-        metrics["contrastive_loss"] = 0.0
-        metrics["triplet_loss"] = 0.0
         metrics["can_local_loss"] = 0.0
-        metrics["can_global_loss"] = 0.0
         metrics["can_margin_loss"] = 0.0
 
         diagnostics = {
@@ -676,10 +628,8 @@ class EpisodeEvaluationService:
             return []
 
         original_support_mode = self.engine.model.can_support_mode
-        original_triplet_weight = self.engine.triplet_loss_weight
         if can_support_mode is not None:
             self.engine.model.can_support_mode = can_support_mode
-        self.engine.triplet_loss_weight = 0.0
         try:
             rows = []
             for task_index, task_dict in enumerate(task_batch):
@@ -753,7 +703,6 @@ class EpisodeEvaluationService:
                     rows.append(row)
             return rows
         finally:
-            self.engine.triplet_loss_weight = original_triplet_weight
             self.engine.model.can_support_mode = original_support_mode
 
     @staticmethod
@@ -777,10 +726,8 @@ class EpisodeEvaluationService:
             return {}
 
         original_support_mode = self.engine.model.can_support_mode
-        original_triplet_weight = self.engine.triplet_loss_weight
         if can_support_mode is not None:
             self.engine.model.can_support_mode = can_support_mode
-        self.engine.triplet_loss_weight = 0.0
         try:
             rows: dict[str, list[np.ndarray]] = {
                 "support_features": [],
@@ -896,5 +843,4 @@ class EpisodeEvaluationService:
                         export[key] = np.concatenate(pieces, axis=0)
             return export
         finally:
-            self.engine.triplet_loss_weight = original_triplet_weight
             self.engine.model.can_support_mode = original_support_mode

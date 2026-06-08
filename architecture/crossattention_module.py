@@ -176,11 +176,11 @@ class CrossAttentionModule(keras.layers.Layer):
         attended_query = query_maps[:, :, tf.newaxis, :, :] * (
             1.0 + query_attention[:, :, :, :, tf.newaxis]
         )
-        attended_proto_embeddings = tf.reduce_mean(attended_proto, axis=3)
-        attended_query_embeddings = tf.reduce_mean(attended_query, axis=3)
+        attended_proto_descriptors = tf.reduce_mean(attended_proto, axis=3)
+        attended_query_descriptors = tf.reduce_mean(attended_query, axis=3)
         pairwise_similarity = tf.reduce_sum(
-            tf.nn.l2_normalize(attended_proto_embeddings, axis=-1)
-            * tf.nn.l2_normalize(attended_query_embeddings, axis=-1),
+            tf.nn.l2_normalize(attended_proto_descriptors, axis=-1)
+            * tf.nn.l2_normalize(attended_query_descriptors, axis=-1),
             axis=-1,
         )
         local_logits = tf.transpose(tf.reduce_max(correlation, axis=3), [0, 1, 3, 2])

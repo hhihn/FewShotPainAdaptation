@@ -105,14 +105,12 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         q_query=args.q_query,
         task_normalize_mode=args.normalize_mode,
         task_construction_mode=args.task_construction_mode,
-        classifier_mode=args.classifier_mode,
-        attention_mode=str(getattr(args, "attention_mode", "can")),
+        attention_mode="can",
         can_attention_temperature=float(
             getattr(args, "can_attention_temperature", 1.0)
         ),
         can_meta_hidden_dim=int(getattr(args, "can_meta_hidden_dim", 32)),
         can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
-        can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
         can_margin_loss_weight=float(getattr(args, "can_margin_loss_weight", 0.2)),
         can_margin_target=float(getattr(args, "can_margin_target", 0.3)),
         can_support_mode=str(
@@ -156,7 +154,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "source_subject_prototype_vote_softmax_scope", "global")
         ),
         train_batch_size=args.task_batch_size,
-        embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
+        task_chunk_size=max(1, int(getattr(args, "task_chunk_size", 1))),
         tasks_per_epoch=max(1, int(args.tasks_per_epoch)),
         val_tasks=max(1, int(args.val_tasks)),
         heldout_eval_tasks=max(1, int(args.heldout_eval_tasks)),
@@ -188,7 +186,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         single_loso_fold=False,  # Full LOSO over all available subjects.
         loso_start_index=args.loso_start_index,
         loso_stop_index=args.loso_stop_index,
-        embedding_dim=args.embedding_dim,
         eegnet_temporal_filters=args.eegnet_temporal_filters,
         eegnet_depth_multiplier=args.eegnet_depth_multiplier,
         eegnet_separable_filters=args.eegnet_separable_filters,
@@ -252,7 +249,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     logger.info("Stage 4/5: Aggregating fold metrics")
     summary = _build_summary(cv_results)
 
-    can_mode = str(config.attention_mode).lower() == "can"
     config_payload = {
         "seed": int(config.seed),
         "dataset_source": str(config.dataset_source),
@@ -262,14 +258,10 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "q_query": int(config.q_query),
         "task_construction_mode": str(config.task_construction_mode),
         "normalize_mode": str(config.task_normalize_mode),
-        "classifier_mode": str(config.classifier_mode),
         "attention_mode": str(config.attention_mode),
         "can_attention_temperature": float(config.can_attention_temperature),
         "can_meta_hidden_dim": int(config.can_meta_hidden_dim),
         "can_local_loss_weight": float(config.can_local_loss_weight),
-        "can_global_loss_weight": 0.0
-        if can_mode
-        else float(config.can_global_loss_weight),
         "can_margin_loss_weight": float(config.can_margin_loss_weight),
         "can_margin_target": float(config.can_margin_target),
         "can_support_mode": str(config.can_support_mode),
@@ -301,7 +293,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "learning_rate": float(args.learning_rate),
         "lr_schedule": str(config.lr_schedule),
         "lr_decay_alpha": float(config.lr_decay_alpha),
-        "embedding_projection_enabled": not can_mode,
         "encoder_backend": str(config.encoder_backend),
         "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
         "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
@@ -323,6 +314,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "num_epochs": int(config.num_epochs),
         "tasks_per_epoch": int(config.tasks_per_epoch),
         "train_batch_size": int(config.train_batch_size),
+        "task_chunk_size": int(config.task_chunk_size),
         "val_tasks": int(config.val_tasks),
         "heldout_eval_tasks": int(config.heldout_eval_tasks),
         "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
@@ -342,15 +334,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "loso_stop_index": config.loso_stop_index,
         "max_folds": int(args.max_folds) if args.max_folds is not None else None,
     }
-    if not can_mode:
-        config_payload.update(
-            {
-                "embedding_dim": int(config.embedding_dim),
-                "embedding_batch_size": int(config.embedding_batch_size),
-            }
-        )
-    else:
-        config_payload.pop("can_global_loss_weight", None)
 
     payload: dict[str, Any] = {
         "script": "tests/full_loso_trial.py",
@@ -404,23 +387,9 @@ def main() -> None:
         default="single_subject",
         choices=("single_subject", "cross_subject", "mixed"),
     )
-    parser.add_argument(
-        "--classifier-mode",
-        type=str,
-        default="prototype",
-        choices=("prototype", "soft_knn"),
-    )
-    parser.add_argument(
-        "--attention-mode",
-        type=str,
-        default="can",
-        choices=("none", "can"),
-        help="Optional episodic attention module. 'can' enables CAN/CAM.",
-    )
     parser.add_argument("--can-attention-temperature", type=float, default=1.0)
     parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
     parser.add_argument("--can-local-loss-weight", type=float, default=1.0)
-    parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
     parser.add_argument("--can-margin-loss-weight", type=float, default=0.2)
     parser.add_argument("--can-margin-target", type=float, default=0.3)
     parser.add_argument(
@@ -482,7 +451,6 @@ def main() -> None:
         default=0.1,
         help="Final LR fraction for cosine decay.",
     )
-    parser.add_argument("--embedding-dim", type=int, default=64)
     parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
     parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)
     parser.add_argument("--eegnet-separable-filters", type=int, default=16)
@@ -515,7 +483,7 @@ def main() -> None:
     parser.add_argument("--tasks-per-epoch", type=int, default=1)
     parser.add_argument("--task-batch-size", type=int, default=16)
     parser.add_argument(
-        "--embedding-batch-size",
+        "--task-chunk-size",
         type=int,
         default=1,
         help="Number of episodic tasks whose samples are encoded together.",

@@ -69,8 +69,6 @@ class CrossValidationResultRecorder:
             "zero_shot_precisions": [],
             "zero_shot_recalls": [],
             "zero_shot_f1s": [],
-            "zero_shot_intra_class_similarities": [],
-            "zero_shot_inter_class_similarities": [],
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
@@ -87,8 +85,6 @@ class CrossValidationResultRecorder:
             "k_shot_precisions": [],
             "k_shot_recalls": [],
             "k_shot_f1s": [],
-            "k_shot_intra_class_similarities": [],
-            "k_shot_inter_class_similarities": [],
             "k_shot_can_true_class_scores": [],
             "k_shot_can_best_other_scores": [],
             "k_shot_can_score_margins": [],
@@ -143,8 +139,6 @@ class CrossValidationResultRecorder:
             "zero_shot_precisions": [],
             "zero_shot_recalls": [],
             "zero_shot_f1s": [],
-            "zero_shot_intra_class_similarities": [],
-            "zero_shot_inter_class_similarities": [],
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
@@ -153,8 +147,6 @@ class CrossValidationResultRecorder:
             "k_shot_precisions": [],
             "k_shot_recalls": [],
             "k_shot_f1s": [],
-            "k_shot_intra_class_similarities": [],
-            "k_shot_inter_class_similarities": [],
             "k_shot_can_true_class_scores": [],
             "k_shot_can_best_other_scores": [],
             "k_shot_can_score_margins": [],
@@ -175,55 +167,35 @@ class CrossValidationResultRecorder:
         can_mode = "can_score_margin" in metrics
         event_kwargs = {
             "task_loss": metrics.get("task_loss"),
-            "contrastive_loss": None if can_mode else metrics.get("contrastive_loss"),
-            "triplet_loss": None if can_mode else metrics.get("triplet_loss"),
             "accuracy": metrics.get("accuracy"),
             "precision": metrics.get("precision"),
             "recall": metrics.get("recall"),
             "f1": metrics.get("f1"),
-            "intra_class_similarity": None
-            if can_mode
-            else metrics.get("intra_class_similarity"),
-            "inter_class_similarity": None
-            if can_mode
-            else metrics.get("inter_class_similarity"),
             "can_local_loss": metrics.get("can_local_loss"),
-            "can_global_loss": None if can_mode else metrics.get("can_global_loss"),
             "can_margin_loss": metrics.get("can_margin_loss") if can_mode else None,
             "can_true_class_score": metrics.get("can_true_class_score"),
             "can_best_other_score": metrics.get("can_best_other_score"),
             "can_score_margin": metrics.get("can_score_margin"),
         }
-        if include_similarity_margin:
-            event_kwargs["similarity_margin"] = (
-                None if can_mode else metrics.get("similarity_margin")
-            )
+        del include_similarity_margin
         return event_kwargs
 
     @staticmethod
     def _append_eval_diagnostics(bucket: dict, prefix: str, metrics: dict) -> None:
-        """Append similarity or CAN diagnostics to a result bucket.
+        """Append CAN diagnostics to a result bucket.
 
         Args:
             bucket: Result dictionary receiving metric values.
             prefix: Metric prefix such as ``zero_shot`` or ``k_shot``.
             metrics: Evaluation metric dictionary.
         """
-        if "can_score_margin" in metrics:
-            bucket[f"{prefix}_can_true_class_scores"].append(
-                metrics["can_true_class_score"]
-            )
-            bucket[f"{prefix}_can_best_other_scores"].append(
-                metrics["can_best_other_score"]
-            )
-            bucket[f"{prefix}_can_score_margins"].append(metrics["can_score_margin"])
-        else:
-            bucket[f"{prefix}_intra_class_similarities"].append(
-                metrics["intra_class_similarity"]
-            )
-            bucket[f"{prefix}_inter_class_similarities"].append(
-                metrics["inter_class_similarity"]
-            )
+        bucket[f"{prefix}_can_true_class_scores"].append(
+            metrics["can_true_class_score"]
+        )
+        bucket[f"{prefix}_can_best_other_scores"].append(
+            metrics["can_best_other_score"]
+        )
+        bucket[f"{prefix}_can_score_margins"].append(metrics["can_score_margin"])
 
     @staticmethod
     def _append_eval_result(
@@ -296,11 +268,8 @@ class CrossValidationResultRecorder:
         step_total: int,
         loss: float,
         task_loss: float,
-        contrastive_loss: float,
-        triplet_loss: float,
         accuracy: float,
         can_local_loss: float | None = None,
-        can_global_loss: float | None = None,
         can_margin_loss: float | None = None,
     ) -> None:
         """Write one training progress update event.
@@ -314,11 +283,8 @@ class CrossValidationResultRecorder:
             step_total: Total train steps in the epoch.
             loss: Total objective value.
             task_loss: Supervised task loss value.
-            contrastive_loss: Contrastive auxiliary loss value.
-            triplet_loss: Triplet auxiliary loss value.
             accuracy: Batch accuracy.
             can_local_loss: Optional CAN local loss value.
-            can_global_loss: Optional CAN global loss value.
             can_margin_loss: Optional CAN margin loss value.
         """
         self.csv_writer.write_event(
@@ -331,10 +297,7 @@ class CrossValidationResultRecorder:
             step_total=step_total,
             loss=loss,
             task_loss=task_loss,
-            contrastive_loss=contrastive_loss,
-            triplet_loss=triplet_loss,
             can_local_loss=can_local_loss,
-            can_global_loss=can_global_loss,
             can_margin_loss=can_margin_loss,
             accuracy=accuracy,
         )

@@ -74,10 +74,6 @@ class CrossModFeatureMapEncoder(keras.Model):
         self.positional_base = float(positional_base)
         self.attention_dropout_rate = float(attention_dropout_rate)
         self.ff_activation = str(ff_activation)
-        self.enable_embedding_projection = False
-        self.global_pool = None
-        self.embedding_dense = None
-        self.embedding_norm = None
 
         self._validate_config()
         self.eda_branch = self._build_frontend_branch("eda")
@@ -179,7 +175,6 @@ class CrossModFeatureMapEncoder(keras.Model):
         return EEGNetStyleEncoder(
             sequence_length=self.sequence_length,
             num_sensors=1,
-            embedding_dim=self.separable_filters,
             temporal_filters=self.temporal_filters,
             depth_multiplier=self.depth_multiplier,
             separable_filters=self.separable_filters,
@@ -189,7 +184,6 @@ class CrossModFeatureMapEncoder(keras.Model):
             pool_size_2=self.pool_size_2,
             dropout_rate=self.dropout_rate,
             l2_weight=self.l2_weight,
-            enable_embedding_projection=False,
             name=f"{prefix}_eegnet_frontend",
         )
 
@@ -255,15 +249,6 @@ class CrossModFeatureMapEncoder(keras.Model):
             training: Whether child layers run in training mode.
         """
         return self.extract_feature_map(x, training=training)
-
-    def embed_feature_map(self, feature_map, training=False):
-        """Reject embedding projection for CrossMod feature-map outputs.
-
-        CrossMod is used as a representation encoder for CAN-style feature maps,
-        so pooled embedding projection is intentionally unavailable.
-        """
-        del training
-        raise RuntimeError("CrossModFeatureMapEncoder does not produce embeddings.")
 
     def get_config(self):
         """Return serializable CrossMod encoder configuration.
