@@ -133,7 +133,6 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             sequence_length=2500,
             n_way=6,
-            num_stimuli_levels=6,
             k_shot=1,
             q_query=1,
             num_epochs=1,
@@ -147,17 +146,6 @@ class ContractTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def test_triplet_mining_strategy_validation(self):
-        self.assertEqual(PainDatasetConfig().triplet_mining_strategy, "batch_hard")
-        self.assertEqual(
-            PainDatasetConfig(
-                triplet_mining_strategy="triplet_center"
-            ).triplet_mining_strategy,
-            "triplet_center",
-        )
-        with self.assertRaises(ValueError):
-            PainDatasetConfig(triplet_mining_strategy="semi_hard")
 
     def test_eegnet_defaults_are_configured_for_joint_sensor_encoding(self):
         config = PainDatasetConfig(dataset_source="painmonit")
@@ -186,23 +174,20 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             task_class_ids=(0, 5),
             attention_mode="can",
-            classifier_mode="prototype",
         )
 
         self.assertEqual(config.attention_mode, "can")
         self.assertEqual(config.can_attention_temperature, 1.0)
         self.assertEqual(config.can_meta_hidden_dim, 32)
         self.assertEqual(config.can_local_loss_weight, 1.0)
-        self.assertEqual(config.can_global_loss_weight, 0.1)
         self.assertEqual(config.can_margin_loss_weight, 0.2)
         self.assertEqual(config.can_margin_target, 0.3)
 
-        with self.assertRaisesRegex(ValueError, "requires classifier_mode"):
+        with self.assertRaisesRegex(ValueError, "attention_mode must be 'can'"):
             PainDatasetConfig(
                 dataset_source="painmonit",
                 task_class_ids=(0, 5),
-                attention_mode="can",
-                classifier_mode="soft_knn",
+                attention_mode="none",
             )
         with self.assertRaisesRegex(ValueError, "at least two task classes"):
             PainDatasetConfig(
@@ -293,7 +278,6 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             task_class_ids=(0, 5),
             attention_mode="can",
-            classifier_mode="prototype",
             can_support_mode="learned_prototype_memory",
             learned_prototype_slots_per_class=3,
         )
@@ -301,7 +285,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(config.can_support_mode, "learned_prototype_memory")
         self.assertEqual(config.learned_prototype_slots_per_class, 3)
 
-        with self.assertRaisesRegex(ValueError, "requires attention_mode"):
+        with self.assertRaisesRegex(ValueError, "attention_mode must be 'can'"):
             PainDatasetConfig(
                 dataset_source="painmonit",
                 task_class_ids=(0, 5),
@@ -317,23 +301,21 @@ class ContractTests(unittest.TestCase):
                 learned_prototype_slots_per_class=0,
             )
 
-    def test_eegnet_encoder_outputs_compact_joint_embeddings(self):
+    def test_eegnet_encoder_outputs_temporal_feature_maps(self):
         encoder = EEGNetStyleEncoder(
             sequence_length=1152,
             num_sensors=3,
-            embedding_dim=64,
         )
 
-        embeddings = encoder(tf.zeros((2, 1152, 3)), training=False)
+        feature_maps = encoder(tf.zeros((2, 1152, 3)), training=False)
 
-        self.assertEqual(embeddings.shape, (2, 64))
+        self.assertEqual(feature_maps.shape, (2, 36, 16))
         self.assertLess(encoder.count_params(), 100_000)
 
     def test_eegnet_encoder_extracts_temporal_feature_map(self):
         encoder = EEGNetStyleEncoder(
             sequence_length=32,
             num_sensors=3,
-            embedding_dim=8,
             temporal_filters=2,
             depth_multiplier=1,
             separable_filters=4,
@@ -348,10 +330,8 @@ class ContractTests(unittest.TestCase):
             tf.zeros((2, 32, 3)),
             training=False,
         )
-        embeddings = encoder.embed_feature_map(feature_map, training=False)
 
         self.assertEqual(feature_map.shape, (2, 8, 4))
-        self.assertEqual(embeddings.shape, (2, 8))
 
     def test_crossmod_encoder_returns_fused_feature_maps_without_logits(self):
         encoder = CrossModFeatureMapEncoder(
@@ -380,8 +360,6 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(ecg_features.shape, (2, 8, 4))
         self.assertEqual(feature_map.shape, (2, 8, 8))
         self.assertFalse(hasattr(encoder, "fc4"))
-        with self.assertRaisesRegex(RuntimeError, "does not produce embeddings"):
-            encoder.embed_feature_map(feature_map, training=False)
 
     def _small_can_model(
         self,
@@ -395,7 +373,6 @@ class ContractTests(unittest.TestCase):
             sequence_length=32,
             num_sensors=num_sensors,
             num_classes=2,
-            embedding_dim=4,
             eegnet_temporal_filters=2,
             eegnet_depth_multiplier=1,
             eegnet_separable_filters=4,
@@ -437,14 +414,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(outputs["can_local_logits"].shape, (2, 4, 8, 2))
         self.assertEqual(outputs["can_proto_attention"].shape, (2, 4, 2, 8))
         self.assertEqual(outputs["can_query_attention"].shape, (2, 4, 2, 8))
-        self.assertFalse(model.encoder.enable_embedding_projection)
-        self.assertIsNone(model.encoder.embedding_dense)
-        self.assertIsNone(model.encoder.embedding_norm)
-        self.assertIsNone(model.triplet_centers)
-        self.assertNotIn("support_embeddings", outputs)
-        self.assertNotIn("query_embeddings", outputs)
         self.assertNotIn("prototypes", outputs)
-        self.assertNotIn("can_global_logits", outputs)
         np.testing.assert_allclose(
             tf.reduce_sum(outputs["can_proto_attention"], axis=-1).numpy(),
             np.ones((2, 4, 2)),
@@ -469,8 +439,6 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(outputs["can_local_logits"].shape, (2, 4, 8, 2))
         self.assertEqual(outputs["can_proto_attention"].shape, (2, 4, 2, 8))
         self.assertEqual(outputs["can_query_attention"].shape, (2, 4, 2, 8))
-        self.assertNotIn("support_embeddings", outputs)
-        self.assertNotIn("query_embeddings", outputs)
         np.testing.assert_allclose(
             tf.reduce_sum(outputs["can_query_attention"], axis=-1).numpy(),
             np.ones((2, 4, 2)),
@@ -540,8 +508,6 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(outputs["slot_similarity_scores"].shape, (2, 4, 6))
         self.assertEqual(outputs["support_feature_maps"].shape[1], 6)
         self.assertEqual(outputs["prototype_support_y"].shape, (2, 6))
-        self.assertNotIn("support_embeddings", outputs)
-        self.assertNotIn("query_embeddings", outputs)
         self.assertNotIn("prototypes", outputs)
 
     def test_source_subject_prototype_vote_can_uses_global_softmax(self):
@@ -601,7 +567,6 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             task_class_ids=(0, 5),
             attention_mode="can",
-            classifier_mode="prototype",
             can_support_mode="learned_prototype_memory",
             prototype_bank_init_samples_per_class=2,
         )
@@ -622,7 +587,6 @@ class ContractTests(unittest.TestCase):
                 dataset_source="painmonit",
                 task_class_ids=(0, 5),
                 attention_mode="can",
-                classifier_mode="prototype",
                 can_support_mode="sampled",
                 prototype_bank_init_samples_per_class=1,
             )
@@ -735,13 +699,9 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             task_class_ids=(0, 5),
             attention_mode="can",
-            classifier_mode="prototype",
             can_local_loss_weight=1.0,
         )
         learner.model = model
-        learner.triplet_loss_weight = 1.0
-        learner.triplet_margin = 0.1
-        learner.triplet_mining_strategy = "triplet_center"
         learner.engine = EpisodicLearningEngine(learner)
 
         episode_outputs = model.forward_episode_batch(
@@ -750,17 +710,12 @@ class ContractTests(unittest.TestCase):
             query_x=query_x,
             training=False,
         )
-        self.assertNotIn("support_embeddings", episode_outputs)
-        self.assertNotIn("query_embeddings", episode_outputs)
-
         objective = learner.engine.compute_task_batch_objective(
             episode_outputs,
             support_y,
             query_y,
         )
 
-        np.testing.assert_allclose(objective["triplet_losses"].numpy(), np.zeros(2))
-        np.testing.assert_allclose(objective["can_global_losses"].numpy(), np.zeros(2))
         self.assertTrue(np.all(np.isfinite(objective["can_margin_losses"].numpy())))
         self.assertTrue(np.all(np.isfinite(objective["losses"].numpy())))
 
@@ -770,12 +725,10 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             task_class_ids=(0, 5),
             attention_mode="can",
-            classifier_mode="prototype",
             can_local_loss_weight=0.0,
             can_margin_loss_weight=0.2,
             can_margin_target=0.3,
         )
-        learner.triplet_loss_weight = 1.0
         learner.model = type("DummyModel", (), {"losses": []})()
         learner.engine = EpisodicLearningEngine(learner)
         logits = tf.zeros((2, 3, 2), dtype=tf.float32)
@@ -826,12 +779,10 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             task_class_ids=(0, 5),
             attention_mode="can",
-            classifier_mode="prototype",
             can_local_loss_weight=0.0,
             can_margin_loss_weight=0.2,
             can_margin_target=0.3,
         )
-        learner.triplet_loss_weight = 1.0
         learner.model = type("DummyModel", (), {"losses": []})()
         learner.engine = EpisodicLearningEngine(learner)
         logits = tf.zeros((1, 2, 2), dtype=tf.float32)
@@ -867,172 +818,13 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(outputs["logits"].shape, (2, 4, 2))
         self.assertEqual(outputs["similarity_scores"].shape, (2, 4, 2))
 
-    def test_batch_hard_triplet_loss_uses_hardest_positive_and_negative(self):
-        learner = FewShotPainLearner.__new__(FewShotPainLearner)
-        learner.triplet_loss_weight = 1.0
-        learner.triplet_margin = 0.5
-        learner.engine = EpisodicLearningEngine(learner)
-
-        embeddings = tf.constant(
-            [
-                [1.0, 0.0],
-                [0.5, np.sqrt(3.0) / 2.0],
-                [-0.5, np.sqrt(3.0) / 2.0],
-                [-1.0, 0.0],
-            ],
-            dtype=tf.float32,
-        )
-        labels = tf.constant([0, 0, 1, 1], dtype=tf.int32)
-
-        loss = learner._compute_batch_hard_triplet_loss(embeddings, labels)
-
-        self.assertAlmostEqual(float(loss.numpy()), 0.25, places=5)
-
-    def test_batch_hard_triplet_loss_ignores_invalid_anchors(self):
-        learner = FewShotPainLearner.__new__(FewShotPainLearner)
-        learner.triplet_loss_weight = 1.0
-        learner.triplet_margin = 0.5
-        learner.engine = EpisodicLearningEngine(learner)
-
-        embeddings = tf.eye(3, dtype=tf.float32)
-        labels = tf.constant([0, 1, 2], dtype=tf.int32)
-
-        loss = learner._compute_batch_hard_triplet_loss(embeddings, labels)
-
-        self.assertEqual(float(loss.numpy()), 0.0)
-
-    def test_triplet_center_loss_uses_nearest_negative_center(self):
-        learner = FewShotPainLearner.__new__(FewShotPainLearner)
-        learner.triplet_loss_weight = 1.0
-        learner.triplet_margin = 1.0
-        learner.triplet_mining_strategy = "triplet_center"
-        learner.triplet_center_gradient_clip_norm = 0.01
-        learner.engine = EpisodicLearningEngine(learner)
-        learner.model = MultimodalPrototypicalNetwork(
-            sequence_length=32,
-            num_sensors=3,
-            num_classes=3,
-            embedding_dim=2,
-            eegnet_temporal_filters=2,
-            eegnet_depth_multiplier=1,
-            eegnet_separable_filters=4,
-            eegnet_temporal_kernel_size=8,
-            eegnet_separable_kernel_size=4,
-            eegnet_pool_size_1=2,
-            eegnet_pool_size_2=2,
-            eegnet_dropout_rate=0.0,
-        )
-        learner.model.triplet_centers.assign(
-            tf.constant(
-                [
-                    [0.0, 0.0],
-                    [3.0, 0.0],
-                    [0.0, 3.0],
-                ],
-                dtype=tf.float32,
-            )
-        )
-
-        embeddings = tf.constant(
-            [
-                [2.0, 0.0],
-                [3.0, 1.0],
-            ],
-            dtype=tf.float32,
-        )
-        labels = tf.constant([0, 1], dtype=tf.int32)
-
-        with tf.GradientTape() as tape:
-            loss = learner._compute_triplet_center_loss(embeddings, labels)
-
-        self.assertAlmostEqual(float(loss.numpy()), 1.25, places=5)
-        self.assertAlmostEqual(
-            float(learner._compute_triplet_loss(embeddings, labels).numpy()),
-            1.25,
-            places=5,
-        )
-        center_gradient = tape.gradient(loss, learner.model.triplet_centers)
-        self.assertIsNotNone(center_gradient)
-
-    def test_batched_triplet_center_loss_matches_per_task_loss(self):
-        learner = FewShotPainLearner.__new__(FewShotPainLearner)
-        learner.triplet_loss_weight = 1.0
-        learner.triplet_margin = 1.0
-        learner.triplet_mining_strategy = "triplet_center"
-        learner.triplet_center_gradient_clip_norm = 0.01
-        learner.engine = EpisodicLearningEngine(learner)
-        learner.model = MultimodalPrototypicalNetwork(
-            sequence_length=32,
-            num_sensors=3,
-            num_classes=3,
-            embedding_dim=2,
-            eegnet_temporal_filters=2,
-            eegnet_depth_multiplier=1,
-            eegnet_separable_filters=4,
-            eegnet_temporal_kernel_size=8,
-            eegnet_separable_kernel_size=4,
-            eegnet_pool_size_1=2,
-            eegnet_pool_size_2=2,
-            eegnet_dropout_rate=0.0,
-        )
-        learner.model.triplet_centers.assign(
-            tf.constant(
-                [
-                    [0.0, 0.0],
-                    [3.0, 0.0],
-                    [0.0, 3.0],
-                ],
-                dtype=tf.float32,
-            )
-        )
-        embeddings_batch = tf.constant(
-            [
-                [
-                    [2.0, 0.0],
-                    [3.0, 1.0],
-                ],
-                [
-                    [0.0, 2.0],
-                    [2.0, 0.0],
-                ],
-            ],
-            dtype=tf.float32,
-        )
-        labels_batch = tf.constant([[0, 1], [2, 1]], dtype=tf.int32)
-
-        batched = learner.engine.compute_triplet_center_loss_batch(
-            embeddings_batch,
-            labels_batch,
-        )
-        per_task = tf.stack(
-            [
-                learner._compute_triplet_center_loss(
-                    embeddings_batch[task_idx],
-                    labels_batch[task_idx],
-                )
-                for task_idx in range(2)
-            ],
-            axis=0,
-        )
-
-        np.testing.assert_allclose(batched.numpy(), per_task.numpy(), atol=1e-6)
-        with tf.GradientTape() as tape:
-            loss = tf.reduce_mean(
-                learner.engine.compute_triplet_center_loss_batch(
-                    embeddings_batch,
-                    labels_batch,
-                )
-            )
-        center_gradient = tape.gradient(loss, learner.model.triplet_centers)
-        self.assertIsNotNone(center_gradient)
-
-    def test_embedding_batch_size_must_be_positive(self):
+    def test_task_chunk_size_must_be_positive(self):
         self.assertEqual(
-            PainDatasetConfig(embedding_batch_size=2).embedding_batch_size,
+            PainDatasetConfig(task_chunk_size=2).task_chunk_size,
             2,
         )
-        with self.assertRaisesRegex(ValueError, "embedding_batch_size must be > 0"):
-            PainDatasetConfig(embedding_batch_size=0)
+        with self.assertRaisesRegex(ValueError, "task_chunk_size must be > 0"):
+            PainDatasetConfig(task_chunk_size=0)
 
     def test_validation_checkpoint_config_validation(self):
         self.assertEqual(PainDatasetConfig().validation_checkpoint_metric, "accuracy")
@@ -1054,7 +846,6 @@ class ContractTests(unittest.TestCase):
             sequence_length=32,
             num_sensors=3,
             num_classes=2,
-            embedding_dim=4,
             eegnet_temporal_filters=2,
             eegnet_depth_multiplier=1,
             eegnet_separable_filters=4,
@@ -1083,7 +874,7 @@ class ContractTests(unittest.TestCase):
             training=False,
         )
         per_task_logits = []
-        per_task_prototypes = []
+        per_task_prototype_maps = []
         for task_idx in range(int(support_x.shape[0])):
             single = model.forward_episode(
                 support_x=support_x[task_idx],
@@ -1092,7 +883,7 @@ class ContractTests(unittest.TestCase):
                 training=False,
             )
             per_task_logits.append(single["logits"])
-            per_task_prototypes.append(single["prototypes"])
+            per_task_prototype_maps.append(single["prototype_feature_maps"])
 
         np.testing.assert_allclose(
             batched["logits"].numpy(),
@@ -1101,18 +892,17 @@ class ContractTests(unittest.TestCase):
             atol=1e-5,
         )
         np.testing.assert_allclose(
-            batched["prototypes"].numpy(),
-            tf.stack(per_task_prototypes, axis=0).numpy(),
+            batched["prototype_feature_maps"].numpy(),
+            tf.stack(per_task_prototype_maps, axis=0).numpy(),
             rtol=1e-5,
             atol=1e-5,
         )
 
-    def test_encode_returns_joint_embedding_without_modality_stack(self):
+    def test_encode_feature_map_returns_joint_temporal_maps(self):
         model = MultimodalPrototypicalNetwork(
             sequence_length=32,
             num_sensors=3,
             num_classes=2,
-            embedding_dim=4,
             eegnet_temporal_filters=2,
             eegnet_depth_multiplier=1,
             eegnet_separable_filters=4,
@@ -1123,18 +913,20 @@ class ContractTests(unittest.TestCase):
             eegnet_dropout_rate=0.0,
         )
 
-        embeddings = model.encode(tf.random.normal((2, 32, 3)), training=False)
+        feature_maps = model.encode_feature_map(
+            tf.random.normal((2, 32, 3)),
+            training=False,
+        )
 
-        self.assertEqual(embeddings.shape, (2, 4))
+        self.assertEqual(feature_maps.shape, (2, 8, 4))
         self.assertIsInstance(model.encoder, EEGNetStyleEncoder)
         self.assertFalse(hasattr(model, "modality_encoders"))
 
-    def test_logit_scale_is_trainable_and_initialized_by_metric(self):
-        cosine_model = MultimodalPrototypicalNetwork(
+    def test_logit_scale_is_trainable_and_initialized_for_can(self):
+        model = MultimodalPrototypicalNetwork(
             sequence_length=32,
             num_sensors=3,
             num_classes=2,
-            embedding_dim=4,
             eegnet_temporal_filters=2,
             eegnet_depth_multiplier=1,
             eegnet_separable_filters=4,
@@ -1143,30 +935,13 @@ class ContractTests(unittest.TestCase):
             eegnet_pool_size_1=2,
             eegnet_pool_size_2=2,
             eegnet_dropout_rate=0.0,
-            distance_metric="cosine",
-        )
-        euclidean_model = MultimodalPrototypicalNetwork(
-            sequence_length=32,
-            num_sensors=3,
-            num_classes=2,
-            embedding_dim=4,
-            eegnet_temporal_filters=2,
-            eegnet_depth_multiplier=1,
-            eegnet_separable_filters=4,
-            eegnet_temporal_kernel_size=8,
-            eegnet_separable_kernel_size=4,
-            eegnet_pool_size_1=2,
-            eegnet_pool_size_2=2,
-            eegnet_dropout_rate=0.0,
-            distance_metric="euclidean",
         )
 
-        self.assertAlmostEqual(float(cosine_model.logit_scale.numpy()), 10.0)
-        self.assertAlmostEqual(float(euclidean_model.logit_scale.numpy()), 1.0)
+        self.assertAlmostEqual(float(model.logit_scale.numpy()), 10.0)
         self.assertTrue(
             any(
-                variable is cosine_model.logit_scale
-                for variable in cosine_model.trainable_variables
+                variable is model.logit_scale
+                for variable in model.trainable_variables
             )
         )
 
@@ -1177,7 +952,7 @@ class ContractTests(unittest.TestCase):
         query_y = tf.constant([[0, 0, 1, 1]], dtype=tf.int32)
 
         with tf.GradientTape() as tape:
-            logits = cosine_model.forward_episode_batch(
+            logits = model.forward_episode_batch(
                 support_x=support_x,
                 support_y=support_y,
                 query_x=query_x,
@@ -1191,7 +966,7 @@ class ContractTests(unittest.TestCase):
                 )
             )
 
-        gradient = tape.gradient(loss, cosine_model.logit_scale)
+        gradient = tape.gradient(loss, model.logit_scale)
         self.assertIsNotNone(gradient)
 
     def test_eegnet_encoder_layers_are_present(self):
@@ -1199,7 +974,6 @@ class ContractTests(unittest.TestCase):
             sequence_length=32,
             num_sensors=3,
             num_classes=2,
-            embedding_dim=8,
             eegnet_temporal_filters=2,
             eegnet_depth_multiplier=1,
             eegnet_separable_filters=4,
@@ -1210,14 +984,16 @@ class ContractTests(unittest.TestCase):
             eegnet_dropout_rate=0.0,
         )
 
-        embeddings = model.encode(tf.random.normal((2, 32, 3)), training=False)
-        self.assertEqual(embeddings.shape, (2, 8))
+        feature_maps = model.encode_feature_map(
+            tf.random.normal((2, 32, 3)),
+            training=False,
+        )
+        self.assertEqual(feature_maps.shape, (2, 8, 4))
 
         layer_names = {layer.name for layer in model.encoder.layers}
         self.assertIn("temporal_conv", layer_names)
         self.assertIn("sensor_depthwise_conv", layer_names)
         self.assertIn("separable_temporal_conv", layer_names)
-        self.assertIn("global_pooling", layer_names)
 
     def test_loso_split_contracts(self):
         dataset = PainMetaDataset(data_dir=str(self.data_dir), config=self.config)
@@ -1312,7 +1088,6 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             sequence_length=2500,
             n_way=6,
-            num_stimuli_levels=6,
             k_shot=3,
             q_query=2,
             num_epochs=1,
@@ -1374,10 +1149,12 @@ class ContractTests(unittest.TestCase):
             "val_accuracies",
             "test_losses",
             "test_accuracies",
-            "zero_shot_intra_class_similarities",
-            "zero_shot_inter_class_similarities",
-            "k_shot_intra_class_similarities",
-            "k_shot_inter_class_similarities",
+            "zero_shot_can_true_class_scores",
+            "zero_shot_can_best_other_scores",
+            "zero_shot_can_score_margins",
+            "k_shot_can_true_class_scores",
+            "k_shot_can_best_other_scores",
+            "k_shot_can_score_margins",
         }
         self.assertTrue(required_keys.issubset(results.keys()))
 
@@ -1409,7 +1186,6 @@ class ContractTests(unittest.TestCase):
         config = PainDatasetConfig(
             dataset_source="painmonit",
             sequence_length=2500,
-            num_stimuli_levels=6,
             task_class_ids=(0, 5),
             k_shot=1,
             q_query=1,
@@ -1514,7 +1290,6 @@ class ContractTests(unittest.TestCase):
             dataset_source="painmonit",
             sequence_length=2500,
             n_way=6,
-            num_stimuli_levels=6,
             k_shot=1,
             q_query=1,
             num_epochs=1,

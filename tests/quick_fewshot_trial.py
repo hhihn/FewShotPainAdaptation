@@ -42,19 +42,11 @@ def _sample_subject_tasks(sampler, num_tasks: int) -> list[dict[str, np.ndarray]
 def _evaluate_bank(
     learner: FewShotPainLearner, tasks: list[dict[str, np.ndarray]]
 ) -> dict[str, float]:
-    loss, accuracy, contrastive_loss, triplet_loss = learner.evaluate_batch_step(tasks)
-    metrics = {
+    loss, accuracy = learner.evaluate_batch_step(tasks)
+    return {
         "loss": float(loss.numpy()),
         "accuracy": float(accuracy.numpy()),
     }
-    if getattr(learner, "attention_mode", "none") != "can":
-        metrics.update(
-            {
-                "contrastive_loss": float(contrastive_loss.numpy()),
-                "triplet_loss": float(triplet_loss.numpy()),
-            }
-        )
-    return metrics
 
 
 def _log_trial_summary(
@@ -132,14 +124,12 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         k_shot=args.k_shot,
         q_query=args.q_query,
         task_normalize_mode=args.normalize_mode,
-        classifier_mode=args.classifier_mode,
-        attention_mode=str(getattr(args, "attention_mode", "none")),
+        attention_mode="can",
         can_attention_temperature=float(
             getattr(args, "can_attention_temperature", 1.0)
         ),
         can_meta_hidden_dim=int(getattr(args, "can_meta_hidden_dim", 32)),
         can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
-        can_global_loss_weight=float(getattr(args, "can_global_loss_weight", 0.1)),
         can_margin_loss_weight=float(getattr(args, "can_margin_loss_weight", 0.2)),
         can_margin_target=float(getattr(args, "can_margin_target", 0.3)),
         can_support_mode=str(getattr(args, "can_support_mode", "sampled")),
@@ -150,14 +140,13 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "prototype_bank_init_samples_per_class", 0)
         ),
         train_batch_size=args.task_batch_size,
-        embedding_batch_size=max(1, int(getattr(args, "embedding_batch_size", 1))),
+        task_chunk_size=max(1, int(getattr(args, "task_chunk_size", 1))),
         tasks_per_epoch=max(1, args.updates * args.task_batch_size),
         val_tasks=max(1, args.val_tasks),
         heldout_eval_tasks=max(1, args.heldout_tasks),
         num_epochs=1,
         single_loso_fold=True,
         train_prefetch_batches=max(1, int(getattr(args, "train_prefetch_batches", 2))),
-        embedding_dim=args.embedding_dim,
         eegnet_temporal_filters=args.eegnet_temporal_filters,
         eegnet_depth_multiplier=args.eegnet_depth_multiplier,
         eegnet_separable_filters=args.eegnet_separable_filters,
@@ -167,14 +156,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         eegnet_pool_size_2=args.eegnet_pool_size_2,
         eegnet_dropout_rate=args.eegnet_dropout_rate,
         eegnet_l2_weight=args.eegnet_l2_weight,
-        triplet_loss_weight=float(getattr(args, "triplet_loss_weight", 1.0)),
-        triplet_margin=float(getattr(args, "triplet_margin", 0.2)),
-        triplet_mining_strategy=str(
-            getattr(args, "triplet_mining_strategy", "batch_hard")
-        ),
-        triplet_center_gradient_clip_norm=float(
-            getattr(args, "triplet_center_gradient_clip_norm", 0.01)
-        ),
         lr_schedule=str(getattr(args, "lr_schedule", "constant")),
         lr_decay_alpha=float(getattr(args, "lr_decay_alpha", 0.1)),
         enable_window_shift_augmentation=not args.disable_window_shift,
@@ -242,10 +223,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
             loss,
             task_loss,
             accuracy,
-            contrastive_loss,
-            triplet_loss,
             can_local_loss,
-            can_global_loss,
             can_margin_loss,
         ) = learner.train_batch_step(task_batch)
         elapsed = time.perf_counter() - start_time
@@ -262,15 +240,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
                 "elapsed_seconds": float(time.perf_counter() - update_start),
             }
         )
-        if str(config.attention_mode).lower() != "can":
-            update_history[-1].update(
-                {
-                    "contrastive_loss": float(contrastive_loss.numpy()),
-                    "triplet_loss": float(triplet_loss.numpy()),
-                    "can_global_loss": float(can_global_loss.numpy()),
-                }
-            )
-
         if (update_idx + 1) % summary_every == 0 or (update_idx + 1) == total_updates:
             after_train = _evaluate_bank(learner, train_eval_tasks)
             after_val = _evaluate_bank(learner, val_tasks)
@@ -321,7 +290,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "val_subject_count": int(fold["n_val_subjects"]),
         "updates": max(1, args.updates),
         "task_batch_size": args.task_batch_size,
-        "embedding_batch_size": int(config.embedding_batch_size),
+        "task_chunk_size": int(config.task_chunk_size),
         "train_task_count": len(train_tasks),
         "train_eval_task_count": len(train_eval_tasks),
         "val_task_count": len(val_tasks),
@@ -329,12 +298,10 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "k_shot": args.k_shot,
         "q_query": args.q_query,
         "task_class_ids": list(config.task_class_ids),
-        "classifier_mode": args.classifier_mode,
         "attention_mode": str(config.attention_mode),
         "can_attention_temperature": float(config.can_attention_temperature),
         "can_meta_hidden_dim": int(config.can_meta_hidden_dim),
         "can_local_loss_weight": float(config.can_local_loss_weight),
-        "can_global_loss_weight": float(config.can_global_loss_weight),
         "can_margin_loss_weight": float(config.can_margin_loss_weight),
         "can_margin_target": float(config.can_margin_target),
         "can_support_mode": str(config.can_support_mode),
@@ -348,8 +315,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "lr_schedule": str(config.lr_schedule),
         "lr_decay_alpha": float(config.lr_decay_alpha),
         "normalize_mode": args.normalize_mode,
-        "embedding_dim": args.embedding_dim,
-        "encoder": "eegnet",
+        "encoder": str(config.encoder_backend),
         "eegnet_temporal_filters": int(config.eegnet_temporal_filters),
         "eegnet_depth_multiplier": int(config.eegnet_depth_multiplier),
         "eegnet_separable_filters": int(config.eegnet_separable_filters),
@@ -361,12 +327,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "eegnet_l2_weight": float(config.eegnet_l2_weight),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
-        "triplet_loss_weight": float(config.triplet_loss_weight),
-        "triplet_margin": float(config.triplet_margin),
-        "triplet_mining_strategy": str(config.triplet_mining_strategy),
-        "triplet_center_gradient_clip_norm": float(
-            config.triplet_center_gradient_clip_norm
-        ),
         "model_architecture_file": model_architecture_file,
         "before": {
             "train": before_train,
@@ -389,26 +349,6 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
             after_heldout["accuracy"] - before_heldout["accuracy"]
         ),
     }
-
-    if str(config.attention_mode).lower() == "can":
-        payload.update(
-            {
-                "embedding_projection_enabled": False,
-                "can_global_loss_weight": 0.0,
-            }
-        )
-        for key in (
-            "can_global_loss_weight",
-            "embedding_batch_size",
-            "embedding_dim",
-            "triplet_loss_weight",
-            "triplet_margin",
-            "triplet_mining_strategy",
-            "triplet_center_gradient_clip_norm",
-        ):
-            payload.pop(key, None)
-    else:
-        payload["embedding_projection_enabled"] = True
 
     _log_trial_summary(
         logger,
@@ -604,7 +544,7 @@ def main() -> None:
     parser.add_argument("--updates", type=int, default=500)
     parser.add_argument("--task-batch-size", type=int, default=10)
     parser.add_argument(
-        "--embedding-batch-size",
+        "--task-chunk-size",
         type=int,
         default=1,
         help="Number of episodic tasks whose samples are encoded together.",
@@ -615,23 +555,9 @@ def main() -> None:
     parser.add_argument("--k-shot", type=int, default=10)
     parser.add_argument("--q-query", type=int, default=10)
     parser.add_argument("--task-class-ids", type=str, default="0,4")
-    parser.add_argument(
-        "--classifier-mode",
-        type=str,
-        default="prototype",
-        choices=("prototype", "soft_knn"),
-    )
-    parser.add_argument(
-        "--attention-mode",
-        type=str,
-        default="none",
-        choices=("none", "can"),
-        help="Optional episodic attention module. 'can' enables CAN/CAM.",
-    )
     parser.add_argument("--can-attention-temperature", type=float, default=1.0)
     parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
     parser.add_argument("--can-local-loss-weight", type=float, default=1.0)
-    parser.add_argument("--can-global-loss-weight", type=float, default=0.1)
     parser.add_argument("--can-margin-loss-weight", type=float, default=0.2)
     parser.add_argument("--can-margin-target", type=float, default=0.3)
     parser.add_argument(
@@ -662,7 +588,6 @@ def main() -> None:
         default=0.1,
         help="Final LR fraction for cosine decay.",
     )
-    parser.add_argument("--embedding-dim", type=int, default=64)
     parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
     parser.add_argument("--eegnet-depth-multiplier", type=int, default=2)
     parser.add_argument("--eegnet-separable-filters", type=int, default=16)
@@ -672,15 +597,6 @@ def main() -> None:
     parser.add_argument("--eegnet-pool-size-2", type=int, default=8)
     parser.add_argument("--eegnet-dropout-rate", type=float, default=0.25)
     parser.add_argument("--eegnet-l2-weight", type=float, default=1e-4)
-    parser.add_argument("--triplet-loss-weight", type=float, default=1.0)
-    parser.add_argument("--triplet-margin", type=float, default=0.1)
-    parser.add_argument(
-        "--triplet-mining-strategy",
-        type=str,
-        default="batch_hard",
-        choices=("batch_hard", "batch_all", "triplet_center"),
-    )
-    parser.add_argument("--triplet-center-gradient-clip-norm", type=float, default=0.01)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument("--train-prefetch-batches", type=int, default=2)
     parser.add_argument(

@@ -12,12 +12,8 @@ from data_loaders.pain_ds_config import (
 VALIDATION_CHECKPOINT_MINIMIZE_METRICS = {
     "loss",
     "task_loss",
-    "contrastive_loss",
-    "triplet_loss",
     "can_local_loss",
-    "can_global_loss",
     "can_margin_loss",
-    "inter_class_similarity",
 }
 
 

@@ -16,18 +16,18 @@ class TaskBatchPipeline:
         self,
         *,
         train_batch_size: int,
-        embedding_batch_size: int,
+        task_chunk_size: int,
         train_prefetch_batches: int,
     ):
         """Initialize task-batch pipeline settings.
 
         Args:
             train_batch_size: Number of episodic tasks per optimizer update.
-            embedding_batch_size: Number of tasks per encoder-forward chunk.
+            task_chunk_size: Number of tasks per encoder-forward chunk.
             train_prefetch_batches: Number of sampled batches to prefetch.
         """
         self.train_batch_size = max(1, int(train_batch_size))
-        self.embedding_batch_size = max(1, int(embedding_batch_size))
+        self.task_chunk_size = max(1, int(task_chunk_size))
         self.train_prefetch_batches = max(1, int(train_prefetch_batches))
 
     @staticmethod
@@ -163,7 +163,7 @@ class TaskBatchPipeline:
         query_x_batch: tf.Tensor,
         query_y_batch: tf.Tensor,
     ):
-        """Yield task tensor chunks sized by ``embedding_batch_size``.
+        """Yield task tensor chunks sized by ``task_chunk_size``.
 
         Args:
             support_x_batch: Batched support windows.
@@ -174,7 +174,7 @@ class TaskBatchPipeline:
         total_tasks = int(tf.shape(support_x_batch)[0].numpy())
         if total_tasks <= 0:
             raise ValueError("task tensor batch must contain at least one task")
-        chunk_size = min(max(1, int(self.embedding_batch_size)), total_tasks)
+        chunk_size = min(max(1, int(self.task_chunk_size)), total_tasks)
         for task_start in range(0, total_tasks, chunk_size):
             task_end = min(total_tasks, task_start + chunk_size)
             yield (

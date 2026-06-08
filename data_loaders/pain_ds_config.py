@@ -5,31 +5,16 @@ from dataclasses import dataclass
 SUPPORTED_VALIDATION_CHECKPOINT_METRICS = (
     "loss",
     "task_loss",
-    "contrastive_loss",
-    "triplet_loss",
     "can_local_loss",
-    "can_global_loss",
     "can_margin_loss",
     "accuracy",
     "precision",
     "recall",
     "f1",
-    "intra_class_similarity",
-    "inter_class_similarity",
-    "similarity_margin",
     "can_true_class_score",
     "can_best_other_score",
     "can_score_margin",
 )
-
-CAN_DISABLED_VALIDATION_CHECKPOINT_METRICS = {
-    "contrastive_loss",
-    "triplet_loss",
-    "can_global_loss",
-    "intra_class_similarity",
-    "inter_class_similarity",
-    "similarity_margin",
-}
 
 VALIDATION_CHECKPOINT_MODES = ("auto", "min", "max")
 CAN_SUPPORT_MODES = ("sampled", "learned_prototype_memory")
@@ -46,9 +31,6 @@ class PainDatasetConfig:
     """
 
     # Data dimensions
-    num_subjects: int = 52
-    num_stimuli_levels: int = 6  # 6 temperature/pain levels
-    num_repetitions: int = 8  # 8 repetitions per stimulus level
     sequence_length: int = 2500  # 10 seconds × 250 Hz
     num_sensors: int = 3  # Number of modalities
     eegnet_temporal_filters: int = 8
@@ -67,14 +49,11 @@ class PainDatasetConfig:
     crossmod_positional_base: float = 10000.0
     crossmod_attention_dropout_rate: float = 0.0
     crossmod_ff_activation: str = "relu"
-    embedding_dim: int = 64  # Joint EEGNet encoder embedding dimension
     clear_session_per_fold: bool = True  # Legacy flag; LOSO folds now reuse one graph
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
     loso_start_index: Optional[int] = None  # 1-based inclusive LOSO fold start
     loso_stop_index: Optional[int] = None  # 1-based inclusive LOSO fold stop
-    # Sensors used
-    painmonit_sensors: Tuple[str] = ("Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg")
     # Modality information
     modality_names: Tuple[str, ...] = (
         "EDA",  # idx 1
@@ -100,12 +79,10 @@ class PainDatasetConfig:
     task_construction_mode: str = (
         "single_subject"  # single_subject, cross_subject, or mixed
     )
-    classifier_mode: str = "prototype"  # Episodic classifier: prototype or soft_knn
-    attention_mode: str = "none"  # none or can
+    attention_mode: str = "can"  # CAN over temporal feature maps
     can_attention_temperature: float = 1.0
     can_meta_hidden_dim: int = 32
     can_local_loss_weight: float = 1.0
-    can_global_loss_weight: float = 0.1
     can_margin_loss_weight: float = 0.2
     can_margin_target: float = 0.3
     can_support_mode: str = "sampled"
@@ -118,16 +95,8 @@ class PainDatasetConfig:
     source_subject_prototype_vote_use_base_index: bool = True
     source_subject_prototype_vote_query_normalize_with_subject_stats: bool = True
     source_subject_prototype_vote_softmax_scope: str = "global"
-    triplet_loss_weight: float = 1.0  # Weight for triplet embedding loss
-    triplet_margin: float = 0.1  # Margin used by triplet loss
-    triplet_mining_strategy: str = (
-        "batch_hard"  # batch_hard, batch_all, or triplet_center
-    )
-    triplet_center_gradient_clip_norm: float = 0.01
     train_batch_size: int = 256  # Number of tasks per optimizer update
-    embedding_batch_size: int = (
-        1  # Number of tasks encoded together; 1 preserves legacy per-task embedding
-    )
+    task_chunk_size: int = 1  # Number of tasks encoded together per forward chunk
     num_epochs: int = 10  # Number of epochs per fold
     tasks_per_epoch: int = 100  # Number of train tasks sampled per epoch
     val_tasks: int = 20  # Number of validation tasks per validation run
@@ -151,7 +120,6 @@ class PainDatasetConfig:
     gradient_clip_norm: Optional[float] = (
         1.0  # Per-gradient norm clip for optimizer updates
     )
-    enable_numerics_check: bool = True  # Check train losses/gradients for NaN/Inf
     train_progress_write_every_n_batches: int = (
         10  # Persist train_update CSV rows every N train batches
     )
@@ -226,7 +194,6 @@ class PainDatasetConfig:
         if self.dataset_source == "biovid_part_a":
             # BioVid Part A ships with an explicit train/test split.
             self.split_strategy = "predefined"
-            self.num_stimuli_levels = 5
             self.sampling_rate_hz = 256
             # Avoid applying an additional sliding-window augmentation on top of
             # BioVid Part A pre-segmented windows.
@@ -256,16 +223,10 @@ class PainDatasetConfig:
             raise ValueError(
                 "task_construction_mode must be one of: 'single_subject', 'cross_subject', 'mixed'"
             )
-        if self.classifier_mode not in {"prototype", "soft_knn"}:
-            raise ValueError("classifier_mode must be one of: 'prototype', 'soft_knn'")
         self.attention_mode = str(self.attention_mode).strip().lower()
-        if self.attention_mode not in {"none", "can"}:
-            raise ValueError("attention_mode must be one of: 'none', 'can'")
-        if self.attention_mode == "can" and self.classifier_mode != "prototype":
-            raise ValueError(
-                "attention_mode='can' requires classifier_mode='prototype'"
-            )
-        if self.attention_mode == "can" and self.n_way < 2:
+        if self.attention_mode != "can":
+            raise ValueError("attention_mode must be 'can'")
+        if self.n_way < 2:
             raise ValueError("attention_mode='can' requires at least two task classes")
         self.can_attention_temperature = float(self.can_attention_temperature)
         if self.can_attention_temperature <= 0:
@@ -276,9 +237,6 @@ class PainDatasetConfig:
         self.can_local_loss_weight = float(self.can_local_loss_weight)
         if self.can_local_loss_weight < 0:
             raise ValueError("can_local_loss_weight must be non-negative")
-        self.can_global_loss_weight = float(self.can_global_loss_weight)
-        if self.can_global_loss_weight < 0:
-            raise ValueError("can_global_loss_weight must be non-negative")
         self.can_margin_loss_weight = float(self.can_margin_loss_weight)
         if self.can_margin_loss_weight < 0:
             raise ValueError("can_margin_loss_weight must be non-negative")
@@ -342,33 +300,14 @@ class PainDatasetConfig:
                 raise ValueError(
                     "can_support_mode='learned_prototype_memory' requires attention_mode='can'"
                 )
-            if self.classifier_mode != "prototype":
-                raise ValueError(
-                    "can_support_mode='learned_prototype_memory' requires classifier_mode='prototype'"
-                )
         elif self.prototype_bank_init_samples_per_class > 0:
             raise ValueError(
                 "prototype_bank_init_samples_per_class > 0 requires "
                 "can_support_mode='learned_prototype_memory'"
             )
-        if self.triplet_loss_weight < 0:
-            raise ValueError("triplet_loss_weight must be non-negative")
-        if self.triplet_margin < 0:
-            raise ValueError("triplet_margin must be non-negative")
-        if self.triplet_mining_strategy not in {
-            "batch_hard",
-            "batch_all",
-            "triplet_center",
-        }:
-            raise ValueError(
-                "triplet_mining_strategy must be one of: "
-                "'batch_hard', 'batch_all', 'triplet_center'"
-            )
-        if self.triplet_center_gradient_clip_norm < 0:
-            raise ValueError("triplet_center_gradient_clip_norm must be non-negative")
-        self.embedding_batch_size = int(self.embedding_batch_size)
-        if self.embedding_batch_size <= 0:
-            raise ValueError("embedding_batch_size must be > 0")
+        self.task_chunk_size = int(self.task_chunk_size)
+        if self.task_chunk_size <= 0:
+            raise ValueError("task_chunk_size must be > 0")
         if self.num_sensors <= 0:
             raise ValueError("num_sensors must be > 0")
         if self.eegnet_temporal_filters <= 0:
@@ -451,16 +390,6 @@ class PainDatasetConfig:
             raise ValueError(
                 "validation_checkpoint_metric must be one of: "
                 + ", ".join(SUPPORTED_VALIDATION_CHECKPOINT_METRICS)
-            )
-        if (
-            self.attention_mode == "can"
-            and self.validation_checkpoint_metric
-            in CAN_DISABLED_VALIDATION_CHECKPOINT_METRICS
-        ):
-            raise ValueError(
-                "CAN mode does not compute embedding/global diagnostics; "
-                "use a classification metric, can_local_loss, or one of: "
-                "can_true_class_score, can_best_other_score, can_score_margin"
             )
         self.validation_checkpoint_mode = str(self.validation_checkpoint_mode).strip()
         if self.validation_checkpoint_mode not in VALIDATION_CHECKPOINT_MODES:

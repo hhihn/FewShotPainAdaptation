@@ -109,10 +109,7 @@ class _FakeEvaluationEngine:
         return {
             "loss": tf.constant(0.25, dtype=tf.float32),
             "task_loss": tf.constant(0.2, dtype=tf.float32),
-            "contrastive_loss": tf.constant(0.0, dtype=tf.float32),
-            "triplet_loss": tf.constant(0.0, dtype=tf.float32),
             "can_local_loss": tf.constant(0.01, dtype=tf.float32),
-            "can_global_loss": tf.constant(0.02, dtype=tf.float32),
             "can_margin_loss": tf.constant(0.03, dtype=tf.float32),
             "logits": tf.reshape(logits, (num_query, 2)),
             "similarity_scores": tf.reshape(similarity_scores, (num_query, 2)),
@@ -122,7 +119,6 @@ class _FakeEvaluationEngine:
 class _FakeFeatureExportEngine:
     def __init__(self):
         self.model = SimpleNamespace(can_support_mode="learned_prototype_memory")
-        self.triplet_loss_weight = 1.0
 
     def forward_task(
         self,
@@ -141,10 +137,7 @@ class _FakeFeatureExportEngine:
             "logits": logits,
             "loss": tf.constant(0.2, dtype=tf.float32),
             "task_loss": tf.constant(0.2, dtype=tf.float32),
-            "contrastive_loss": tf.constant(0.0, dtype=tf.float32),
-            "triplet_loss": tf.constant(0.0, dtype=tf.float32),
             "can_local_loss": tf.constant(0.0, dtype=tf.float32),
-            "can_global_loss": tf.constant(0.0, dtype=tf.float32),
             "can_margin_loss": tf.constant(0.0, dtype=tf.float32),
             "model_aux_loss": tf.constant(0.0, dtype=tf.float32),
             "support_feature_maps": tf.reshape(
@@ -617,16 +610,15 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         recorder = self._make_recorder()
         metrics = {
             "task_loss": 0.4,
-            "contrastive_loss": 0.1,
-            "triplet_loss": 0.2,
             "can_local_loss": 0.05,
-            "can_global_loss": 0.03,
+            "can_margin_loss": 0.03,
             "accuracy": 0.75,
             "precision": 0.7,
             "recall": 0.8,
             "f1": 0.74,
-            "intra_class_similarity": 0.9,
-            "inter_class_similarity": 0.2,
+            "can_true_class_score": 0.9,
+            "can_best_other_score": 0.2,
+            "can_score_margin": 0.7,
         }
 
         recorder.record_heldout_size_result(
@@ -642,33 +634,29 @@ class LearnerRefactorServiceTests(unittest.TestCase):
 
         bucket = recorder.results["heldout_eval_by_task_size"]["k2_q3"]
         self.assertEqual(bucket["zero_shot_accuracies"], [0.75])
-        self.assertEqual(bucket["zero_shot_intra_class_similarities"], [0.9])
+        self.assertEqual(bucket["zero_shot_can_true_class_scores"], [0.9])
         self.assertEqual(bucket["k_shot_f1s"], [0.74])
 
-    def test_cv_result_recorder_metric_kwargs_leave_non_can_margin_blank(self):
+    def test_cv_result_recorder_metric_kwargs_include_can_scores(self):
         kwargs = CrossValidationResultRecorder._metric_event_kwargs(
             {
                 "task_loss": 0.4,
-                "contrastive_loss": 0.1,
-                "triplet_loss": 0.2,
                 "can_local_loss": 0.05,
-                "can_global_loss": 0.03,
                 "can_margin_loss": 0.99,
                 "accuracy": 0.75,
                 "precision": 0.7,
                 "recall": 0.8,
                 "f1": 0.74,
-                "intra_class_similarity": 0.9,
-                "inter_class_similarity": 0.2,
-                "similarity_margin": 0.7,
+                "can_true_class_score": 0.9,
+                "can_best_other_score": 0.2,
+                "can_score_margin": 0.7,
             },
             include_similarity_margin=True,
         )
 
-        self.assertEqual(kwargs["contrastive_loss"], 0.1)
-        self.assertEqual(kwargs["can_global_loss"], 0.03)
-        self.assertIsNone(kwargs["can_margin_loss"])
-        self.assertEqual(kwargs["similarity_margin"], 0.7)
+        self.assertEqual(kwargs["can_margin_loss"], 0.99)
+        self.assertEqual(kwargs["can_true_class_score"], 0.9)
+        self.assertEqual(kwargs["can_score_margin"], 0.7)
 
     def test_cv_result_recorder_writes_standard_metrics_to_progress_csv(self):
         recorder = self._make_recorder()
@@ -680,16 +668,15 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             loss=0.5,
             metrics={
                 "task_loss": 0.4,
-                "contrastive_loss": 0.1,
-                "triplet_loss": 0.2,
                 "can_local_loss": 0.05,
-                "can_global_loss": 0.03,
+                "can_margin_loss": 0.03,
                 "accuracy": 0.75,
                 "precision": 0.7,
                 "recall": 0.8,
                 "f1": 0.74,
-                "intra_class_similarity": 0.9,
-                "inter_class_similarity": 0.2,
+                "can_true_class_score": 0.9,
+                "can_best_other_score": 0.2,
+                "can_score_margin": 0.7,
             },
         )
         recorder.close_fold()
@@ -732,7 +719,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
 
         pipeline = TaskBatchPipeline(
             train_batch_size=2,
-            embedding_batch_size=1,
+            task_chunk_size=1,
             train_prefetch_batches=2,
         )
         batches = list(pipeline.iter_prefetched_task_batches(Sampler(), 5))
@@ -746,7 +733,7 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         learner.train_batch_size = 3
         learner.task_pipeline = TaskBatchPipeline(
             train_batch_size=3,
-            embedding_batch_size=1,
+            task_chunk_size=1,
             train_prefetch_batches=1,
         )
         sampler = _CountingPhase2Sampler()
@@ -836,7 +823,6 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(engine.model.can_support_mode, "learned_prototype_memory")
-        self.assertEqual(engine.triplet_loss_weight, 1.0)
         self.assertEqual(export["query_features"].shape, (2, 2))
         self.assertEqual(export["support_features"].shape, (2, 2))
         self.assertEqual(export["prototype_features"].shape, (2, 2))
@@ -876,16 +862,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                 0.6,
                 {
                     "task_loss": 0.6,
-                    "contrastive_loss": 0.0,
-                    "triplet_loss": 0.0,
                     "can_local_loss": 0.1,
-                    "can_global_loss": 0.2,
                     "accuracy": 0.5,
                     "precision": 0.5,
                     "recall": 0.5,
                     "f1": 0.5,
-                    "intra_class_similarity": 0.4,
-                    "inter_class_similarity": 0.2,
+                    "can_true_class_score": 0.4,
+                    "can_best_other_score": 0.2,
+                    "can_score_margin": 0.2,
                 },
             )
 
@@ -900,16 +884,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                 float(q_query),
                 {
                     "task_loss": float(q_query),
-                    "contrastive_loss": 0.0,
-                    "triplet_loss": 0.0,
                     "can_local_loss": 0.1,
-                    "can_global_loss": 0.2,
                     "accuracy": 0.8,
                     "precision": 0.8,
                     "recall": 0.8,
                     "f1": 0.8,
-                    "intra_class_similarity": 0.6,
-                    "inter_class_similarity": 0.1,
+                    "can_true_class_score": 0.6,
+                    "can_best_other_score": 0.1,
+                    "can_score_margin": 0.5,
                 },
             )
 
@@ -981,16 +963,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                     0.7,
                     {
                         "task_loss": 0.7,
-                        "contrastive_loss": 0.0,
-                        "triplet_loss": 0.0,
                         "can_local_loss": 0.1,
-                        "can_global_loss": 0.2,
                         "accuracy": 0.45,
                         "precision": 0.46,
                         "recall": 0.44,
                         "f1": 0.45,
-                        "intra_class_similarity": 0.3,
-                        "inter_class_similarity": 0.2,
+                        "can_true_class_score": 0.3,
+                        "can_best_other_score": 0.2,
+                        "can_score_margin": 0.1,
                     },
                 )
             )
@@ -1048,16 +1028,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                 0.4,
                 {
                     "task_loss": 0.4,
-                    "contrastive_loss": 0.0,
-                    "triplet_loss": 0.0,
                     "can_local_loss": 0.1,
-                    "can_global_loss": 0.2,
                     "accuracy": 0.83,
                     "precision": 0.84,
                     "recall": 0.82,
                     "f1": 0.83,
-                    "intra_class_similarity": 0.6,
-                    "inter_class_similarity": 0.1,
+                    "can_true_class_score": 0.6,
+                    "can_best_other_score": 0.1,
+                    "can_score_margin": 0.5,
                 },
             )
 
@@ -1118,16 +1096,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                 0.4,
                 {
                     "task_loss": 0.4,
-                    "contrastive_loss": 0.0,
-                    "triplet_loss": 0.0,
                     "can_local_loss": 0.1,
-                    "can_global_loss": 0.2,
                     "accuracy": 0.83,
                     "precision": 0.84,
                     "recall": 0.82,
                     "f1": 0.83,
-                    "intra_class_similarity": 0.6,
-                    "inter_class_similarity": 0.1,
+                    "can_true_class_score": 0.6,
+                    "can_best_other_score": 0.1,
+                    "can_score_margin": 0.5,
                 },
             )
 
@@ -1181,16 +1157,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             0.6,
             {
                 "task_loss": 0.6,
-                "contrastive_loss": 0.0,
-                "triplet_loss": 0.0,
                 "can_local_loss": 0.1,
-                "can_global_loss": 0.2,
                 "accuracy": 0.5,
                 "precision": 0.5,
                 "recall": 0.5,
                 "f1": 0.5,
-                "intra_class_similarity": 0.4,
-                "inter_class_similarity": 0.2,
+                    "can_true_class_score": 0.4,
+                    "can_best_other_score": 0.2,
+                    "can_score_margin": 0.2,
             },
         )
         query_sizes = []
@@ -1204,16 +1178,14 @@ class LearnerRefactorServiceTests(unittest.TestCase):
                 float(q_query),
                 {
                     "task_loss": float(q_query),
-                    "contrastive_loss": 0.0,
-                    "triplet_loss": 0.0,
                     "can_local_loss": 0.1,
-                    "can_global_loss": 0.2,
                     "accuracy": 0.8,
                     "precision": 0.8,
                     "recall": 0.8,
                     "f1": 0.8,
-                    "intra_class_similarity": 0.6,
-                    "inter_class_similarity": 0.1,
+                    "can_true_class_score": 0.6,
+                    "can_best_other_score": 0.1,
+                    "can_score_margin": 0.5,
                 },
             )
 

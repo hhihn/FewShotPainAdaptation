@@ -34,25 +34,23 @@ def _make_tiny_learner(
     data_dir: Path,
     *,
     train_batch_size: int = 1,
-    embedding_batch_size: int = 1,
+    task_chunk_size: int = 1,
     can_support_mode: str = "sampled",
     learned_prototype_slots_per_class: int = 1,
 ) -> FewShotPainLearner:
     config = PainDatasetConfig(
         dataset_source="painmonit",
         sequence_length=32,
-        num_stimuli_levels=2,
         task_class_ids=(0, 1),
         k_shot=1,
         q_query=1,
         train_batch_size=train_batch_size,
-        embedding_batch_size=embedding_batch_size,
+        task_chunk_size=task_chunk_size,
         num_epochs=1,
         tasks_per_epoch=1,
         val_tasks=1,
         heldout_eval_tasks=1,
         k_shot_adaptation_steps=0,
-        embedding_dim=4,
         eegnet_temporal_filters=2,
         eegnet_depth_multiplier=1,
         eegnet_separable_filters=4,
@@ -61,7 +59,6 @@ def _make_tiny_learner(
         eegnet_pool_size_1=2,
         eegnet_pool_size_2=2,
         eegnet_dropout_rate=0.0,
-        triplet_loss_weight=0.0,
         attention_mode="can",
         can_support_mode=can_support_mode,
         learned_prototype_slots_per_class=learned_prototype_slots_per_class,
@@ -168,11 +165,11 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
             tracing_count,
         )
 
-    def test_compiled_steps_support_multi_task_embedding_batches(self):
+    def test_compiled_steps_support_multi_task_chunks(self):
         learner = _make_tiny_learner(
             self.data_dir,
             train_batch_size=2,
-            embedding_batch_size=2,
+            task_chunk_size=2,
         )
         engine = learner.engine
         batch = _episode_batch(learner, task_count=2)
@@ -180,7 +177,7 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
         eval_outputs = engine.eval_task_batch_step_tensors(*batch)
         self.assertIsNotNone(engine._compiled_eval_batch_step)
         self.assertEqual(int(eval_outputs[0].shape[0]), 2)
-        self.assertEqual(int(eval_outputs[7].shape[0]), 2 * learner.query_size)
+        self.assertEqual(int(eval_outputs[5].shape[0]), 2 * learner.query_size)
         for tensor in eval_outputs:
             self.assertTrue(np.all(np.isfinite(tensor.numpy())))
 
@@ -238,7 +235,7 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
         learner = _make_tiny_learner(
             self.data_dir,
             train_batch_size=2,
-            embedding_batch_size=2,
+            task_chunk_size=2,
             can_support_mode="learned_prototype_memory",
             learned_prototype_slots_per_class=2,
         )
@@ -254,7 +251,7 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
         learner = _make_tiny_learner(
             self.data_dir,
             train_batch_size=2,
-            embedding_batch_size=2,
+            task_chunk_size=2,
             can_support_mode="learned_prototype_memory",
             learned_prototype_slots_per_class=2,
         )
