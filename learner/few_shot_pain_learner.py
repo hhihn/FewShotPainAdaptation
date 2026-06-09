@@ -224,22 +224,6 @@ class FewShotPainLearner:
             f"Logging verbosity={self.logging_verbosity} (0=minimal, 1=standard, 2=detailed)"
         )
 
-    def _augment_training_inputs(self, x: tf.Tensor) -> tf.Tensor:
-        """Apply training-only signal augmentation.
-
-        Args:
-            x: Input tensor to augment.
-        """
-        return self.engine.augment_training_inputs(x)
-
-    def _release_model_resources(self, clear_session: bool = True) -> None:
-        """Release model and optimizer resources.
-
-        Args:
-            clear_session: Whether to clear Keras backend state.
-        """
-        self.engine.release_model_resources(clear_session=clear_session)
-
     def _rebuild_model(self, clear_session: bool = True) -> None:
         """Build a fresh model and optimizer.
 
@@ -254,27 +238,6 @@ class FewShotPainLearner:
         Compiled functions are reused after variables are restored.
         """
         self.engine.reset_model_state_for_new_fold()
-
-    def _build_compiled_train_batch_step(self) -> None:
-        """Build the compiled train-step function.
-
-        The implementation is delegated to the episodic learning engine.
-        """
-        self.engine.build_compiled_train_batch_step()
-
-    def _build_compiled_eval_batch_step(self) -> None:
-        """Build the compiled evaluation function.
-
-        The implementation is delegated to the episodic learning engine.
-        """
-        self.engine.build_compiled_eval_batch_step()
-
-    def _build_compiled_prototype_memory_batch_step(self) -> None:
-        """Build the compiled prototype-memory update function.
-
-        The implementation is delegated to the episodic learning engine.
-        """
-        self.engine.build_compiled_prototype_memory_batch_step()
 
     def _get_loso_fold_subjects(self) -> list[int]:
         """Return held-out subjects selected by LOSO configuration.
@@ -323,42 +286,6 @@ class FewShotPainLearner:
             f"(1-based inclusive), selected {len(fold_subjects)} of {len(subjects)} folds."
         )
         return fold_subjects
-
-    def _eval_task_batch_step_compiled_impl(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Evaluate a batch of tasks without optimizer updates.
-
-        This facade delegates to the engine's compiled implementation.
-        """
-        return self.engine._eval_task_batch_step_compiled_impl(
-            support_x_batch,
-            support_y_batch,
-            query_x_batch,
-            query_y_batch,
-        )
-
-    def _train_batch_step_compiled_impl(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Run a compiled optimizer update over one task batch.
-
-        This facade delegates to the engine's compiled implementation.
-        """
-        return self.engine._train_batch_step_compiled_impl(
-            support_x_batch,
-            support_y_batch,
-            query_x_batch,
-            query_y_batch,
-        )
 
     def _train_prototype_memory_batch_step_tensors(
         self,
@@ -788,98 +715,6 @@ class FewShotPainLearner:
             total_sampled_tasks,
         )
 
-    def _compute_model_aux_loss(self, dtype: tf.dtypes.DType) -> tf.Tensor:
-        """Return model auxiliary losses.
-
-        Args:
-            dtype: Output dtype for the summed auxiliary loss.
-        """
-        return self.engine.compute_model_aux_loss(dtype)
-
-    def _apply_gradients(self, loss: tf.Tensor, tape: tf.GradientTape) -> tf.Tensor:
-        """Apply gradients for the current model update.
-
-        Args:
-            loss: Scalar objective tensor.
-            tape: Active gradient tape.
-        """
-        return self.engine.apply_gradients(loss, tape)
-
-    def _compute_task_batch_objective(
-        self,
-        episode_outputs: dict[str, tf.Tensor],
-        support_y_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> dict[str, tf.Tensor]:
-        """Compute objective tensors for batched episode outputs.
-
-        Args:
-            episode_outputs: Task-major model output dictionary.
-            support_y_batch: Batched support labels.
-            query_y_batch: Batched query labels.
-        """
-        return self.engine.compute_task_batch_objective(
-            episode_outputs,
-            support_y_batch,
-            query_y_batch,
-        )
-
-    def _forward_task(
-        self,
-        support_x: tf.Tensor,
-        support_y: tf.Tensor,
-        query_x: tf.Tensor,
-        query_y: tf.Tensor,
-        training: bool,
-        return_similarity_scores: bool = False,
-    ) -> dict[str, tf.Tensor]:
-        """Run one task and compute losses.
-
-        Args:
-            support_x: Support windows.
-            support_y: Support labels.
-            query_x: Query windows.
-            query_y: Query labels.
-            training: Whether child layers run in training mode.
-            return_similarity_scores: Whether to include similarity scores.
-        """
-        return self.engine.forward_task(
-            support_x=support_x,
-            support_y=support_y,
-            query_x=query_x,
-            query_y=query_y,
-            training=training,
-            return_similarity_scores=return_similarity_scores,
-        )
-
-    def _forward_task_batch(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-        training: bool,
-        return_similarity_scores: bool = False,
-    ) -> dict[str, tf.Tensor]:
-        """Run multiple tasks with batched encoding and losses.
-
-        Args:
-            support_x_batch: Task-major support windows.
-            support_y_batch: Task-major support labels.
-            query_x_batch: Task-major query windows.
-            query_y_batch: Task-major query labels.
-            training: Whether child layers run in training mode.
-            return_similarity_scores: Whether to include similarity scores.
-        """
-        return self.engine.forward_task_batch(
-            support_x_batch=support_x_batch,
-            support_y_batch=support_y_batch,
-            query_x_batch=query_x_batch,
-            query_y_batch=query_y_batch,
-            training=training,
-            return_similarity_scores=return_similarity_scores,
-        )
-
     def train_step(self, support_x, support_y, query_x, query_y):
         """Run one training step on a single task.
 
@@ -892,17 +727,6 @@ class FewShotPainLearner:
         return self.engine.train_step(support_x, support_y, query_x, query_y)
 
     @staticmethod
-    def _stack_task_batch_numpy(
-        task_batch: list[dict],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Pack task dictionaries into dense NumPy arrays.
-
-        Args:
-            task_batch: List of task dictionaries with uniform shapes.
-        """
-        return TaskBatchPipeline.stack_task_batch_numpy(task_batch)
-
-    @staticmethod
     def _stack_task_batch(
         task_batch: list[dict],
     ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
@@ -912,22 +736,6 @@ class FewShotPainLearner:
             task_batch: List of task dictionaries with uniform shapes.
         """
         return TaskBatchPipeline.stack_task_batch(task_batch)
-
-    @staticmethod
-    def _sample_and_stack_task_batch_numpy(
-        sampler,
-        batch_size: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Sample one task batch and pack it into NumPy arrays.
-
-        Args:
-            sampler: Episodic sampler exposing ``get_task``.
-            batch_size: Number of tasks to sample.
-        """
-        return TaskBatchPipeline.sample_and_stack_task_batch_numpy(
-            sampler,
-            batch_size,
-        )
 
     def _iter_prefetched_task_batches(
         self,
@@ -943,176 +751,6 @@ class FewShotPainLearner:
         yield from self.task_pipeline.iter_prefetched_task_batches(
             sampler,
             tasks_per_epoch,
-        )
-
-    def _iter_task_tensor_chunks(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ):
-        """Yield task tensor chunks sized by task chunk size.
-
-        Args:
-            support_x_batch: Task-major support windows.
-            support_y_batch: Task-major support labels.
-            query_x_batch: Task-major query windows.
-            query_y_batch: Task-major query labels.
-        """
-        yield from self.task_pipeline.iter_task_tensor_chunks(
-            support_x_batch,
-            support_y_batch,
-            query_x_batch,
-            query_y_batch,
-        )
-
-    def _augment_training_task_chunk(
-        self,
-        support_x_chunk: tf.Tensor,
-        query_x_chunk: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Apply training augmentation to one task chunk.
-
-        Args:
-            support_x_chunk: Task-major support windows.
-            query_x_chunk: Task-major query windows.
-        """
-        task_count = int(tf.shape(support_x_chunk)[0].numpy())
-        if task_count == 1:
-            return (
-                self._augment_training_inputs(support_x_chunk[0])[tf.newaxis, ...],
-                self._augment_training_inputs(query_x_chunk[0])[tf.newaxis, ...],
-            )
-        return (
-            self._augment_training_inputs(support_x_chunk),
-            self._augment_training_inputs(query_x_chunk),
-        )
-
-    def _forward_task_chunk(
-        self,
-        support_x_chunk: tf.Tensor,
-        support_y_chunk: tf.Tensor,
-        query_x_chunk: tf.Tensor,
-        query_y_chunk: tf.Tensor,
-        *,
-        training: bool,
-        return_similarity_scores: bool = False,
-    ) -> dict[str, tf.Tensor]:
-        """Forward one eager chunk and normalize outputs.
-
-        Args:
-            support_x_chunk: Task-major support windows.
-            support_y_chunk: Task-major support labels.
-            query_x_chunk: Task-major query windows.
-            query_y_chunk: Task-major query labels.
-            training: Whether child layers run in training mode.
-            return_similarity_scores: Whether to include similarity scores.
-        """
-        return self.engine.forward_task_chunk(
-            support_x_chunk=support_x_chunk,
-            support_y_chunk=support_y_chunk,
-            query_x_chunk=query_x_chunk,
-            query_y_chunk=query_y_chunk,
-            training=training,
-            return_similarity_scores=return_similarity_scores,
-        )
-
-    @staticmethod
-    def _mean_concat(tensor_parts: list[tf.Tensor]) -> tf.Tensor:
-        """Return the mean over tensors collected from chunks.
-
-        Args:
-            tensor_parts: List of tensors to concatenate before reducing.
-        """
-        return tf.reduce_mean(tf.concat(tensor_parts, axis=0))
-
-    @staticmethod
-    def _train_metric_tensors_from_chunk_outputs(
-        chunk_outputs: dict[str, tf.Tensor],
-        query_y_chunk: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Return train metric tensors for one normalized chunk.
-
-        Args:
-            chunk_outputs: Task-major output dictionary.
-            query_y_chunk: Task-major query labels.
-        """
-        return EpisodicLearningEngine.train_metric_tensors_from_chunk_outputs(
-            chunk_outputs,
-            query_y_chunk,
-        )
-
-    def _split_batched_similarity_scores(
-        self,
-        similarity_scores: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Split batched scores into true-class and other-class groups.
-
-        Args:
-            similarity_scores: Task-major query-by-class scores.
-            query_y_batch: Task-major query labels.
-        """
-        query_y_batch = tf.cast(query_y_batch, tf.int32)
-        task_count = tf.shape(query_y_batch)[0]
-        query_size = tf.shape(query_y_batch)[1]
-        row_indices = tf.tile(
-            tf.range(query_size, dtype=tf.int32)[tf.newaxis, :],
-            [task_count, 1],
-        )
-        task_indices = tf.tile(
-            tf.range(task_count, dtype=tf.int32)[:, tf.newaxis],
-            [1, query_size],
-        )
-        intra_class_scores = tf.gather_nd(
-            similarity_scores,
-            tf.stack([task_indices, row_indices, query_y_batch], axis=2),
-        )
-
-        class_ids = tf.range(int(self.config.n_way), dtype=tf.int32)
-        inter_class_mask = tf.not_equal(
-            class_ids[tf.newaxis, tf.newaxis, :],
-            query_y_batch[:, :, tf.newaxis],
-        )
-        return intra_class_scores, tf.boolean_mask(similarity_scores, inter_class_mask)
-
-    def _eval_metric_tensors_from_chunk_outputs(
-        self,
-        chunk_outputs: dict[str, tf.Tensor],
-        query_y_chunk: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Return flattened eval losses, labels, predictions, and scores.
-
-        Args:
-            chunk_outputs: Task-major output dictionary.
-            query_y_chunk: Task-major query labels.
-        """
-        return self.engine.eval_metric_tensors_from_chunk_outputs(
-            chunk_outputs,
-            query_y_chunk,
-        )
-
-    def _train_batch_step_eager_tensors(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Run eager optimizer update for one task batch.
-
-        Args:
-            support_x_batch: Task-major support windows.
-            support_y_batch: Task-major support labels.
-            query_x_batch: Task-major query windows.
-            query_y_batch: Task-major query labels.
-        """
-        return self.engine.train_batch_step_eager_tensors(
-            support_x_batch=support_x_batch,
-            support_y_batch=support_y_batch,
-            query_x_batch=query_x_batch,
-            query_y_batch=query_y_batch,
         )
 
     def _train_batch_step_tensors(
@@ -1137,59 +775,6 @@ class FewShotPainLearner:
             query_y_batch=query_y_batch,
         )
 
-    def _eval_task_batch_step_eager_tensors(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Run eager task-batch evaluation.
-
-        Args:
-            support_x_batch: Task-major support windows.
-            support_y_batch: Task-major support labels.
-            query_x_batch: Task-major query windows.
-            query_y_batch: Task-major query labels.
-        """
-        return self.engine.eval_task_batch_step_eager_tensors(
-            support_x_batch=support_x_batch,
-            support_y_batch=support_y_batch,
-            query_x_batch=query_x_batch,
-            query_y_batch=query_y_batch,
-        )
-
-    def _eval_task_batch_step_tensors(
-        self,
-        support_x_batch: tf.Tensor,
-        support_y_batch: tf.Tensor,
-        query_x_batch: tf.Tensor,
-        query_y_batch: tf.Tensor,
-    ) -> tuple[tf.Tensor, ...]:
-        """Run compiled task-batch evaluation with eager fallback.
-
-        Args:
-            support_x_batch: Task-major support windows.
-            support_y_batch: Task-major support labels.
-            query_x_batch: Task-major query windows.
-            query_y_batch: Task-major query labels.
-        """
-        return self.engine.eval_task_batch_step_tensors(
-            support_x_batch=support_x_batch,
-            support_y_batch=support_y_batch,
-            query_x_batch=query_x_batch,
-            query_y_batch=query_y_batch,
-        )
-
-    @staticmethod
-    def _task_batch_has_uniform_shapes(task_batch: list[dict]) -> bool:
-        """Return whether support/query tensors have uniform shapes.
-
-        Args:
-            task_batch: List of task dictionaries to inspect.
-        """
-        return TaskBatchPipeline.task_batch_has_uniform_shapes(task_batch)
-
     def train_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, ...]:
         """Run one optimizer update using a task batch.
 
@@ -1209,17 +794,6 @@ class FewShotPainLearner:
             query_y_batch=query_y_batch,
         )
 
-    def evaluate_task(self, support_x, support_y, query_x, query_y):
-        """Evaluate one task without updating weights.
-
-        Args:
-            support_x: Support windows.
-            support_y: Support labels.
-            query_x: Query windows.
-            query_y: Query labels.
-        """
-        return self.engine.evaluate_task(support_x, support_y, query_x, query_y)
-
     def evaluate_batch_step(self, task_batch: list[dict]) -> tuple[tf.Tensor, tf.Tensor]:
         """Evaluate a batch of tasks without updating weights.
 
@@ -1232,36 +806,6 @@ class FewShotPainLearner:
         return (
             tf.constant(batch_loss, dtype=tf.float32),
             tf.constant(metrics["accuracy"], dtype=tf.float32),
-        )
-
-    @staticmethod
-    def _split_similarity_scores(
-        similarity_scores: np.ndarray, y_true: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Split similarities into true-class and other-class groups.
-
-        Args:
-            similarity_scores: Query-by-class similarity matrix.
-            y_true: True query labels.
-        """
-        return EpisodeEvaluationService.split_similarity_scores(
-            similarity_scores,
-            y_true,
-        )
-
-    @staticmethod
-    def _compute_similarity_metrics(
-        intra_class_scores: np.ndarray, inter_class_scores: np.ndarray
-    ) -> dict:
-        """Aggregate intra/inter-class similarity statistics.
-
-        Args:
-            intra_class_scores: Similarities assigned to true classes.
-            inter_class_scores: Similarities assigned to other classes.
-        """
-        return EpisodeEvaluationService.compute_similarity_metrics(
-            intra_class_scores,
-            inter_class_scores,
         )
 
     def _evaluate_task_batch_loss_and_metrics(
@@ -1282,35 +826,6 @@ class FewShotPainLearner:
             task_batch,
             forward_batch_size=forward_batch_size,
             can_support_mode=can_support_mode,
-        )
-
-    def _compute_macro_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-        """Compute accuracy and macro precision/recall/F1.
-
-        Args:
-            y_true: Ground-truth labels.
-            y_pred: Predicted labels.
-        """
-        return self.evaluator.compute_macro_metrics(y_true, y_pred)
-
-    def _evaluate_sampler_loss_and_metrics(
-        self,
-        sampler,
-        num_tasks: int,
-        *,
-        forward_batch_size: int | None = None,
-    ) -> tuple[float, dict]:
-        """Evaluate sampled tasks and aggregate metrics.
-
-        Args:
-            sampler: Episodic sampler exposing ``get_task``.
-            num_tasks: Number of tasks to sample.
-            forward_batch_size: Optional tasks per batched forward pass.
-        """
-        return self.evaluator.evaluate_sampler_loss_and_metrics(
-            sampler,
-            num_tasks,
-            forward_batch_size=forward_batch_size,
         )
 
     @staticmethod
@@ -1354,32 +869,6 @@ class FewShotPainLearner:
                 int(SixWayKShotSampler.VALIDATION_FALLBACK_Q_QUERY),
             )
         return requested_k, requested_q
-
-    def _evaluate_sampler_loss_and_metrics_at_task_size(
-        self,
-        sampler,
-        num_tasks: int,
-        *,
-        k_shot: int,
-        q_query: int,
-        forward_batch_size: int | None = None,
-    ) -> tuple[float, dict]:
-        """Evaluate sampler metrics with temporary task size.
-
-        Args:
-            sampler: Episodic sampler with mutable k/q fields.
-            num_tasks: Number of tasks to sample.
-            k_shot: Temporary support samples per class.
-            q_query: Temporary query samples per class.
-            forward_batch_size: Optional tasks per batched forward pass.
-        """
-        return self.evaluator.evaluate_sampler_loss_and_metrics_at_task_size(
-            sampler,
-            num_tasks=num_tasks,
-            k_shot=k_shot,
-            q_query=q_query,
-            forward_batch_size=forward_batch_size,
-        )
 
     def _sample_tasks_at_task_size(
         self,
