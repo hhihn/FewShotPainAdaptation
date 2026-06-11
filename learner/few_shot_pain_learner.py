@@ -175,8 +175,6 @@ class FewShotPainLearner:
             "train_prefetch_batches": self.train_prefetch_batches,
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
             "csv_flush_every_events": self.config.csv_flush_every_events,
-            "export_can_feature_maps": self.config.export_can_feature_maps,
-            "export_raw_can_feature_maps": self.config.export_raw_can_feature_maps,
             "encoder_backend": self.config.encoder_backend,
             "eegnet_temporal_filters": self.config.eegnet_temporal_filters,
             "eegnet_depth_multiplier": self.config.eegnet_depth_multiplier,
@@ -661,7 +659,7 @@ class FewShotPainLearner:
         test_subject: int,
         train_sampler,
         test_sampler,
-    ) -> tuple[dict, float, dict, dict[str, np.ndarray]]:
+    ) -> tuple[float, dict, dict[str, np.ndarray]]:
         """Evaluate all held-out queries with source-subject prototype voting."""
         prototypes = self._build_source_subject_class_prototypes(
             test_subject=test_subject,
@@ -694,7 +692,7 @@ class FewShotPainLearner:
             f"prototypes={len(prototypes['prototype_y'])}, "
             f"accuracy={metrics['accuracy']:.4f}"
         )
-        return query_task, loss, metrics, diagnostics
+        return loss, metrics, diagnostics
 
     def _iter_prototype_finetune_task_batches(
         self,
@@ -1437,108 +1435,6 @@ class FewShotPainLearner:
             )
         return str(output_path)
 
-    def _write_can_feature_export(
-        self,
-        *,
-        progress_file: str,
-        fold_idx: int,
-        test_subject: int,
-        k_shot: int,
-        q_query: int,
-        zero_shot_task_batch: list[dict],
-        k_shot_task_batch: list[dict],
-        source_subject_prototype_vote_task: dict | None = None,
-        source_subject_prototype_vote_diagnostics: dict[str, np.ndarray] | None = None,
-        zero_shot_support_mode: str | None = None,
-        k_shot_support_mode: str | None = None,
-    ) -> str | None:
-        """Write compact CAN feature-map exports for subject-adaptation analysis."""
-        if getattr(self.config, "attention_mode", "none") != "can":
-            return None
-        if not bool(getattr(self.config, "export_can_feature_maps", True)):
-            return None
-
-        include_raw = bool(getattr(self.config, "export_raw_can_feature_maps", False))
-        phase_exports = {
-            "zero_shot": self.evaluator.collect_can_feature_export(
-                zero_shot_task_batch,
-                phase="zero_shot",
-                can_support_mode=zero_shot_support_mode,
-                include_raw_feature_maps=include_raw,
-            ),
-            "k_shot": self.evaluator.collect_can_feature_export(
-                k_shot_task_batch,
-                phase="k_shot",
-                can_support_mode=k_shot_support_mode,
-                include_raw_feature_maps=include_raw,
-            ),
-        }
-        if (
-            source_subject_prototype_vote_task is not None
-            and source_subject_prototype_vote_diagnostics is not None
-        ):
-            source_diag = source_subject_prototype_vote_diagnostics
-            source_export = {
-                "phase": np.array("source_subject_prototype_vote"),
-                "can_support_mode": np.array("source_subject_prototype_vote"),
-                "query_features": self.evaluator._time_pool_feature_maps(
-                    source_diag["query_feature_maps"]
-                ),
-                "query_y": source_diag["query_y"],
-                "query_pred": source_diag["query_pred"],
-                "query_correct": (
-                    source_diag["query_pred"] == source_diag["query_y"]
-                ).astype(np.int32),
-                "query_task_index": np.zeros(
-                    len(source_diag["query_y"]),
-                    dtype=np.int32,
-                ),
-                "query_similarity_scores": source_diag["query_similarity_scores"],
-                "prototype_features": self.evaluator._time_pool_feature_maps(
-                    source_diag["prototype_feature_maps"]
-                ),
-                "prototype_y": source_diag["prototype_y"],
-                "prototype_subjects": source_diag["prototype_subjects"],
-                "prototype_sample_counts": source_diag["prototype_sample_counts"],
-                "prototype_task_index": np.zeros(
-                    len(source_diag["prototype_y"]),
-                    dtype=np.int32,
-                ),
-                "prototype_vote_weights": source_diag["prototype_vote_weights"],
-                "prototype_similarity_scores": source_diag[
-                    "prototype_similarity_scores"
-                ],
-            }
-            if include_raw:
-                source_export["query_feature_maps"] = source_diag["query_feature_maps"]
-                source_export["prototype_feature_maps"] = source_diag[
-                    "prototype_feature_maps"
-                ]
-            phase_exports["source_subject_prototype_vote"] = source_export
-        if not any(phase_exports.values()):
-            return None
-
-        payload = {
-            "fold": np.array(int(fold_idx), dtype=np.int32),
-            "test_subject": np.array(int(test_subject), dtype=np.int32),
-            "k_shot": np.array(int(k_shot), dtype=np.int32),
-            "q_query": np.array(int(q_query), dtype=np.int32),
-            "include_raw_feature_maps": np.array(include_raw),
-        }
-        for phase, export in phase_exports.items():
-            for key, value in export.items():
-                payload[f"{phase}_{key}"] = value
-
-        progress_path = Path(progress_file)
-        output_path = progress_path.with_name(
-            progress_path.name.replace(
-                "_training_progress.csv",
-                "_can_feature_exports.npz",
-            )
-        )
-        np.savez_compressed(output_path, **payload)
-        return str(output_path)
-
     def train(
         self,
         training_progress_output_dir: str = "outputs/training_progress",
@@ -2212,7 +2108,6 @@ class FewShotPainLearner:
                             f"seconds_per_update={epoch_elapsed / max(1, phase_update_count):.2f}"
                         )
 
-            source_vote_task = None
             source_vote_loss = None
             source_vote_metrics = None
             source_vote_diagnostics = None
@@ -2227,7 +2122,6 @@ class FewShotPainLearner:
                 )
             ):
                 (
-                    source_vote_task,
                     source_vote_loss,
                     source_vote_metrics,
                     source_vote_diagnostics,
@@ -2501,25 +2395,6 @@ class FewShotPainLearner:
                     f"[Fold {fold + 1}/{num_subjects}] "
                     "Saved source-subject prototype vote weights to "
                     f"{source_vote_weight_file}"
-                )
-            can_feature_export_file = self._write_can_feature_export(
-                progress_file=progress_file,
-                fold_idx=fold + 1,
-                test_subject=int(test_subject),
-                k_shot=configured_eval_pair[0],
-                q_query=configured_eval_pair[1],
-                zero_shot_task_batch=zero_shot_task_batch,
-                k_shot_task_batch=k_shot_task_batch,
-                source_subject_prototype_vote_task=source_vote_task,
-                source_subject_prototype_vote_diagnostics=source_vote_diagnostics,
-                zero_shot_support_mode=zero_shot_support_mode,
-                k_shot_support_mode=k_shot_support_mode,
-            )
-            if can_feature_export_file is not None:
-                result_recorder.record_can_feature_export_file(can_feature_export_file)
-                self.logger.info(
-                    f"[Fold {fold + 1}/{num_subjects}] "
-                    f"Saved CAN feature export to {can_feature_export_file}"
                 )
             result_recorder.close_fold()
             progress.log_fold_complete(

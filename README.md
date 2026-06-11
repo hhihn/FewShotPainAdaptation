@@ -287,11 +287,7 @@ The full runner writes:
 | `*_can_alignment_summary.csv` | Per-fold CAN true-class, competing-class, and margin summaries |
 | `*_can_sample_statistics.csv` | Per-query predictions and CAN score diagnostics |
 | `*_source_subject_prototype_vote_weights.csv` | Aggregated source-subject vote weights |
-| `*_can_feature_exports.npz` | Compact diagnostic arrays and optional raw feature maps |
 | `outputs/model_architecture/model_summary.txt` | Keras model and encoder summaries |
-
-Feature exports can be disabled with `--disable-can-feature-export`. Raw temporal
-feature maps are included only when `--export-raw-can-feature-maps` is set.
 
 Useful tracked utilities include:
 
