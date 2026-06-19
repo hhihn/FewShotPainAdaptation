@@ -5,6 +5,7 @@ pandas
 scikit_learn
 scipy
 seaborn
+statsmodels
 tensorflow==2.18.1
 tensorflow-probability
 tensorflow-similarity
