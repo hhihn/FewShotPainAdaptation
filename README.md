@@ -235,6 +235,37 @@ python tests/full_loso_trial.py \
 Use `python tests/full_loso_trial.py --help` for the complete configuration
 surface.
 
+### Primary Matched-Query Personalisation Test
+
+Enable the matched-query experiment on a full BioVid LOSO run with:
+
+```bash
+python tests/full_loso_trial.py \
+  --data-dir data \
+  --dataset-source biovid_part_a \
+  --encoder-backend crossmod \
+  --can-support-mode learned_prototype_memory \
+  --normalize-mode split \
+  --k-shot-adaptation-steps 0 \
+  --k-shot 10 \
+  --q-query 10 \
+  --num-epochs 1 \
+  --tasks-per-epoch 20000 \
+  --task-batch-size 16 \
+  --val-tasks 50 \
+  --heldout-eval-tasks 500 \
+  --matched-query-eval \
+  --matched-query-support-repeats 500 \
+  --matched-query-analysis-output-dir outputs/matched_query_personalization \
+  --output-json outputs/full_loso/full_loso_matched_query_results.json
+```
+
+For each held-out subject, support is sampled from that subject's excluded
+BioVid `Train` partition and all samples in its `Test` partition form one fixed
+query set. Both conditions use normalization statistics fitted only on source
+training subjects. The runner writes repeat-level metrics plus subject-level
+paired statistics and support-sampling uncertainty.
+
 ## Configuration Notes
 
 ### Encoders

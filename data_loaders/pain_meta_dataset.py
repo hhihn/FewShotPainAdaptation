@@ -1709,3 +1709,114 @@ class PainMetaDataset:
             "query_y": query_y,
             "subject": subject,
         }
+
+    def build_fixed_normalized_query_task(
+        self,
+        subject: int,
+        *,
+        normalization_stats: Dict[str, np.ndarray],
+        split: str = "test",
+    ) -> Dict[str, np.ndarray]:
+        """Build a deterministic query-only task using externally fitted stats.
+
+        This helper is used by the matched-query personalization experiment.  It
+        deliberately bypasses subject and query-batch normalization so the held-out
+        query set cannot influence preprocessing.
+        """
+        subject = int(subject)
+        split_index = self._get_base_index_for_split(split)
+        query_X, query_y, query_indices = [], [], []
+        for class_id in range(self.config.n_way):
+            indices = np.asarray(split_index[subject][class_id], dtype=np.int64)
+            if indices.size == 0:
+                raise ValueError(
+                    f"No fixed query samples for subject={subject}, class={class_id}, split={split}"
+                )
+            query_X.append(self._gather_samples(indices))
+            query_y.append(np.full(indices.size, class_id, dtype=np.int32))
+            query_indices.append(indices)
+
+        query_X_array = self._apply_stats(
+            np.concatenate(query_X, axis=0), normalization_stats
+        )
+        query_y_array = np.concatenate(query_y, axis=0)
+        query_indices_array = np.concatenate(query_indices, axis=0)
+        support_size = int(self.config.n_way)
+        return {
+            "support_X": np.zeros(
+                (support_size, query_X_array.shape[1], query_X_array.shape[2]),
+                dtype=query_X_array.dtype,
+            ),
+            "support_y": np.arange(self.config.n_way, dtype=np.int32),
+            "support_indices": np.full(support_size, -1, dtype=np.int64),
+            "query_X": query_X_array,
+            "query_y": query_y_array,
+            "query_indices": query_indices_array,
+            "subject": subject,
+            "query_split": split,
+        }
+
+    def sample_support_for_fixed_query(
+        self,
+        subject: int,
+        *,
+        k_shot: int,
+        fixed_query_task: Dict[str, np.ndarray],
+        normalization_stats: Dict[str, np.ndarray],
+        rng: np.random.Generator,
+        support_split: str = "train",
+        repeat_index: int = 0,
+        repeat_seed: int | None = None,
+    ) -> Dict[str, np.ndarray]:
+        """Draw target support while preserving one immutable query set."""
+        subject = int(subject)
+        k_shot = int(k_shot)
+        if k_shot < 1:
+            raise ValueError("k_shot must be >= 1")
+        query_split = str(fixed_query_task.get("query_split", "test"))
+        if support_split == query_split:
+            raise ValueError("Matched support and query must use distinct dataset splits")
+
+        split_index = self._get_base_index_for_split(support_split)
+        support_X, support_y, support_indices = [], [], []
+        for class_id in range(self.config.n_way):
+            candidates = np.asarray(split_index[subject][class_id], dtype=np.int64)
+            if candidates.size < k_shot:
+                raise ValueError(
+                    f"Only {candidates.size} support samples for subject={subject}, "
+                    f"class={class_id}, split={support_split}; requested k={k_shot}"
+                )
+            selected = candidates[
+                rng.choice(candidates.size, size=k_shot, replace=False)
+            ]
+            support_X.append(self._gather_samples(selected))
+            support_y.append(np.full(k_shot, class_id, dtype=np.int32))
+            support_indices.append(selected)
+
+        support_X_array = self._apply_stats(
+            np.concatenate(support_X, axis=0), normalization_stats
+        )
+        support_y_array = np.concatenate(support_y, axis=0)
+        support_indices_array = np.concatenate(support_indices, axis=0)
+        query_indices = np.asarray(fixed_query_task["query_indices"], dtype=np.int64)
+        overlap = np.intersect1d(support_indices_array, query_indices)
+        if overlap.size:
+            raise RuntimeError(
+                f"Matched support/query index overlap detected: {overlap.tolist()}"
+            )
+
+        permutation = rng.permutation(support_y_array.size)
+        return {
+            "support_X": support_X_array[permutation],
+            "support_y": support_y_array[permutation],
+            "support_indices": support_indices_array[permutation],
+            # Reuse the exact arrays so every condition receives identical queries.
+            "query_X": fixed_query_task["query_X"],
+            "query_y": fixed_query_task["query_y"],
+            "query_indices": fixed_query_task["query_indices"],
+            "subject": subject,
+            "support_split": support_split,
+            "query_split": query_split,
+            "repeat_index": int(repeat_index),
+            "repeat_seed": repeat_seed,
+        }

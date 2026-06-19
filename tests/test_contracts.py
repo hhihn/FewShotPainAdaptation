@@ -1216,6 +1216,7 @@ class ContractTests(unittest.TestCase):
 
         config = PainDatasetConfig(
             dataset_source="biovid_part_a",
+            task_normalize_mode="split",
             k_shot=1,
             q_query=1,
             num_epochs=1,
@@ -1254,6 +1255,15 @@ class ContractTests(unittest.TestCase):
 
             held_out_subject = int(test_subjects[1])
             fold = cv.get_fold(test_subject=held_out_subject)
+
+            fold_stats = fold["fold_source_normalization_stats"]
+            self.assertIsNotNone(fold_stats)
+            self.assertNotIn(held_out_subject, fold_stats["subject_ids"])
+            self.assertEqual(fold_stats["split"], "train")
+            self.assertIs(
+                fold["train_sampler"].split_normalization_stats,
+                fold["test_sampler"].split_normalization_stats,
+            )
 
             self.assertEqual(fold["test_subject"], held_out_subject)
             self.assertEqual(fold["test_subjects"], [held_out_subject])

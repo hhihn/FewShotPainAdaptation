@@ -96,6 +96,93 @@ class EpisodeEvaluationService:
             "f1": float(np.mean(f1_per_class)),
         }
 
+    def compute_detailed_classification_metrics(
+        self, y_true: np.ndarray, y_pred: np.ndarray
+    ) -> dict:
+        """Compute aggregate metrics plus per-class F1 for one fixed query set."""
+        num_classes = int(self.config.n_way)
+        conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
+        for truth, pred in zip(y_true, y_pred):
+            conf_mat[int(truth), int(pred)] += 1
+        tp = np.diag(conf_mat).astype(np.float64)
+        fp = np.sum(conf_mat, axis=0) - tp
+        fn = np.sum(conf_mat, axis=1) - tp
+        precision = np.divide(
+            tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0
+        )
+        recall = np.divide(
+            tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0
+        )
+        f1 = np.divide(
+            2.0 * precision * recall,
+            precision + recall,
+            out=np.zeros_like(tp),
+            where=(precision + recall) > 0,
+        )
+        total = int(np.sum(conf_mat))
+        return {
+            "accuracy": float(np.sum(tp) / total) if total else 0.0,
+            "precision": float(np.mean(precision)),
+            "recall": float(np.mean(recall)),
+            "f1": float(np.mean(f1)),
+            "f1_per_class": f1.tolist(),
+            "confusion_matrix": conf_mat.tolist(),
+            "query_count": total,
+        }
+
+    def evaluate_task_batch_detailed(
+        self,
+        task_batch: list[dict],
+        *,
+        forward_batch_size: int = 1,
+        can_support_mode: str,
+    ) -> list[dict]:
+        """Return one classification result per task without pooling repeats."""
+        if not task_batch:
+            raise ValueError("task_batch must contain at least one task")
+        batch_size = max(1, int(forward_batch_size))
+        original_support_mode = self.engine.model.can_support_mode
+        self.engine.model.can_support_mode = can_support_mode
+        results: list[dict] = []
+        try:
+            for start in range(0, len(task_batch), batch_size):
+                chunk = task_batch[start : start + batch_size]
+                if not self.task_pipeline.task_batch_has_uniform_shapes(chunk):
+                    raise ValueError("Detailed matched-query tasks must have uniform shapes")
+                support_x, support_y, query_x, query_y = (
+                    self.task_pipeline.stack_task_batch(chunk)
+                )
+                outputs = self.engine.forward_task_batch(
+                    support_x_batch=tf.convert_to_tensor(support_x, dtype=tf.float32),
+                    support_y_batch=tf.convert_to_tensor(support_y, dtype=tf.int32),
+                    query_x_batch=tf.convert_to_tensor(query_x, dtype=tf.float32),
+                    query_y_batch=tf.convert_to_tensor(query_y, dtype=tf.int32),
+                    training=False,
+                    return_similarity_scores=False,
+                )
+                predictions = tf.argmax(
+                    outputs["logits"], axis=2, output_type=tf.int32
+                ).numpy()
+                labels = np.asarray(query_y, dtype=np.int32)
+                task_losses = np.asarray(outputs["task_losses"].numpy()).reshape(-1)
+                for offset, task in enumerate(chunk):
+                    metrics = self.compute_detailed_classification_metrics(
+                        labels[offset], predictions[offset]
+                    )
+                    results.append(
+                        {
+                            "loss": float(task_losses[offset]),
+                            "metrics": metrics,
+                            "y_true": labels[offset].copy(),
+                            "y_pred": predictions[offset].copy(),
+                            "repeat_index": task.get("repeat_index"),
+                            "repeat_seed": task.get("repeat_seed"),
+                        }
+                    )
+        finally:
+            self.engine.model.can_support_mode = original_support_mode
+        return results
+
     @staticmethod
     def set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
         """Update sampler task size in-place for temporary sweeps.

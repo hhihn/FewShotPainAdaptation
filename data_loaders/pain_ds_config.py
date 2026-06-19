@@ -102,6 +102,8 @@ class PainDatasetConfig:
     val_tasks: int = 20  # Number of validation tasks per validation run
     heldout_eval_tasks: int = 20  # Number of held-out evaluation tasks per fold
     subject_eval_tasks: Optional[int] = None  # Deprecated alias for heldout_eval_tasks
+    matched_query_eval: bool = False
+    matched_query_support_repeats: int = 500
     validation_checkpoint_metric: str = (
         "accuracy"  # Validation metric used to select the fold model for held-out eval
     )
@@ -167,6 +169,9 @@ class PainDatasetConfig:
         """
         if self.subject_eval_tasks is not None:
             self.heldout_eval_tasks = int(self.subject_eval_tasks)
+        self.matched_query_support_repeats = int(self.matched_query_support_repeats)
+        if self.matched_query_support_repeats < 1:
+            raise ValueError("matched_query_support_repeats must be >= 1")
         self.encoder_backend = str(self.encoder_backend).strip().lower()
         if self.encoder_backend not in {"eegnet", "crossmod"}:
             raise ValueError("encoder_backend must be one of: 'eegnet', 'crossmod'")
@@ -197,6 +202,26 @@ class PainDatasetConfig:
             if self.data_variant == "mock":
                 raise ValueError(
                     "data_variant='mock' is only supported for dataset_source='painmonit'"
+                )
+
+        if self.matched_query_eval:
+            if self.dataset_source != "biovid_part_a" or self.split_strategy != "predefined":
+                raise ValueError(
+                    "matched_query_eval requires BioVid Part A with its predefined Train/Test split"
+                )
+            if self.task_normalize_mode != "split":
+                raise ValueError(
+                    "matched_query_eval requires task_normalize_mode='split' so "
+                    "both conditions use frozen source-only statistics"
+                )
+            if self.can_support_mode != "learned_prototype_memory":
+                raise ValueError(
+                    "matched_query_eval requires can_support_mode='learned_prototype_memory'"
+                )
+            if int(self.k_shot_adaptation_steps) != 0:
+                raise ValueError(
+                    "matched_query_eval requires k_shot_adaptation_steps=0; the "
+                    "tested personalization operation is sampled support prototypes"
                 )
 
         self.task_class_ids = tuple(int(class_id) for class_id in self.task_class_ids)

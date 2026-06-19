@@ -19,6 +19,7 @@ from data_loaders.pain_ds_config import (
     VALIDATION_CHECKPOINT_MODES,
 )
 from learner.few_shot_pain_learner import FewShotPainLearner
+from scripts.analyze_matched_query_personalization import run_analysis
 from utils.logger import setup_logger
 
 
@@ -158,6 +159,10 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         tasks_per_epoch=max(1, int(args.tasks_per_epoch)),
         val_tasks=max(1, int(args.val_tasks)),
         heldout_eval_tasks=max(1, int(args.heldout_eval_tasks)),
+        matched_query_eval=bool(args.matched_query_eval),
+        matched_query_support_repeats=max(
+            1, int(args.matched_query_support_repeats)
+        ),
         num_epochs=max(1, int(args.num_epochs)),
         k_shot_adaptation_steps=max(0, int(args.k_shot_adaptation_steps)),
         train_log_every=max(1, int(args.train_log_every)),
@@ -242,6 +247,16 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
 
     logger.info("Stage 4/5: Aggregating fold metrics")
     summary = _build_summary(cv_results)
+    matched_query_summary = None
+    if config.matched_query_eval:
+        matched_query_summary = run_analysis(
+            cv_results["matched_query_repeat_metric_files"],
+            args.matched_query_analysis_output_dir,
+            bootstrap_trials=20_000,
+            confidence=0.95,
+            seed=int(config.seed),
+        )
+        summary["matched_query_primary"] = matched_query_summary
 
     config_payload = {
         "seed": int(config.seed),
@@ -311,6 +326,13 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "task_chunk_size": int(config.task_chunk_size),
         "val_tasks": int(config.val_tasks),
         "heldout_eval_tasks": int(config.heldout_eval_tasks),
+        "matched_query_eval": bool(config.matched_query_eval),
+        "matched_query_support_repeats": int(
+            config.matched_query_support_repeats
+        ),
+        "matched_query_analysis_output_dir": str(
+            args.matched_query_analysis_output_dir
+        ),
         "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
         "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
         "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
@@ -482,6 +504,26 @@ def main() -> None:
     )
     parser.add_argument("--val-tasks", type=int, default=1)
     parser.add_argument("--heldout-eval-tasks", type=int, default=1)
+    parser.add_argument(
+        "--matched-query-eval",
+        action="store_true",
+        help=(
+            "Run the primary matched-query comparison using held-out Train support, "
+            "fixed held-out Test queries, and fold-source normalization. Requires "
+            "--normalize-mode split and zero adaptation steps."
+        ),
+    )
+    parser.add_argument(
+        "--matched-query-support-repeats",
+        type=int,
+        default=500,
+        help="Independent target-support draws per held-out subject.",
+    )
+    parser.add_argument(
+        "--matched-query-analysis-output-dir",
+        type=str,
+        default="outputs/matched_query_personalization",
+    )
     parser.add_argument(
         "--subject-eval-tasks",
         type=int,
