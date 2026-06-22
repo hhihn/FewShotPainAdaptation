@@ -1581,7 +1581,7 @@ class FewShotPainLearner:
         val_batch_size = max(1, int(self.config.val_batch_size))
         val_every_n_train_steps = max(1, int(self.config.val_every_n_train_steps))
         configured_eval_pair = self._resolve_configured_holdout_eval_pair()
-        heldout_eval_pairs = [configured_eval_pair, (1, 1), (5, 5), (10, 10)]
+        heldout_eval_pairs = [configured_eval_pair, (1, 1)]
         dedup_pairs: list[tuple[int, int]] = []
         for eval_pair in heldout_eval_pairs:
             if eval_pair not in dedup_pairs:
@@ -2394,6 +2394,15 @@ class FewShotPainLearner:
                 )
 
             fixed_size_key = f"k{configured_eval_pair[0]}_q{configured_eval_pair[1]}"
+            if fixed_size_key not in sweep_metrics_by_size:
+                fixed_size_key = max(
+                    sweep_metrics_by_size,
+                    key=lambda key: int(key.split("_")[0][1:]),
+                )
+                self.logger.info(
+                    f"[Fold {fold + 1}/{num_subjects}] configured size unavailable; "
+                    f"using largest feasible size {fixed_size_key}"
+                )
             fixed_size_metrics = sweep_metrics_by_size[fixed_size_key]
             zero_shot_loss = fixed_size_metrics["zero_shot_loss"]
             zero_shot_metrics = fixed_size_metrics["zero_shot_metrics"]

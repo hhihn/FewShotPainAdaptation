@@ -24,8 +24,8 @@ class SixWayKShotSampler:
     - TensorFlow Dataset integration
     """
 
-    VALIDATION_FALLBACK_K_SHOT = 10
-    VALIDATION_FALLBACK_Q_QUERY = 10
+    VALIDATION_FALLBACK_K_SHOT = 4
+    VALIDATION_FALLBACK_Q_QUERY = 4
 
     def __init__(
         self,
@@ -194,7 +194,11 @@ class SixWayKShotSampler:
         )
         if requested_total <= available_count:
             return requested_k, requested_q
-        return self.VALIDATION_FALLBACK_K_SHOT, self.VALIDATION_FALLBACK_Q_QUERY
+        # PainMonit: a subject with a short class (subject 15 has 7 in class 5)
+        # cannot supply the configured 4+4=8. Shrink k=q to fit the available
+        # samples instead of the fixed fallback, which would still be too large.
+        fitted = max(1, available_count // 2)
+        return fitted, fitted
 
     def _apply_eval_task_size_fallback(self) -> None:
         """Use fixed evaluation task sizes when configured sizes are too large.

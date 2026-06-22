@@ -453,14 +453,7 @@ class CrossValidationResultRecorder:
         Returns:
             Compact summary dictionary for the evaluated task size.
         """
-        by_size = self.cv_results["heldout_eval_by_task_size"]
-        if size_key not in by_size:
-            k_shot, q_query = (int(part[1:]) for part in size_key.split("_"))
-            by_size[size_key] = self._build_size_bucket(k_shot, q_query)
-            self.cv_results["heldout_eval_task_sizes"].append(
-                {"k_shot": k_shot, "q_query": q_query}
-            )
-        size_results = by_size[size_key]
+        size_results = self.cv_results["heldout_eval_by_task_size"][size_key]
         self._append_eval_result(
             size_results,
             prefix="zero_shot",
