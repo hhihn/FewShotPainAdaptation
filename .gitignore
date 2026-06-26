@@ -3,3 +3,8 @@
 /data/X_pre.npy
 /data/y_covas.npy
 /data/y_heater.npy
+
+__pycache__/
+*.pyc
+outputs/
+*.bak
