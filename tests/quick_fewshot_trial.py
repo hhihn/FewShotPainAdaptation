@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_loaders.pain_ds_config import PainDatasetConfig
+from data_loaders.pain_ds_config import PainDatasetConfig, SUPPORTED_DATASET_SOURCES
 from learner.few_shot_pain_learner import FewShotPainLearner
 from utils.logger import setup_logger
 
@@ -23,6 +23,12 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     if not values:
         raise argparse.ArgumentTypeError("Expected at least one integer.")
     return values
+
+
+def _default_task_class_ids(dataset_source: str) -> tuple[int, ...]:
+    if str(dataset_source).strip().lower() == "senseemotion":
+        return (0, 1, 2, 3)
+    return (0, 4)
 
 
 def _sample_tasks(sampler, num_tasks: int) -> list[dict[str, np.ndarray]]:
@@ -116,11 +122,17 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
     else:
         logger.setLevel(10)
     start_time = time.perf_counter()
+    dataset_source = str(getattr(args, "dataset_source", "biovid_part_a"))
 
     config = PainDatasetConfig(
         seed=args.seed,
         deterministic_ops=True,
-        task_class_ids=_parse_int_tuple(args.task_class_ids),
+        dataset_source=dataset_source,
+        task_class_ids=(
+            _default_task_class_ids(dataset_source)
+            if args.task_class_ids is None
+            else _parse_int_tuple(args.task_class_ids)
+        ),
         k_shot=args.k_shot,
         q_query=args.q_query,
         task_normalize_mode=args.normalize_mode,
@@ -285,6 +297,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "script": "tests/quick_fewshot_trial.py",
         "elapsed_seconds": elapsed_seconds,
         "seed": args.seed,
+        "dataset_source": str(config.dataset_source),
         "held_out_subject": held_out_subject,
         "train_subject_count": int(fold["n_train_subjects"]),
         "val_subject_count": int(fold["n_val_subjects"]),
@@ -539,6 +552,12 @@ def main() -> None:
         )
     )
     parser.add_argument("--data-dir", type=str, default="../data")
+    parser.add_argument(
+        "--dataset-source",
+        type=str,
+        default="biovid_part_a",
+        choices=SUPPORTED_DATASET_SOURCES,
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)
     parser.add_argument("--updates", type=int, default=500)
@@ -554,7 +573,15 @@ def main() -> None:
     parser.add_argument("--heldout-tasks", type=int, default=100)
     parser.add_argument("--k-shot", type=int, default=10)
     parser.add_argument("--q-query", type=int, default=10)
-    parser.add_argument("--task-class-ids", type=str, default="0,4")
+    parser.add_argument(
+        "--task-class-ids",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated raw class ids. Defaults to 0,4 for BioVid/PainMonit "
+            "and 0,1,2,3 for SenseEmotion."
+        ),
+    )
     parser.add_argument("--can-attention-temperature", type=float, default=1.0)
     parser.add_argument("--can-meta-hidden-dim", type=int, default=32)
     parser.add_argument("--can-local-loss-weight", type=float, default=1.0)

@@ -18,7 +18,10 @@ from pathlib import Path
 import warnings
 
 from utils.logger import setup_logger
-from data_loaders.pain_ds_config import PainDatasetConfig
+from data_loaders.pain_ds_config import (
+    PREDEFINED_SPLIT_DATASET_SOURCES,
+    PainDatasetConfig,
+)
 
 
 class PainMetaDataset:
@@ -90,8 +93,8 @@ class PainMetaDataset:
         common dtypes, and creates all/test/train masks used by samplers.
         """
         self.logger.info(f"Loading data from {self.data_dir}...")
-        if self.config.dataset_source == "biovid_part_a":
-            self._load_biovid_part_a_data()
+        if self.config.dataset_source in PREDEFINED_SPLIT_DATASET_SOURCES:
+            self._load_predefined_split_data()
         else:
             self._load_painmonit_data()
 
@@ -148,7 +151,7 @@ class PainMetaDataset:
         """
         if self.has_predefined_split:
             raise ValueError(
-                "split_strategy='predefined' requires dataset_source='biovid_part_a'."
+                "split_strategy='predefined' requires a predefined split dataset source."
             )
 
         self.X = self._load_numpy_array(self.data_dir / self.config.data_path)[
@@ -213,24 +216,54 @@ class PainMetaDataset:
                 )
         return loaded
 
-    def _resolve_biovid_part_dir(self) -> Path:
-        """Resolve the BioVid PartA directory from common repository layouts.
+    def _predefined_dataset_layout(self) -> tuple[str, Tuple[str, ...], str, str, tuple[Path, ...]]:
+        """Return root candidates and split metadata for predefined datasets."""
+        if self.config.dataset_source == "biovid_part_a":
+            dataset_label = "BioVid Part A"
+            candidates = (
+                self.data_dir / "BioVid" / self.config.biovid_part_dir,
+                self.data_dir / self.config.biovid_part_dir,
+                self.data_dir,
+            )
+            return (
+                dataset_label,
+                tuple(self.config.biovid_modalities),
+                self.config.biovid_train_split_dir,
+                self.config.biovid_test_split_dir,
+                candidates,
+            )
+        if self.config.dataset_source == "senseemotion":
+            dataset_label = "SenseEmotion"
+            candidates = (
+                self.data_dir / self.config.senseemotion_dir,
+                self.data_dir / "senseemotion",
+                self.data_dir,
+            )
+            return (
+                dataset_label,
+                tuple(self.config.senseemotion_modalities),
+                self.config.senseemotion_train_split_dir,
+                self.config.senseemotion_test_split_dir,
+                candidates,
+            )
+        raise ValueError(
+            f"Unsupported predefined dataset_source={self.config.dataset_source!r}"
+        )
+
+    def _resolve_predefined_split_dir(self) -> Path:
+        """Resolve a predefined dataset directory from common repository layouts.
 
         Returns:
             Directory containing the configured Train and Test split folders.
         """
-        candidates = (
-            self.data_dir / "BioVid" / self.config.biovid_part_dir,
-            self.data_dir / self.config.biovid_part_dir,
-            self.data_dir,
+        dataset_label, _, train_split_dir, test_split_dir, candidates = (
+            self._predefined_dataset_layout()
         )
         for candidate in candidates:
-            if (candidate / self.config.biovid_train_split_dir).is_dir() and (
-                candidate / self.config.biovid_test_split_dir
-            ).is_dir():
+            if (candidate / train_split_dir).is_dir() and (candidate / test_split_dir).is_dir():
                 return candidate
         raise FileNotFoundError(
-            "Could not resolve BioVid PartA directory with Train/Test subfolders from "
+            f"Could not resolve {dataset_label} directory with Train/Test subfolders from "
             f"data_dir={self.data_dir!s}"
         )
 
@@ -306,25 +339,27 @@ class PainMetaDataset:
             for subject_key, subject_paths in grouped_paths.items()
         }
 
-    def _load_biovid_part_a_data(self) -> None:
-        """Load BioVid Part A pre-segmented train/test files.
+    def _load_predefined_split_data(self) -> None:
+        """Load pre-segmented Train/Test modality files.
 
         Data are assembled across configured modalities while preserving subject
         IDs and predefined split labels.
         """
-        part_dir = self._resolve_biovid_part_dir()
-        self.logger.info(f"Resolved BioVid Part A directory: {part_dir}")
-        modalities = tuple(self.config.biovid_modalities)
+        dataset_label, modalities, train_split_dir, test_split_dir, _ = (
+            self._predefined_dataset_layout()
+        )
+        dataset_dir = self._resolve_predefined_split_dir()
+        self.logger.info(f"Resolved {dataset_label} directory: {dataset_dir}")
         split_dir_names = {
-            "train": self.config.biovid_train_split_dir,
-            "test": self.config.biovid_test_split_dir,
+            "train": train_split_dir,
+            "test": test_split_dir,
         }
 
         split_maps: Dict[str, Dict[str, Dict[str, Path]]] = {}
         all_subject_keys = set()
 
         for split_name, split_dir_name in split_dir_names.items():
-            split_dir = part_dir / split_dir_name
+            split_dir = dataset_dir / split_dir_name
             modality_data_maps: Dict[str, Dict[str, Path]] = {}
             modality_label_maps: Dict[str, Dict[str, Path]] = {}
 
@@ -379,16 +414,18 @@ class PainMetaDataset:
             all_subject_keys.update(common_subjects)
 
         if not all_subject_keys:
-            raise ValueError("BioVid Part A contains no subjects.")
+            raise ValueError(f"{dataset_label} contains no subjects.")
 
         sorted_subject_keys = sorted(all_subject_keys)
-        self.biovid_subject_key_to_int = {
+        self.predefined_subject_key_to_int = {
             subject_key: idx for idx, subject_key in enumerate(sorted_subject_keys)
         }
-        self.biovid_subject_int_to_key = {
+        self.predefined_subject_int_to_key = {
             idx: subject_key
-            for subject_key, idx in self.biovid_subject_key_to_int.items()
+            for subject_key, idx in self.predefined_subject_key_to_int.items()
         }
+        self.biovid_subject_key_to_int = self.predefined_subject_key_to_int
+        self.biovid_subject_int_to_key = self.predefined_subject_int_to_key
 
         X_rows = []
         y_rows = []
@@ -440,7 +477,7 @@ class PainMetaDataset:
                         f"{subject_X.shape[0]} != {subject_y.shape[0]}"
                     )
 
-                subject_id = int(self.biovid_subject_key_to_int[subject_key])
+                subject_id = int(self.predefined_subject_key_to_int[subject_key])
                 X_rows.append(subject_X)
                 y_rows.append(subject_y)
                 subject_rows.append(

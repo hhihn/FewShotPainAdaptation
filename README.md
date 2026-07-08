@@ -2,8 +2,8 @@
 
 Few-shot learning experiments for personalized pain assessment from physiological
 signals. The repository trains Cross Attention Network (CAN) classifiers with
-leave-one-subject-out (LOSO) evaluation on BioVid Part A or PainMonit-style NumPy
-data.
+leave-one-subject-out (LOSO) evaluation on BioVid Part A, SenseEmotion, or
+PainMonit-style NumPy data.
 
 The current implementation supports:
 
@@ -131,6 +131,29 @@ To convert BioVid arrays from `.npy` to compressed `.npz`:
 python scripts/convert_biovid_parta_npy_to_npz.py --help
 ```
 
+### SenseEmotion
+
+Set `--dataset-source senseemotion`. The loader accepts either of these roots
+under `--data-dir`:
+
+```text
+SenseEmotion/
+```
+
+The tree must contain the same predefined split layout as BioVid:
+
+```text
+Train/<MODALITY>/<SUBJECT>_data.npy|npz
+Train/<MODALITY>/<SUBJECT>_label.npy|npz
+Test/<MODALITY>/<SUBJECT>_data.npy|npz
+Test/<MODALITY>/<SUBJECT>_label.npy|npz
+```
+
+SenseEmotion defaults to `GSR` and `ECG`, sequence length `1664`, and four raw
+classes `0,1,2,3`. In Colab, put `sense_emotion.tar.gz` under
+`/content/drive/MyDrive/PainData`; the notebooks stage and extract it with the
+same safe archive helper used for BioVid.
+
 ### PainMonit-Style Arrays
 
 Set `--dataset-source painmonit`. The data directory must contain:
@@ -221,6 +244,25 @@ python tests/full_loso_trial.py \
   --val-tasks 50 \
   --heldout-eval-tasks 500 \
   --output-json outputs/full_loso/full_loso_results.json
+```
+
+For SenseEmotion, use:
+
+```bash
+python tests/full_loso_trial.py \
+  --data-dir data \
+  --dataset-source senseemotion \
+  --task-class-ids 0,1,2,3 \
+  --encoder-backend crossmod \
+  --can-support-mode learned_prototype_memory \
+  --k-shot 10 \
+  --q-query 10 \
+  --num-epochs 1 \
+  --tasks-per-epoch 20000 \
+  --task-batch-size 16 \
+  --val-tasks 50 \
+  --heldout-eval-tasks 500 \
+  --output-json outputs/full_loso/senseemotion_results.json
 ```
 
 For debugging, add `--max-folds 1`. To run a one-based inclusive fold range:

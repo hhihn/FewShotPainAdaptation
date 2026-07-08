@@ -16,6 +16,7 @@ from data_loaders.pain_ds_config import (
     PainDatasetConfig,
     SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES,
     SUPPORTED_VALIDATION_CHECKPOINT_METRICS,
+    SUPPORTED_DATASET_SOURCES,
     VALIDATION_CHECKPOINT_MODES,
 )
 from learner.few_shot_pain_learner import FewShotPainLearner
@@ -28,6 +29,12 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     if not values:
         raise argparse.ArgumentTypeError("Expected at least one integer.")
     return values
+
+
+def _default_task_class_ids(dataset_source: str) -> tuple[int, ...]:
+    if str(dataset_source).strip().lower() == "senseemotion":
+        return (0, 1, 2, 3)
+    return (0, 4)
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -93,13 +100,18 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         logger.setLevel(10)
 
     start_time = time.perf_counter()
-    task_class_ids = _parse_int_tuple(args.task_class_ids)
+    dataset_source = str(getattr(args, "dataset_source", "biovid_part_a"))
+    task_class_ids = (
+        _default_task_class_ids(dataset_source)
+        if args.task_class_ids is None
+        else _parse_int_tuple(args.task_class_ids)
+    )
 
     logger.info("Stage 1/5: Building run configuration")
     config = PainDatasetConfig(
         seed=args.seed,
         deterministic_ops=bool(args.deterministic_ops),
-        dataset_source=args.dataset_source,
+        dataset_source=dataset_source,
         data_variant=args.data_variant,
         task_class_ids=task_class_ids,
         k_shot=args.k_shot,
@@ -383,7 +395,7 @@ def main() -> None:
         "--dataset-source",
         type=str,
         default="biovid_part_a",
-        choices=("painmonit", "biovid_part_a"),
+        choices=SUPPORTED_DATASET_SOURCES,
     )
     parser.add_argument(
         "--data-variant",
@@ -394,7 +406,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--k-shot", type=int, default=10)
     parser.add_argument("--q-query", type=int, default=10)
-    parser.add_argument("--task-class-ids", type=str, default="0,4")
+    parser.add_argument(
+        "--task-class-ids",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated raw class ids. Defaults to 0,4 for BioVid/PainMonit "
+            "and 0,1,2,3 for SenseEmotion."
+        ),
+    )
     parser.add_argument(
         "--task-construction-mode",
         type=str,
