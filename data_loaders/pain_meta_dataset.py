@@ -1695,6 +1695,7 @@ class PainMetaDataset:
         split: str = "all",
         use_base_index: bool = True,
         normalize_with_query_subject_stats: bool = True,
+        split_normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         """Build a query-only task with every eligible sample for one subject.
 
@@ -1707,6 +1708,9 @@ class PainMetaDataset:
             use_base_index: Whether to avoid window-shift expanded references.
             normalize_with_query_subject_stats: Whether to normalize with query
                 batch statistics instead of stored subject/global statistics.
+            split_normalization_stats: Precomputed source-training statistics for
+                ``task_normalize_mode='split'``. These are required in split mode
+                so held-out queries cannot contribute to fitted normalization.
         """
         subject = int(subject)
         split_index = self._get_sampling_index_for_split(
@@ -1727,7 +1731,14 @@ class PainMetaDataset:
 
         query_X = np.concatenate(query_X, axis=0)
         query_y = np.concatenate(query_y, axis=0)
-        if normalize_with_query_subject_stats:
+        if self.config.task_normalize_mode == "split":
+            if split_normalization_stats is None:
+                raise ValueError(
+                    "split_normalization_stats is required when "
+                    "task_normalize_mode='split' for query-only evaluation."
+                )
+            query_X = self._apply_stats(query_X, split_normalization_stats)
+        elif normalize_with_query_subject_stats:
             stats = self._compute_batch_stats(query_X)
             query_X = self._apply_stats(query_X, stats)
         else:

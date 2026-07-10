@@ -1337,6 +1337,10 @@ class ContractTests(unittest.TestCase):
                 fold["train_sampler"].split_normalization_stats,
                 fold["test_sampler"].split_normalization_stats,
             )
+            self.assertIs(
+                fold["train_sampler"].split_normalization_stats,
+                fold["val_sampler"].split_normalization_stats,
+            )
 
             self.assertEqual(fold["test_subject"], held_out_subject)
             self.assertEqual(fold["test_subjects"], [held_out_subject])
@@ -1361,6 +1365,31 @@ class ContractTests(unittest.TestCase):
             self.assertNotEqual(train_task["subject"], held_out_subject)
             self.assertNotEqual(val_task["subject"], held_out_subject)
             self.assertEqual(test_task["subject"], held_out_subject)
+
+            heldout_query = dataset.build_all_query_task(
+                held_out_subject,
+                split="test",
+                use_base_index=True,
+                split_normalization_stats=fold_stats,
+            )
+            test_base_index = dataset._get_base_index_for_split("test")
+            raw_query = np.concatenate(
+                [
+                    dataset._gather_samples(test_base_index[held_out_subject][class_id])
+                    for class_id in range(config.n_way)
+                ],
+                axis=0,
+            )
+            expected_query = dataset._apply_stats(raw_query, fold_stats)
+            self.assertTrue(
+                np.allclose(heldout_query["query_X"], expected_query)
+            )
+            with self.assertRaises(ValueError):
+                dataset.build_all_query_task(
+                    held_out_subject,
+                    split="test",
+                    use_base_index=True,
+                )
         finally:
             tmp.cleanup()
 

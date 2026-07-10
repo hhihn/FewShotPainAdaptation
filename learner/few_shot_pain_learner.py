@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+from sklearn.cluster import KMeans
 from tensorflow import keras
 from data_loaders.pain_meta_dataset import PainMetaDataset
 from data_loaders.loso_cross_validator import LOSOCrossValidator
@@ -420,6 +421,95 @@ class FewShotPainLearner:
             "Use 'subject', 'split', 'support', or 'none'."
         )
 
+    @staticmethod
+    def _cluster_subject_feature_maps(
+        subject_maps: np.ndarray,
+        *,
+        slots_per_class: int,
+        random_state: int,
+    ) -> tuple[list[np.ndarray], float]:
+        """Cluster subject-level temporal maps using normalized descriptors.
+
+        Clustering uses the temporal mean of each subject map followed by L2
+        normalization, making Euclidean K-means equivalent to spherical
+        clustering up to a constant factor. Degenerate empty clusters are
+        repaired deterministically by moving a far-away member from a cluster
+        containing more than one subject.
+        """
+        subject_maps = np.asarray(subject_maps, dtype=np.float32)
+        slots_per_class = int(slots_per_class)
+        if subject_maps.ndim != 3:
+            raise ValueError(
+                "subject_maps must have shape [subjects, feature_time, feature_dim]"
+            )
+        num_subjects = int(subject_maps.shape[0])
+        if num_subjects < slots_per_class:
+            raise ValueError(
+                "Class-conditional prototype clustering requires at least one "
+                f"source subject per slot: subjects={num_subjects}, "
+                f"slots={slots_per_class}."
+            )
+
+        descriptors = np.mean(subject_maps, axis=1)
+        descriptor_norms = np.linalg.norm(descriptors, axis=1, keepdims=True)
+        descriptors = descriptors / np.maximum(descriptor_norms, 1e-8)
+        if slots_per_class == 1:
+            return [np.arange(num_subjects, dtype=np.int64)], 0.0
+
+        distinct_descriptor_count = int(np.unique(descriptors, axis=0).shape[0])
+        if distinct_descriptor_count < slots_per_class:
+            # Spherical descriptors can collapse when every subject map points in
+            # the same direction. Keep slots populated with a stable balanced
+            # partition instead of asking K-means for impossible distinct centers.
+            ordered_indices = np.lexsort(
+                tuple(
+                    descriptors[:, column]
+                    for column in reversed(range(descriptors.shape[1]))
+                )
+            )
+            assignments = np.empty(num_subjects, dtype=np.int32)
+            assignments[ordered_indices] = (
+                np.arange(num_subjects, dtype=np.int32) % slots_per_class
+            )
+        else:
+            kmeans = KMeans(
+                n_clusters=slots_per_class,
+                n_init=20,
+                random_state=int(random_state),
+                algorithm="lloyd",
+            )
+            assignments = kmeans.fit_predict(descriptors).astype(
+                np.int32, copy=False
+            )
+
+            # Preserve a true partition if numerical degeneracy leaves an empty
+            # label by moving one peripheral member from a non-singleton cluster.
+            for empty_slot in range(slots_per_class):
+                if np.any(assignments == empty_slot):
+                    continue
+                counts = np.bincount(assignments, minlength=slots_per_class)
+                donor_candidates = np.flatnonzero(counts[assignments] > 1)
+                if donor_candidates.size == 0:
+                    raise RuntimeError("Could not repair an empty prototype cluster.")
+                donor_centers = kmeans.cluster_centers_[assignments[donor_candidates]]
+                donor_distances = np.sum(
+                    np.square(descriptors[donor_candidates] - donor_centers),
+                    axis=1,
+                )
+                selected_position = int(np.argmax(donor_distances))
+                assignments[int(donor_candidates[selected_position])] = empty_slot
+
+        memberships = [
+            np.flatnonzero(assignments == slot_id).astype(np.int64, copy=False)
+            for slot_id in range(slots_per_class)
+        ]
+        inertia = 0.0
+        for member_indices in memberships:
+            member_descriptors = descriptors[member_indices]
+            center = np.mean(member_descriptors, axis=0, keepdims=True)
+            inertia += float(np.sum(np.square(member_descriptors - center)))
+        return memberships, inertia
+
     def _initialize_prototype_bank_from_training_samples(
         self,
         *,
@@ -427,7 +517,7 @@ class FewShotPainLearner:
         test_subject: int,
         train_sampler,
     ) -> dict:
-        """Initialize learned prototype-memory slots from training feature means."""
+        """Initialize slots by class-conditional subject-map clustering."""
         samples_per_slot = int(self.config.prototype_bank_init_samples_per_class)
         if samples_per_slot == 0:
             return {"enabled": False}
@@ -464,6 +554,7 @@ class FewShotPainLearner:
         class_slot_maps = []
         metadata = {
             "enabled": True,
+            "initialization": "class_conditional_subject_kmeans",
             "samples_per_slot": samples_per_slot,
             "slots_per_class": slots_per_class,
             "train_subjects": train_subjects,
@@ -489,34 +580,81 @@ class FewShotPainLearner:
                 total_per_class,
                 rng,
             )
-            class_maps = []
-            class_metadata = {"slots": []}
-            for slot_id in range(slots_per_class):
-                start = slot_id * samples_per_slot
-                stop = start + samples_per_slot
-                slot_refs = selected_refs[start:stop]
-                slot_subjects = selected_subjects[start:stop]
-                slot_x = self.dataset._gather_samples(slot_refs).astype(
-                    np.float32,
-                    copy=False,
-                )
-                slot_x = self._normalize_prototype_bank_initializer_batch(
-                    slot_x,
-                    slot_subjects,
-                    train_subjects=train_subjects,
-                    train_split=train_split,
-                    train_sampler=train_sampler,
-                ).astype(np.float32, copy=False)
-                slot_feature_maps = self.model.encode_feature_map(
-                    tf.convert_to_tensor(slot_x, dtype=tf.float32),
+            selected_x = self.dataset._gather_samples(selected_refs).astype(
+                np.float32,
+                copy=False,
+            )
+            selected_x = self._normalize_prototype_bank_initializer_batch(
+                selected_x,
+                selected_subjects,
+                train_subjects=train_subjects,
+                train_split=train_split,
+                train_sampler=train_sampler,
+            ).astype(np.float32, copy=False)
+
+            subject_records = []
+            subject_feature_maps = []
+            for subject in sorted(np.unique(selected_subjects).tolist()):
+                subject_mask = selected_subjects == int(subject)
+                subject_x = selected_x[subject_mask]
+                encoded_maps = self.model.encode_feature_map(
+                    tf.convert_to_tensor(subject_x, dtype=tf.float32),
                     training=False,
                 )
-                mean_map = tf.reduce_mean(slot_feature_maps, axis=0)
-                class_maps.append(mean_map)
+                subject_feature_maps.append(
+                    tf.reduce_mean(encoded_maps, axis=0).numpy()
+                )
+                subject_records.append(
+                    {
+                        "subject": int(subject),
+                        "refs": np.array(selected_refs[subject_mask], copy=True),
+                        "subjects": np.array(
+                            selected_subjects[subject_mask], copy=True
+                        ),
+                    }
+                )
+
+            subject_feature_maps_np = np.stack(subject_feature_maps, axis=0)
+            cluster_seed = int(
+                np.random.SeedSequence(
+                    [self.seed, int(fold) + 1, int(test_subject), int(class_id)]
+                ).generate_state(1, dtype=np.uint32)[0]
+            )
+            memberships, cluster_inertia = self._cluster_subject_feature_maps(
+                subject_feature_maps_np,
+                slots_per_class=slots_per_class,
+                random_state=cluster_seed,
+            )
+
+            class_maps = []
+            class_metadata = {
+                "slots": [],
+                "n_subject_maps": len(subject_records),
+                "cluster_inertia": cluster_inertia,
+            }
+            for slot_id, member_indices in enumerate(memberships):
+                slot_map = np.mean(
+                    subject_feature_maps_np[member_indices],
+                    axis=0,
+                ).astype(np.float32, copy=False)
+                class_maps.append(tf.convert_to_tensor(slot_map, dtype=tf.float32))
+                slot_records = [subject_records[int(idx)] for idx in member_indices]
+                slot_refs = np.concatenate(
+                    [record["refs"] for record in slot_records],
+                    axis=0,
+                )
+                slot_subjects = np.concatenate(
+                    [record["subjects"] for record in slot_records],
+                    axis=0,
+                )
                 class_metadata["slots"].append(
                     {
                         "refs": np.array(slot_refs, copy=True),
                         "subjects": np.array(slot_subjects, copy=True),
+                        "cluster_subjects": np.asarray(
+                            [record["subject"] for record in slot_records],
+                            dtype=np.int32,
+                        ),
                     }
                 )
             metadata["classes"][class_id] = class_metadata
@@ -525,7 +663,7 @@ class FewShotPainLearner:
         prototype_maps = tf.stack(class_slot_maps, axis=0)
         prototype_memory.assign_prototype_maps(prototype_maps)
         self.logger.info(
-            "Initialized learned prototype bank from training feature means: "
+            "Initialized learned prototype bank with class-conditional subject K-means: "
             f"samples_per_slot={samples_per_slot}, slots_per_class={slots_per_class}, "
             f"train_subjects={len(train_subjects)}, split={train_split}."
         )
@@ -666,17 +804,32 @@ class FewShotPainLearner:
             test_subject=test_subject,
             train_sampler=train_sampler,
         )
-        query_task = self.dataset.build_all_query_task(
-            int(test_subject),
-            split=test_sampler.data_split,
-            use_base_index=True,
-            normalize_with_query_subject_stats=bool(
+        query_task_kwargs = {
+            "split": test_sampler.data_split,
+            "use_base_index": True,
+            "normalize_with_query_subject_stats": bool(
                 getattr(
                     self.config,
                     "source_subject_prototype_vote_query_normalize_with_subject_stats",
                     True,
                 )
             ),
+        }
+        task_normalize_mode = str(
+            getattr(getattr(self, "config", None), "task_normalize_mode", "subject")
+        )
+        if task_normalize_mode == "split":
+            split_stats = getattr(test_sampler, "split_normalization_stats", None)
+            if split_stats is None:
+                raise RuntimeError(
+                    "Split-normalized source-subject voting requires source "
+                    "training normalization statistics."
+                )
+            query_task_kwargs["split_normalization_stats"] = split_stats
+            query_task_kwargs["normalize_with_query_subject_stats"] = False
+        query_task = self.dataset.build_all_query_task(
+            int(test_subject),
+            **query_task_kwargs,
         )
         loss, metrics, diagnostics = (
             self.evaluator.evaluate_source_subject_prototype_vote_task_metrics(
@@ -912,11 +1065,26 @@ class FewShotPainLearner:
         label: str,
     ) -> tuple[dict, float, dict]:
         """Evaluate all held-out queries with learned prototype-memory support."""
+        query_task_kwargs = {
+            "split": test_sampler.data_split,
+            "use_base_index": True,
+            "normalize_with_query_subject_stats": True,
+        }
+        task_normalize_mode = str(
+            getattr(getattr(self, "config", None), "task_normalize_mode", "subject")
+        )
+        if task_normalize_mode == "split":
+            split_stats = getattr(test_sampler, "split_normalization_stats", None)
+            if split_stats is None:
+                raise RuntimeError(
+                    "Split-normalized learned-prototype evaluation requires source "
+                    "training normalization statistics."
+                )
+            query_task_kwargs["split_normalization_stats"] = split_stats
+            query_task_kwargs["normalize_with_query_subject_stats"] = False
         query_task = self.dataset.build_all_query_task(
             int(test_subject),
-            split=test_sampler.data_split,
-            use_base_index=True,
-            normalize_with_query_subject_stats=True,
+            **query_task_kwargs,
         )
         loss, metrics = self.evaluator.evaluate_prototype_memory_task_metrics(
             query_task
@@ -2069,6 +2237,10 @@ class FewShotPainLearner:
                     self._resolve_prototype_finetune_tasks_per_epoch(train_sampler)
                 )
                 if prototype_epochs > 0:
+                    self.engine.restart_optimizer_for_prototype_phase(
+                        updates_per_epoch=prototype_updates_per_epoch,
+                        num_epochs=prototype_epochs,
+                    )
                     explicit_budget = (
                         self.config.prototype_finetune_tasks_per_epoch is not None
                     )
@@ -2088,7 +2260,9 @@ class FewShotPainLearner:
                         f"batch_size={self.train_batch_size}, "
                         f"support_samples_per_task={support_samples_per_task}, "
                         f"query_samples_per_task={query_samples_per_task}, "
-                        f"slots_per_class={self.config.learned_prototype_slots_per_class}. "
+                        f"slots_per_class={self.config.learned_prototype_slots_per_class}, "
+                        "optimizer_restarted=True, optimizer_iterations=0, "
+                        f"lr_schedule={self.config.lr_schedule}. "
                         "Each phase-2 update uses one configured batched episodic task batch; "
                         "sampled support tensors are carried through the batch interface while "
                         "learned prototype memory supplies CAN support."

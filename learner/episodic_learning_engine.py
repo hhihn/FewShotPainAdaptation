@@ -26,6 +26,7 @@ class EpisodicLearningEngine:
         self._compiled_prototype_memory_batch_step = None
         self._initial_model_weights = None
         self._initial_optimizer_variables = None
+        self._phase1_optimizer = None
 
     def __getattr__(self, name):
         """Delegate unknown attributes to the learner facade.
@@ -100,6 +101,7 @@ class EpisodicLearningEngine:
         self.learner._compiled_prototype_memory_batch_step = None
         self._initial_model_weights = None
         self._initial_optimizer_variables = None
+        self._phase1_optimizer = None
         self.model = None
         self.optimizer = None
         if clear_session:
@@ -145,37 +147,52 @@ class EpisodicLearningEngine:
             crossmod_ff_activation=self.config.crossmod_ff_activation,
             seed=self.seed,
         )
-        optimizer_kwargs = {
-            "learning_rate": self.build_learning_rate(),
-            "weight_decay": 1e-4,
-        }
-        if self.gradient_clip_norm is not None:
-            optimizer_kwargs["clipnorm"] = self.gradient_clip_norm
-        self.optimizer = keras.optimizers.AdamW(**optimizer_kwargs)
+        self.optimizer = self.build_optimizer()
+        self._phase1_optimizer = self.optimizer
         self.initialize_model_and_optimizer_variables()
         self.build_compiled_train_batch_step()
         self.build_compiled_eval_batch_step()
         self.build_compiled_prototype_memory_batch_step()
         self.capture_initial_model_state()
 
-    def build_learning_rate(self):
+    def build_learning_rate(
+        self,
+        *,
+        updates_per_epoch: int | None = None,
+        num_epochs: int | None = None,
+    ):
         """Return the configured learning-rate object.
 
         Constant schedules return a scalar; cosine schedules return a Keras
         learning-rate schedule.
+
+        Args:
+            updates_per_epoch: Optional optimizer-update count per epoch. When
+                omitted, this is derived from the phase-1 task budget.
+            num_epochs: Optional schedule epoch count. When omitted, the
+                configured phase-1 epoch count is used.
         """
         schedule_name = str(getattr(self.config, "lr_schedule", "constant")).lower()
         if schedule_name == "constant":
             return self.learning_rate
         if schedule_name == "cosine":
-            updates_per_epoch = max(
-                1,
-                math.ceil(
-                    max(1, int(self.config.tasks_per_epoch)) / self.train_batch_size
-                ),
+            if updates_per_epoch is None:
+                updates_per_epoch = max(
+                    1,
+                    math.ceil(
+                        max(1, int(self.config.tasks_per_epoch))
+                        / self.train_batch_size
+                    ),
+                )
+            else:
+                updates_per_epoch = max(1, int(updates_per_epoch))
+            resolved_epochs = (
+                max(1, int(self.config.num_epochs))
+                if num_epochs is None
+                else max(1, int(num_epochs))
             )
             decay_steps = max(
-                1, updates_per_epoch * max(1, int(self.config.num_epochs))
+                1, updates_per_epoch * resolved_epochs
             )
             return keras.optimizers.schedules.CosineDecay(
                 initial_learning_rate=self.learning_rate,
@@ -183,6 +200,53 @@ class EpisodicLearningEngine:
                 alpha=float(getattr(self.config, "lr_decay_alpha", 0.1)),
             )
         raise ValueError(f"Unknown lr_schedule: {schedule_name}")
+
+    def build_optimizer(
+        self,
+        *,
+        updates_per_epoch: int | None = None,
+        num_epochs: int | None = None,
+    ) -> keras.optimizers.Optimizer:
+        """Build a fresh AdamW optimizer and learning-rate schedule.
+
+        Args:
+            updates_per_epoch: Optional optimizer-update count used to size a
+                cosine schedule.
+            num_epochs: Optional epoch count used to size a cosine schedule.
+        """
+        optimizer_kwargs = {
+            "learning_rate": self.build_learning_rate(
+                updates_per_epoch=updates_per_epoch,
+                num_epochs=num_epochs,
+            ),
+            "weight_decay": 1e-4,
+        }
+        if self.gradient_clip_norm is not None:
+            optimizer_kwargs["clipnorm"] = self.gradient_clip_norm
+        return keras.optimizers.AdamW(**optimizer_kwargs)
+
+    def restart_optimizer_for_prototype_phase(
+        self,
+        *,
+        updates_per_epoch: int,
+        num_epochs: int,
+    ) -> None:
+        """Start phase two with fresh optimizer state and schedule.
+
+        The phase-one optimizer is retained so the next LOSO fold can restore
+        its original optimizer and schedule. The new optimizer is built against
+        every model variable to remain compatible with optional held-out
+        adaptation after prototype fine-tuning.
+        """
+        if self._phase1_optimizer is None:
+            self._phase1_optimizer = self.optimizer
+        self.optimizer = self.build_optimizer(
+            updates_per_epoch=updates_per_epoch,
+            num_epochs=num_epochs,
+        )
+        if hasattr(self.optimizer, "build"):
+            self.optimizer.build(self.model.trainable_variables)
+        self.build_compiled_prototype_memory_batch_step()
 
     def make_dummy_episode_tensors(
         self,
@@ -287,6 +351,9 @@ class EpisodicLearningEngine:
 
         The restore avoids rebuilding compiled TensorFlow functions between folds.
         """
+        if self._phase1_optimizer is not None and self.optimizer is not self._phase1_optimizer:
+            self.optimizer = self._phase1_optimizer
+
         if (
             self._initial_model_weights is None
             or self._initial_optimizer_variables is None
