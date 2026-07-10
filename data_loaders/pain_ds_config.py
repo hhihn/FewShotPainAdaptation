@@ -20,6 +20,8 @@ VALIDATION_CHECKPOINT_MODES = ("auto", "min", "max")
 CAN_SUPPORT_MODES = ("sampled", "learned_prototype_memory")
 PROTOTYPE_PHASE2_LOSS_MODES = ("ce_can",)
 SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES = ("global",)
+SUPPORTED_DATASET_SOURCES = ("painmonit", "biovid_part_a", "senseemotion")
+PREDEFINED_SPLIT_DATASET_SOURCES = ("biovid_part_a", "senseemotion")
 
 
 @dataclass
@@ -149,7 +151,7 @@ class PainDatasetConfig:
     sampling_rate_hz: int = 250  # Signal sampling rate used for time->index conversion
 
     # Data paths
-    dataset_source: str = "biovid_part_a"  # painmonit or biovid_part_a
+    dataset_source: str = "biovid_part_a"  # painmonit, biovid_part_a, or senseemotion
     split_strategy: str = "loso"  # loso or predefined
     data_variant: str = "real"  # real or mock
     data_path: str = "X_pre.npy"
@@ -159,6 +161,10 @@ class PainDatasetConfig:
     biovid_train_split_dir: str = "Train"
     biovid_test_split_dir: str = "Test"
     biovid_modalities: Tuple[str, ...] = ("GSR", "ECG", "EMG")
+    senseemotion_dir: str = "SenseEmotion"
+    senseemotion_train_split_dir: str = "Train"
+    senseemotion_test_split_dir: str = "Test"
+    senseemotion_modalities: Tuple[str, ...] = ("GSR", "ECG")
 
     def __post_init__(self) -> None:
         """Normalize derived fields and validate configuration values.
@@ -184,30 +190,44 @@ class PainDatasetConfig:
             self.sensor_idx = (1, 4)
             self.modality_names = ("EDA", "ECG")
             self.biovid_modalities = ("GSR", "ECG")
-        if self.dataset_source not in {"painmonit", "biovid_part_a"}:
+            self.senseemotion_modalities = ("GSR", "ECG")
+        self.dataset_source = str(self.dataset_source).strip().lower()
+        if self.dataset_source not in SUPPORTED_DATASET_SOURCES:
             raise ValueError(
-                "dataset_source must be one of: 'painmonit', 'biovid_part_a'"
+                "dataset_source must be one of: " + ", ".join(SUPPORTED_DATASET_SOURCES)
             )
         if self.split_strategy not in {"loso", "predefined"}:
             raise ValueError("split_strategy must be one of: 'loso', 'predefined'")
-        if self.dataset_source == "biovid_part_a":
-            # BioVid Part A ships with an explicit train/test split.
+        if self.dataset_source in PREDEFINED_SPLIT_DATASET_SOURCES:
+            # BioVid Part A and SenseEmotion ship with explicit train/test splits.
             self.split_strategy = "predefined"
-            self.sampling_rate_hz = 256
             # Avoid applying an additional sliding-window augmentation on top of
-            # BioVid Part A pre-segmented windows.
+            # pre-segmented windows.
             self.enable_window_shift_augmentation = False
-            if self.task_class_ids == (0, 5):
-                self.task_class_ids = (0, 4)
             if self.data_variant == "mock":
                 raise ValueError(
                     "data_variant='mock' is only supported for dataset_source='painmonit'"
                 )
 
+        if self.dataset_source == "biovid_part_a":
+            self.sampling_rate_hz = 256
+            if self.task_class_ids == (0, 5):
+                self.task_class_ids = (0, 4)
+        elif self.dataset_source == "senseemotion":
+            self.sequence_length = 1664
+            self.num_sensors = len(self.senseemotion_modalities)
+            self.sensor_idx = (1, 4)
+            self.modality_names = ("EDA", "ECG")
+            if self.task_class_ids == (0, 5):
+                self.task_class_ids = (0, 1, 2, 3)
+
         if self.matched_query_eval:
-            if self.dataset_source != "biovid_part_a" or self.split_strategy != "predefined":
+            if (
+                self.dataset_source not in PREDEFINED_SPLIT_DATASET_SOURCES
+                or self.split_strategy != "predefined"
+            ):
                 raise ValueError(
-                    "matched_query_eval requires BioVid Part A with its predefined Train/Test split"
+                    "matched_query_eval requires a predefined Train/Test split dataset"
                 )
             if self.task_normalize_mode != "split":
                 raise ValueError(
