@@ -119,7 +119,9 @@ class PainDatasetConfig:
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
+    disable_validation: bool = False  # Skip validation/checkpoint evaluation entirely
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
+    disable_training_logging: bool = False  # Skip train progress logs and CSV updates
     train_prefetch_batches: int = 256  # Number of asynchronously prepared train batches
     gradient_clip_norm: Optional[float] = (
         1.0  # Per-gradient norm clip for optimizer updates

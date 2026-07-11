@@ -1792,6 +1792,12 @@ class FewShotPainLearner:
         eval_log_every = max(1, int(self.config.eval_log_every))
         val_batch_size = max(1, int(self.config.val_batch_size))
         val_every_n_train_steps = max(1, int(self.config.val_every_n_train_steps))
+        validation_enabled = not bool(
+            getattr(self.config, "disable_validation", False)
+        )
+        training_logging_enabled = not bool(
+            getattr(self.config, "disable_training_logging", False)
+        )
         configured_eval_pair = self._resolve_configured_holdout_eval_pair()
         heldout_eval_pairs = [configured_eval_pair, (1, 1), (5, 5), (10, 10)]
         dedup_pairs: list[tuple[int, int]] = []
@@ -1928,7 +1934,7 @@ class FewShotPainLearner:
                     avg_step_time = elapsed / max(1, completed_train_steps)
                     remaining_steps = max(0, total_train_steps - completed_train_steps)
                     eta_seconds = remaining_steps * avg_step_time
-                    if (
+                    if training_logging_enabled and (
                         processed_batches % train_progress_write_every_n_batches == 0
                         or processed_tasks == tasks_per_epoch
                     ):
@@ -1950,20 +1956,21 @@ class FewShotPainLearner:
                         "can_local_loss": float(can_local_loss),
                         "can_margin_loss": float(can_margin_loss),
                     }
-                    progress.log_step(
-                        stage="Train task",
-                        fold_idx=fold + 1,
-                        total_folds=num_subjects,
-                        epoch_idx=epoch + 1,
-                        total_epochs=num_epochs,
-                        step_idx=processed_tasks,
-                        total_steps=tasks_per_epoch,
-                        loss=float(loss),
-                        metric_value=float(acc),
-                        metric_name="accuracy",
-                        extra_metrics=train_extra_metrics,
-                        log_every=train_log_every,
-                    )
+                    if training_logging_enabled:
+                        progress.log_step(
+                            stage="Train task",
+                            fold_idx=fold + 1,
+                            total_folds=num_subjects,
+                            epoch_idx=epoch + 1,
+                            total_epochs=num_epochs,
+                            step_idx=processed_tasks,
+                            total_steps=tasks_per_epoch,
+                            loss=float(loss),
+                            metric_value=float(acc),
+                            metric_name="accuracy",
+                            extra_metrics=train_extra_metrics,
+                            log_every=train_log_every,
+                        )
                     if self.logging_verbosity >= 1 and (
                         processed_batches % train_log_every == 0
                         or processed_tasks == tasks_per_epoch
@@ -1980,9 +1987,10 @@ class FewShotPainLearner:
                             f"eta={self._format_seconds(eta_seconds)}"
                         )
 
-                    should_run_validation = (
+                    should_run_validation = validation_enabled and (
                         processed_batches % val_every_n_train_steps == 0
-                    ) or (processed_tasks == tasks_per_epoch)
+                        or processed_tasks == tasks_per_epoch
+                    )
                     if not should_run_validation:
                         continue
 
