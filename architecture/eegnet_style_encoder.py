@@ -23,6 +23,8 @@ class EEGNetStyleEncoder(keras.Model):
         pool_size_2: int = 8,
         dropout_rate: float = 0.25,
         l2_weight: float = 1e-4,
+        normalization: str = "group",
+        group_norm_groups: int = 4,
         name: str = "eegnet_encoder",
     ):
         """Initialize the EEGNet-style encoder.
@@ -39,6 +41,8 @@ class EEGNetStyleEncoder(keras.Model):
             pool_size_2: Pooling factor after separable temporal filtering.
             dropout_rate: Dropout rate applied after each pooling stage.
             l2_weight: Reserved regularization weight for frontend compatibility.
+            normalization: Subject-invariant normalization type: group or layer.
+            group_norm_groups: Preferred number of groups for GroupNorm.
             name: Keras model name.
         """
         super().__init__(name=name)
@@ -53,6 +57,12 @@ class EEGNetStyleEncoder(keras.Model):
         self.pool_size_2 = int(pool_size_2)
         self.dropout_rate = float(dropout_rate)
         self.l2_weight = float(l2_weight)
+        self.normalization = str(normalization).strip().lower()
+        self.group_norm_groups = int(group_norm_groups)
+        if self.normalization not in {"group", "layer"}:
+            raise ValueError("normalization must be one of: group, layer")
+        if self.group_norm_groups <= 0:
+            raise ValueError("group_norm_groups must be > 0")
         self.logger = setup_logger(name="EEGNetStyleEncoder")
 
         self.reshape = keras.layers.Reshape(
@@ -67,7 +77,9 @@ class EEGNetStyleEncoder(keras.Model):
             kernel_initializer="he_normal",
             name="temporal_conv",
         )
-        self.temporal_norm = keras.layers.BatchNormalization(name="temporal_norm")
+        self.temporal_norm = self._make_normalization(
+            self.temporal_filters, "temporal_norm"
+        )
         self.temporal_activation = keras.layers.Activation("gelu", name="temporal_elu")
         self.depthwise_conv = keras.layers.DepthwiseConv2D(
             kernel_size=(1, self.num_sensors),
@@ -76,7 +88,9 @@ class EEGNetStyleEncoder(keras.Model):
             depthwise_constraint=keras.constraints.max_norm(1.0),
             name="sensor_depthwise_conv",
         )
-        self.depthwise_norm = keras.layers.BatchNormalization(name="depthwise_norm")
+        self.depthwise_norm = self._make_normalization(
+            self.temporal_filters * self.depth_multiplier, "depthwise_norm"
+        )
         self.depthwise_activation = keras.layers.Activation(
             "gelu", name="depthwise_elu"
         )
@@ -97,7 +111,9 @@ class EEGNetStyleEncoder(keras.Model):
             pointwise_initializer="he_normal",
             name="separable_temporal_conv",
         )
-        self.separable_norm = keras.layers.BatchNormalization(name="separable_norm")
+        self.separable_norm = self._make_normalization(
+            self.separable_filters, "separable_norm"
+        )
         self.separable_activation = keras.layers.Activation(
             "gelu", name="separable_elu"
         )
@@ -114,6 +130,17 @@ class EEGNetStyleEncoder(keras.Model):
             self.temporal_filters,
             self.depth_multiplier,
             self.separable_filters,
+        )
+
+    def _make_normalization(self, channels: int, name: str):
+        """Create a normalization layer that never uses cross-sample statistics."""
+        if self.normalization == "layer":
+            return keras.layers.LayerNormalization(axis=-1, epsilon=1e-5, name=name)
+        groups = min(self.group_norm_groups, int(channels))
+        while int(channels) % groups != 0:
+            groups -= 1
+        return keras.layers.GroupNormalization(
+            groups=groups, axis=-1, epsilon=1e-5, name=name
         )
 
     def _feature_map_4d(self, x, training=False):
@@ -180,4 +207,6 @@ class EEGNetStyleEncoder(keras.Model):
             "pool_size_2": self.pool_size_2,
             "dropout_rate": self.dropout_rate,
             "l2_weight": self.l2_weight,
+            "normalization": self.normalization,
+            "group_norm_groups": self.group_norm_groups,
         }
