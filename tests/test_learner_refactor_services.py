@@ -369,10 +369,16 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "validation_checkpoint_metrics",
             "source_subject_prototype_vote_accuracies",
             "source_subject_prototype_vote_weight_files",
+            "zero_shot_intra_class_similarities",
+            "zero_shot_inter_class_similarities",
+            "k_shot_intra_class_similarities",
+            "k_shot_inter_class_similarities",
         ):
             self.assertIn(key, results)
         self.assertIn("zero_shot_accuracies", size_bucket)
         self.assertIn("k_shot_accuracies", size_bucket)
+        self.assertIn("zero_shot_intra_class_similarities", size_bucket)
+        self.assertIn("k_shot_inter_class_similarities", size_bucket)
         self.assertEqual(results["validation_checkpoint_metric"], "f1")
         self.assertEqual(results["validation_checkpoint_mode"], "max")
 
@@ -669,6 +675,9 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "precision": 0.7,
             "recall": 0.8,
             "f1": 0.74,
+            "intra_class_similarity": 0.85,
+            "inter_class_similarity": 0.25,
+            "similarity_margin": 0.6,
             "can_true_class_score": 0.9,
             "can_best_other_score": 0.2,
             "can_score_margin": 0.7,
@@ -688,6 +697,9 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         bucket = recorder.results["heldout_eval_by_task_size"]["k2_q3"]
         self.assertEqual(bucket["zero_shot_accuracies"], [0.75])
         self.assertEqual(bucket["zero_shot_can_true_class_scores"], [0.9])
+        self.assertEqual(bucket["zero_shot_intra_class_similarities"], [0.85])
+        self.assertEqual(bucket["zero_shot_inter_class_similarities"], [0.25])
+        self.assertEqual(bucket["zero_shot_similarity_margins"], [0.6])
         self.assertEqual(bucket["k_shot_f1s"], [0.74])
 
     def test_cv_result_recorder_metric_kwargs_include_can_scores(self):
