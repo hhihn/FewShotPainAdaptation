@@ -144,6 +144,25 @@ class LOSOCrossValidator:
                     train_subjects_final = list(train_subjects)
         self.logger.debug(f"val_subjects: {val_subjects}")
         self.logger.debug(f"train_subjects_final: {train_subjects_final}")
+        fold_source_normalization_stats = None
+        if self.config.task_normalize_mode == "split":
+            fold_source_normalization_stats = dict(
+                self.dataset.compute_split_normalization_stats(
+                    train_subjects_final,
+                    split=train_data_split,
+                )
+            )
+            fold_source_normalization_stats["subject_ids"] = tuple(
+                int(subject) for subject in train_subjects_final
+            )
+            fold_source_normalization_stats["split"] = train_data_split
+            if (
+                int(effective_test_subject)
+                in fold_source_normalization_stats["subject_ids"]
+            ):
+                raise RuntimeError(
+                    "Held-out subject unexpectedly contributed to fold normalization statistics"
+                )
         if self.dataset.window_shift_enabled:
             self.dataset.log_window_shift_split_summary(
                 "train",
@@ -168,6 +187,7 @@ class LOSOCrossValidator:
             test_subject=effective_test_subject,
             seed=fold_seed,
             data_split=train_data_split,
+            normalization_stats=fold_source_normalization_stats,
         )
 
         val_sampler = SixWayKShotSampler(
@@ -177,6 +197,7 @@ class LOSOCrossValidator:
             test_subject=effective_test_subject,
             seed=val_seed,
             data_split=val_data_split,
+            normalization_stats=fold_source_normalization_stats,
         )
 
         test_sampler = SixWayKShotSampler(
@@ -187,6 +208,7 @@ class LOSOCrossValidator:
             test_subjects=test_subjects,
             seed=test_seed,
             data_split=test_data_split,
+            normalization_stats=fold_source_normalization_stats,
         )
 
         return {
@@ -199,4 +221,5 @@ class LOSOCrossValidator:
             "val_subjects": val_subjects,
             "n_train_subjects": len(train_subjects_final),
             "n_val_subjects": len(val_subjects),
+            "fold_source_normalization_stats": fold_source_normalization_stats,
         }

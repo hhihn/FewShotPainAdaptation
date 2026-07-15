@@ -1,5 +1,6 @@
 import csv
 import copy
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -175,8 +176,6 @@ class FewShotPainLearner:
             "train_prefetch_batches": self.train_prefetch_batches,
             "train_progress_write_every_n_batches": self.config.train_progress_write_every_n_batches,
             "csv_flush_every_events": self.config.csv_flush_every_events,
-            "export_can_feature_maps": self.config.export_can_feature_maps,
-            "export_raw_can_feature_maps": self.config.export_raw_can_feature_maps,
             "encoder_backend": self.config.encoder_backend,
             "eegnet_temporal_filters": self.config.eegnet_temporal_filters,
             "eegnet_depth_multiplier": self.config.eegnet_depth_multiplier,
@@ -661,7 +660,7 @@ class FewShotPainLearner:
         test_subject: int,
         train_sampler,
         test_sampler,
-    ) -> tuple[dict, float, dict, dict[str, np.ndarray]]:
+    ) -> tuple[float, dict, dict[str, np.ndarray]]:
         """Evaluate all held-out queries with source-subject prototype voting."""
         prototypes = self._build_source_subject_class_prototypes(
             test_subject=test_subject,
@@ -694,7 +693,7 @@ class FewShotPainLearner:
             f"prototypes={len(prototypes['prototype_y'])}, "
             f"accuracy={metrics['accuracy']:.4f}"
         )
-        return query_task, loss, metrics, diagnostics
+        return loss, metrics, diagnostics
 
     def _iter_prototype_finetune_task_batches(
         self,
@@ -1108,6 +1107,153 @@ class FewShotPainLearner:
             )
         return sweep_metrics_by_size
 
+    @staticmethod
+    def _matched_array_hash(*arrays: np.ndarray) -> str:
+        """Return a stable digest for matched-query audit fields."""
+        digest = hashlib.sha256()
+        for array in arrays:
+            value = np.ascontiguousarray(array)
+            digest.update(str(value.dtype).encode("utf-8"))
+            digest.update(np.asarray(value.shape, dtype=np.int64).tobytes())
+            digest.update(value.tobytes())
+        return digest.hexdigest()
+
+    def _evaluate_matched_query_personalization(
+        self,
+        *,
+        fold: int,
+        test_subject: int,
+        normalization_stats: dict,
+        progress_file: str,
+    ) -> str:
+        """Evaluate bank and repeated target support on one fixed query set."""
+        source_subjects = tuple(
+            int(subject) for subject in normalization_stats.get("subject_ids", ())
+        )
+        if int(test_subject) in source_subjects:
+            raise RuntimeError(
+                "Held-out subject contributed to matched-query normalization statistics"
+            )
+        fixed_query = self.dataset.build_fixed_normalized_query_task(
+            int(test_subject),
+            normalization_stats=normalization_stats,
+            split="test",
+        )
+        query_hash = self._matched_array_hash(
+            fixed_query["query_indices"],
+            fixed_query["query_y"],
+            fixed_query["query_X"],
+        )
+        query_counts = np.bincount(
+            fixed_query["query_y"], minlength=int(self.config.n_way)
+        )
+        if np.unique(query_counts).size != 1:
+            raise ValueError(
+                f"Matched fixed query must be class-balanced; counts={query_counts.tolist()}"
+            )
+        q_query = int(query_counts[0])
+        zero_result = self.evaluator.evaluate_task_batch_detailed(
+            [fixed_query],
+            forward_batch_size=1,
+            can_support_mode="learned_prototype_memory",
+        )[0]
+        zero_metrics = zero_result["metrics"]
+
+        repeats = int(self.config.matched_query_support_repeats)
+        k_shot = int(self.config.k_shot)
+        evaluation_batch_size = max(1, min(int(self.train_batch_size), repeats))
+        rows: list[dict] = []
+        for chunk_start in range(0, repeats, evaluation_batch_size):
+            chunk_end = min(repeats, chunk_start + evaluation_batch_size)
+            tasks = []
+            for repeat_index in range(chunk_start, chunk_end):
+                repeat_seed = int(
+                    np.random.SeedSequence(
+                        [self.seed, int(test_subject), int(repeat_index), 7919]
+                    ).generate_state(1, dtype=np.uint32)[0]
+                )
+                task = self.dataset.sample_support_for_fixed_query(
+                    int(test_subject),
+                    k_shot=k_shot,
+                    fixed_query_task=fixed_query,
+                    normalization_stats=normalization_stats,
+                    rng=np.random.default_rng(repeat_seed),
+                    support_split="train",
+                    repeat_index=repeat_index,
+                    repeat_seed=repeat_seed,
+                )
+                if task["query_X"] is not fixed_query["query_X"]:
+                    raise RuntimeError(
+                        "Matched-query task copied or replaced the fixed query tensor"
+                    )
+                tasks.append(task)
+
+            detailed_results = self.evaluator.evaluate_task_batch_detailed(
+                tasks,
+                forward_batch_size=evaluation_batch_size,
+                can_support_mode="sampled",
+            )
+            for task, result in zip(tasks, detailed_results):
+                if self._matched_array_hash(
+                    task["query_indices"], task["query_y"], task["query_X"]
+                ) != query_hash:
+                    raise RuntimeError(
+                        "Query content changed across matched support repeats"
+                    )
+                k_metrics = result["metrics"]
+                row = {
+                    "fold": int(fold + 1),
+                    "test_subject": int(test_subject),
+                    "repeat": int(task["repeat_index"]),
+                    "repeat_seed": int(task["repeat_seed"]),
+                    "k_shot": k_shot,
+                    "q_query": q_query,
+                    "support_split": "train",
+                    "query_split": "test",
+                    "normalization_reference": "fold_source_train_subjects",
+                    "query_hash": query_hash,
+                    "support_hash": self._matched_array_hash(task["support_indices"]),
+                    "zero_shot_loss": float(zero_result["loss"]),
+                    "k_shot_loss": float(result["loss"]),
+                    "zero_shot_accuracy": float(zero_metrics["accuracy"]),
+                    "k_shot_accuracy": float(k_metrics["accuracy"]),
+                    "difference_accuracy": float(
+                        k_metrics["accuracy"] - zero_metrics["accuracy"]
+                    ),
+                    "zero_shot_macro_f1": float(zero_metrics["f1"]),
+                    "k_shot_macro_f1": float(k_metrics["f1"]),
+                    "difference_macro_f1": float(
+                        k_metrics["f1"] - zero_metrics["f1"]
+                    ),
+                }
+                for class_index in range(int(self.config.n_way)):
+                    raw_class_id = int(self.config.task_class_ids[class_index])
+                    zero_value = float(zero_metrics["f1_per_class"][class_index])
+                    k_value = float(k_metrics["f1_per_class"][class_index])
+                    row[f"zero_shot_f1_class_{raw_class_id}"] = zero_value
+                    row[f"k_shot_f1_class_{raw_class_id}"] = k_value
+                    row[f"difference_f1_class_{raw_class_id}"] = k_value - zero_value
+                rows.append(row)
+
+        progress_path = Path(progress_file)
+        output_path = progress_path.with_name(
+            progress_path.name.replace(
+                "_training_progress.csv", "_matched_query_repeats.csv"
+            )
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        self.logger.info(
+            f"[Fold {fold + 1}] Matched-query primary evaluation: "
+            f"subject={test_subject}, k={k_shot}, q={q_query}, repeats={repeats}, "
+            f"zero_macro_f1={zero_metrics['f1']:.4f}, "
+            f"mean_k_macro_f1={np.mean([row['k_shot_macro_f1'] for row in rows]):.4f}"
+        )
+        return str(output_path)
+
     def _adapt_on_sampler_at_task_size(
         self,
         sampler,
@@ -1435,108 +1581,6 @@ class FewShotPainLearner:
                     for subject in sorted(subject_weights)
                 }
             )
-        return str(output_path)
-
-    def _write_can_feature_export(
-        self,
-        *,
-        progress_file: str,
-        fold_idx: int,
-        test_subject: int,
-        k_shot: int,
-        q_query: int,
-        zero_shot_task_batch: list[dict],
-        k_shot_task_batch: list[dict],
-        source_subject_prototype_vote_task: dict | None = None,
-        source_subject_prototype_vote_diagnostics: dict[str, np.ndarray] | None = None,
-        zero_shot_support_mode: str | None = None,
-        k_shot_support_mode: str | None = None,
-    ) -> str | None:
-        """Write compact CAN feature-map exports for subject-adaptation analysis."""
-        if getattr(self.config, "attention_mode", "none") != "can":
-            return None
-        if not bool(getattr(self.config, "export_can_feature_maps", True)):
-            return None
-
-        include_raw = bool(getattr(self.config, "export_raw_can_feature_maps", False))
-        phase_exports = {
-            "zero_shot": self.evaluator.collect_can_feature_export(
-                zero_shot_task_batch,
-                phase="zero_shot",
-                can_support_mode=zero_shot_support_mode,
-                include_raw_feature_maps=include_raw,
-            ),
-            "k_shot": self.evaluator.collect_can_feature_export(
-                k_shot_task_batch,
-                phase="k_shot",
-                can_support_mode=k_shot_support_mode,
-                include_raw_feature_maps=include_raw,
-            ),
-        }
-        if (
-            source_subject_prototype_vote_task is not None
-            and source_subject_prototype_vote_diagnostics is not None
-        ):
-            source_diag = source_subject_prototype_vote_diagnostics
-            source_export = {
-                "phase": np.array("source_subject_prototype_vote"),
-                "can_support_mode": np.array("source_subject_prototype_vote"),
-                "query_features": self.evaluator._time_pool_feature_maps(
-                    source_diag["query_feature_maps"]
-                ),
-                "query_y": source_diag["query_y"],
-                "query_pred": source_diag["query_pred"],
-                "query_correct": (
-                    source_diag["query_pred"] == source_diag["query_y"]
-                ).astype(np.int32),
-                "query_task_index": np.zeros(
-                    len(source_diag["query_y"]),
-                    dtype=np.int32,
-                ),
-                "query_similarity_scores": source_diag["query_similarity_scores"],
-                "prototype_features": self.evaluator._time_pool_feature_maps(
-                    source_diag["prototype_feature_maps"]
-                ),
-                "prototype_y": source_diag["prototype_y"],
-                "prototype_subjects": source_diag["prototype_subjects"],
-                "prototype_sample_counts": source_diag["prototype_sample_counts"],
-                "prototype_task_index": np.zeros(
-                    len(source_diag["prototype_y"]),
-                    dtype=np.int32,
-                ),
-                "prototype_vote_weights": source_diag["prototype_vote_weights"],
-                "prototype_similarity_scores": source_diag[
-                    "prototype_similarity_scores"
-                ],
-            }
-            if include_raw:
-                source_export["query_feature_maps"] = source_diag["query_feature_maps"]
-                source_export["prototype_feature_maps"] = source_diag[
-                    "prototype_feature_maps"
-                ]
-            phase_exports["source_subject_prototype_vote"] = source_export
-        if not any(phase_exports.values()):
-            return None
-
-        payload = {
-            "fold": np.array(int(fold_idx), dtype=np.int32),
-            "test_subject": np.array(int(test_subject), dtype=np.int32),
-            "k_shot": np.array(int(k_shot), dtype=np.int32),
-            "q_query": np.array(int(q_query), dtype=np.int32),
-            "include_raw_feature_maps": np.array(include_raw),
-        }
-        for phase, export in phase_exports.items():
-            for key, value in export.items():
-                payload[f"{phase}_{key}"] = value
-
-        progress_path = Path(progress_file)
-        output_path = progress_path.with_name(
-            progress_path.name.replace(
-                "_training_progress.csv",
-                "_can_feature_exports.npz",
-            )
-        )
-        np.savez_compressed(output_path, **payload)
         return str(output_path)
 
     def train(
@@ -2212,7 +2256,6 @@ class FewShotPainLearner:
                             f"seconds_per_update={epoch_elapsed / max(1, phase_update_count):.2f}"
                         )
 
-            source_vote_task = None
             source_vote_loss = None
             source_vote_metrics = None
             source_vote_diagnostics = None
@@ -2227,7 +2270,6 @@ class FewShotPainLearner:
                 )
             ):
                 (
-                    source_vote_task,
                     source_vote_loss,
                     source_vote_metrics,
                     source_vote_diagnostics,
@@ -2248,6 +2290,24 @@ class FewShotPainLearner:
                 result_recorder.record_source_subject_prototype_vote_result(
                     loss=source_vote_loss,
                     metrics=source_vote_metrics,
+                )
+
+            if bool(getattr(self.config, "matched_query_eval", False)):
+                normalization_stats = fold_dict.get(
+                    "fold_source_normalization_stats"
+                )
+                if normalization_stats is None:
+                    raise RuntimeError(
+                        "Matched-query evaluation requires fold source normalization statistics"
+                    )
+                matched_query_file = self._evaluate_matched_query_personalization(
+                    fold=fold,
+                    test_subject=int(test_subject),
+                    normalization_stats=normalization_stats,
+                    progress_file=progress_file,
+                )
+                cv_results["matched_query_repeat_metric_files"].append(
+                    matched_query_file
                 )
 
             # Held-out evaluation sweep across fixed and additional support/query sizes.
@@ -2510,25 +2570,6 @@ class FewShotPainLearner:
                     f"[Fold {fold + 1}/{num_subjects}] "
                     "Saved source-subject prototype vote weights to "
                     f"{source_vote_weight_file}"
-                )
-            can_feature_export_file = self._write_can_feature_export(
-                progress_file=progress_file,
-                fold_idx=fold + 1,
-                test_subject=int(test_subject),
-                k_shot=configured_eval_pair[0],
-                q_query=configured_eval_pair[1],
-                zero_shot_task_batch=zero_shot_task_batch,
-                k_shot_task_batch=k_shot_task_batch,
-                source_subject_prototype_vote_task=source_vote_task,
-                source_subject_prototype_vote_diagnostics=source_vote_diagnostics,
-                zero_shot_support_mode=zero_shot_support_mode,
-                k_shot_support_mode=k_shot_support_mode,
-            )
-            if can_feature_export_file is not None:
-                result_recorder.record_can_feature_export_file(can_feature_export_file)
-                self.logger.info(
-                    f"[Fold {fold + 1}/{num_subjects}] "
-                    f"Saved CAN feature export to {can_feature_export_file}"
                 )
             result_recorder.close_fold()
             progress.log_fold_complete(

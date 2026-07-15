@@ -123,6 +123,69 @@ def _write_synthetic_biovid_dataset(
                     )
 
 
+def _write_synthetic_senseemotion_dataset(
+    data_dir: Path,
+    num_subjects: int = 4,
+    train_samples_per_class: int = 6,
+    test_samples_per_class: int = 2,
+    seq_len: int = 1664,
+    compressed: bool = False,
+) -> None:
+    """Create a tiny SenseEmotion-like Train/Test tree with 2D modality arrays."""
+    rng = np.random.default_rng(789)
+    root = data_dir / "SenseEmotion"
+    modalities = ("GSR", "ECG")
+    splits = {
+        "Train": train_samples_per_class,
+        "Test": test_samples_per_class,
+    }
+    subject_keys = [f"se_subject_{idx:02d}" for idx in range(num_subjects)]
+
+    for split_name, samples_per_class in splits.items():
+        for modality in modalities:
+            (root / split_name / modality).mkdir(parents=True, exist_ok=True)
+
+        for subject_idx, subject_key in enumerate(subject_keys):
+            labels = np.concatenate(
+                [
+                    np.full((samples_per_class, 1), class_id, dtype=np.uint8)
+                    for class_id in range(4)
+                ],
+                axis=0,
+            )
+            for modality_idx, modality in enumerate(modalities):
+                mean_shift = float(subject_idx * 0.2 + modality_idx * 0.1)
+                data = np.concatenate(
+                    [
+                        rng.normal(
+                            loc=class_id + mean_shift,
+                            scale=0.5,
+                            size=(samples_per_class, seq_len),
+                        ).astype(np.float32)
+                        for class_id in range(4)
+                    ],
+                    axis=0,
+                )
+                if compressed:
+                    np.savez_compressed(
+                        root / split_name / modality / f"{subject_key}_data.npz",
+                        data=data,
+                    )
+                    np.savez_compressed(
+                        root / split_name / modality / f"{subject_key}_label.npz",
+                        data=labels,
+                    )
+                else:
+                    np.save(
+                        root / split_name / modality / f"{subject_key}_data.npy",
+                        data,
+                    )
+                    np.save(
+                        root / split_name / modality / f"{subject_key}_label.npy",
+                        labels,
+                    )
+
+
 class ContractTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -238,6 +301,16 @@ class ContractTests(unittest.TestCase):
         )
         self.assertEqual(biovid_config.biovid_modalities, ("GSR", "ECG"))
         self.assertEqual(biovid_config.num_sensors, 2)
+
+        senseemotion_config = PainDatasetConfig(
+            dataset_source="senseemotion",
+            attention_mode="can",
+            encoder_backend="crossmod",
+        )
+        self.assertEqual(senseemotion_config.task_class_ids, (0, 1, 2, 3))
+        self.assertEqual(senseemotion_config.senseemotion_modalities, ("GSR", "ECG"))
+        self.assertEqual(senseemotion_config.sequence_length, 1664)
+        self.assertEqual(senseemotion_config.num_sensors, 2)
 
     def test_crossmod_hyperparameters_are_validated(self):
         with self.assertRaisesRegex(ValueError, "requires attention_mode"):
@@ -1216,6 +1289,7 @@ class ContractTests(unittest.TestCase):
 
         config = PainDatasetConfig(
             dataset_source="biovid_part_a",
+            task_normalize_mode="split",
             k_shot=1,
             q_query=1,
             num_epochs=1,
@@ -1254,6 +1328,15 @@ class ContractTests(unittest.TestCase):
 
             held_out_subject = int(test_subjects[1])
             fold = cv.get_fold(test_subject=held_out_subject)
+
+            fold_stats = fold["fold_source_normalization_stats"]
+            self.assertIsNotNone(fold_stats)
+            self.assertNotIn(held_out_subject, fold_stats["subject_ids"])
+            self.assertEqual(fold_stats["split"], "train")
+            self.assertIs(
+                fold["train_sampler"].split_normalization_stats,
+                fold["test_sampler"].split_normalization_stats,
+            )
 
             self.assertEqual(fold["test_subject"], held_out_subject)
             self.assertEqual(fold["test_subjects"], [held_out_subject])
@@ -1334,6 +1417,82 @@ class ContractTests(unittest.TestCase):
                 sorted(dataset.get_split_subjects("train")),
                 sorted(dataset.get_split_subjects("test")),
             )
+        finally:
+            tmp.cleanup()
+
+    def test_senseemotion_predefined_split_contracts(self):
+        tmp = tempfile.TemporaryDirectory()
+        data_dir = Path(tmp.name)
+        _write_synthetic_senseemotion_dataset(data_dir)
+
+        config = PainDatasetConfig(
+            dataset_source="senseemotion",
+            task_normalize_mode="split",
+            k_shot=1,
+            q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            heldout_eval_tasks=1,
+            single_loso_fold=False,
+            seed=17,
+            deterministic_ops=True,
+        )
+        try:
+            self.assertEqual(config.task_class_ids, (0, 1, 2, 3))
+            self.assertEqual(config.split_strategy, "predefined")
+            self.assertFalse(config.enable_window_shift_augmentation)
+            self.assertEqual(config.sequence_length, 1664)
+            self.assertEqual(config.num_sensors, 2)
+
+            dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
+            self.assertTrue(dataset.has_predefined_split)
+            self.assertEqual(dataset.X.shape[1:], (1664, 2))
+            self.assertEqual(sorted(np.unique(dataset.y).tolist()), [0, 1, 2, 3])
+            self.assertEqual(
+                sorted(dataset.get_split_subjects("train")),
+                sorted(dataset.get_split_subjects("test")),
+            )
+
+            cv = LOSOCrossValidator(dataset=dataset, seed=config.seed)
+            held_out_subject = int(sorted(dataset.get_split_subjects("test"))[1])
+            fold = cv.get_fold(test_subject=held_out_subject)
+            train_task = fold["train_sampler"].get_task()
+            val_task = fold["val_sampler"].get_task()
+            test_task = fold["test_sampler"].get_task()
+            expected_support = config.n_way * config.k_shot
+            expected_query = config.n_way * config.q_query
+            self.assertEqual(train_task["support_X"].shape, (expected_support, 1664, 2))
+            self.assertEqual(train_task["query_X"].shape, (expected_query, 1664, 2))
+            self.assertEqual(val_task["support_X"].shape, (expected_support, 1664, 2))
+            self.assertEqual(val_task["query_X"].shape, (expected_query, 1664, 2))
+            self.assertEqual(test_task["support_X"].shape, (expected_support, 1664, 2))
+            self.assertEqual(test_task["query_X"].shape, (expected_query, 1664, 2))
+        finally:
+            tmp.cleanup()
+
+    def test_senseemotion_loader_accepts_compressed_npz_tree(self):
+        tmp = tempfile.TemporaryDirectory()
+        data_dir = Path(tmp.name)
+        _write_synthetic_senseemotion_dataset(data_dir, compressed=True)
+
+        config = PainDatasetConfig(
+            dataset_source="senseemotion",
+            k_shot=1,
+            q_query=1,
+            num_epochs=1,
+            tasks_per_epoch=1,
+            val_tasks=1,
+            heldout_eval_tasks=1,
+            single_loso_fold=False,
+            seed=17,
+            deterministic_ops=True,
+        )
+        try:
+            dataset = PainMetaDataset(data_dir=str(data_dir), config=config)
+            self.assertTrue(dataset.has_predefined_split)
+            self.assertEqual(dataset.X.shape[1:], (1664, 2))
+            self.assertEqual(sorted(np.unique(dataset.y).tolist()), [0, 1, 2, 3])
         finally:
             tmp.cleanup()
 

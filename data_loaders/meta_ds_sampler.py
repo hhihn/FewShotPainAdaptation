@@ -36,6 +36,7 @@ class SixWayKShotSampler:
         test_subjects: Optional[List[int]] = None,
         data_split: str = "all",
         seed: Optional[int] = None,
+        normalization_stats: Optional[Dict[str, np.ndarray]] = None,
     ):
         """
         Initialize the sampler.
@@ -99,12 +100,15 @@ class SixWayKShotSampler:
 
         self.split_normalization_stats = None
         if self.config.task_normalize_mode == "split":
-            self.split_normalization_stats = (
-                self.dataset.compute_split_normalization_stats(
-                    self.active_subjects,
-                    split=self.data_split,
+            if normalization_stats is not None:
+                self.split_normalization_stats = normalization_stats
+            else:
+                self.split_normalization_stats = (
+                    self.dataset.compute_split_normalization_stats(
+                        self.active_subjects,
+                        split=self.data_split,
+                    )
                 )
-            )
 
         self.n_way = self.config.n_way
 

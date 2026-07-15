@@ -2,8 +2,8 @@
 
 Few-shot learning experiments for personalized pain assessment from physiological
 signals. The repository trains Cross Attention Network (CAN) classifiers with
-leave-one-subject-out (LOSO) evaluation on BioVid Part A or PainMonit-style NumPy
-data.
+leave-one-subject-out (LOSO) evaluation on BioVid Part A, SenseEmotion, or
+PainMonit-style NumPy data.
 
 The current implementation supports:
 
@@ -131,6 +131,29 @@ To convert BioVid arrays from `.npy` to compressed `.npz`:
 python scripts/convert_biovid_parta_npy_to_npz.py --help
 ```
 
+### SenseEmotion
+
+Set `--dataset-source senseemotion`. The loader accepts either of these roots
+under `--data-dir`:
+
+```text
+SenseEmotion/
+```
+
+The tree must contain the same predefined split layout as BioVid:
+
+```text
+Train/<MODALITY>/<SUBJECT>_data.npy|npz
+Train/<MODALITY>/<SUBJECT>_label.npy|npz
+Test/<MODALITY>/<SUBJECT>_data.npy|npz
+Test/<MODALITY>/<SUBJECT>_label.npy|npz
+```
+
+SenseEmotion defaults to `GSR` and `ECG`, sequence length `1664`, and four raw
+classes `0,1,2,3`. In Colab, put `sense_emotion.tar.gz` under
+`/content/drive/MyDrive/PainData`; the notebooks stage and extract it with the
+same safe archive helper used for BioVid.
+
 ### PainMonit-Style Arrays
 
 Set `--dataset-source painmonit`. The data directory must contain:
@@ -223,6 +246,25 @@ python tests/full_loso_trial.py \
   --output-json outputs/full_loso/full_loso_results.json
 ```
 
+For SenseEmotion, use:
+
+```bash
+python tests/full_loso_trial.py \
+  --data-dir data \
+  --dataset-source senseemotion \
+  --task-class-ids 0,1,2,3 \
+  --encoder-backend crossmod \
+  --can-support-mode learned_prototype_memory \
+  --k-shot 10 \
+  --q-query 10 \
+  --num-epochs 1 \
+  --tasks-per-epoch 20000 \
+  --task-batch-size 16 \
+  --val-tasks 50 \
+  --heldout-eval-tasks 500 \
+  --output-json outputs/full_loso/senseemotion_results.json
+```
+
 For debugging, add `--max-folds 1`. To run a one-based inclusive fold range:
 
 ```bash
@@ -234,6 +276,37 @@ python tests/full_loso_trial.py \
 
 Use `python tests/full_loso_trial.py --help` for the complete configuration
 surface.
+
+### Primary Matched-Query Personalisation Test
+
+Enable the matched-query experiment on a full BioVid LOSO run with:
+
+```bash
+python tests/full_loso_trial.py \
+  --data-dir data \
+  --dataset-source biovid_part_a \
+  --encoder-backend crossmod \
+  --can-support-mode learned_prototype_memory \
+  --normalize-mode split \
+  --k-shot-adaptation-steps 0 \
+  --k-shot 10 \
+  --q-query 10 \
+  --num-epochs 1 \
+  --tasks-per-epoch 20000 \
+  --task-batch-size 16 \
+  --val-tasks 50 \
+  --heldout-eval-tasks 500 \
+  --matched-query-eval \
+  --matched-query-support-repeats 500 \
+  --matched-query-analysis-output-dir outputs/matched_query_personalization \
+  --output-json outputs/full_loso/full_loso_matched_query_results.json
+```
+
+For each held-out subject, support is sampled from that subject's excluded
+BioVid `Train` partition and all samples in its `Test` partition form one fixed
+query set. Both conditions use normalization statistics fitted only on source
+training subjects. The runner writes repeat-level metrics plus subject-level
+paired statistics and support-sampling uncertainty.
 
 ## Configuration Notes
 
@@ -287,11 +360,7 @@ The full runner writes:
 | `*_can_alignment_summary.csv` | Per-fold CAN true-class, competing-class, and margin summaries |
 | `*_can_sample_statistics.csv` | Per-query predictions and CAN score diagnostics |
 | `*_source_subject_prototype_vote_weights.csv` | Aggregated source-subject vote weights |
-| `*_can_feature_exports.npz` | Compact diagnostic arrays and optional raw feature maps |
 | `outputs/model_architecture/model_summary.txt` | Keras model and encoder summaries |
-
-Feature exports can be disabled with `--disable-can-feature-export`. Raw temporal
-feature maps are included only when `--export-raw-can-feature-maps` is set.
 
 Useful tracked utilities include:
 

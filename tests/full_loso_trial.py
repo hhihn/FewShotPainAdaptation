@@ -16,9 +16,11 @@ from data_loaders.pain_ds_config import (
     PainDatasetConfig,
     SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES,
     SUPPORTED_VALIDATION_CHECKPOINT_METRICS,
+    SUPPORTED_DATASET_SOURCES,
     VALIDATION_CHECKPOINT_MODES,
 )
 from learner.few_shot_pain_learner import FewShotPainLearner
+from scripts.analyze_matched_query_personalization import run_analysis
 from utils.logger import setup_logger
 
 
@@ -27,6 +29,12 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     if not values:
         raise argparse.ArgumentTypeError("Expected at least one integer.")
     return values
+
+
+def _default_task_class_ids(dataset_source: str) -> tuple[int, ...]:
+    if str(dataset_source).strip().lower() == "senseemotion":
+        return (0, 1, 2, 3)
+    return (0, 4)
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -92,13 +100,18 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         logger.setLevel(10)
 
     start_time = time.perf_counter()
-    task_class_ids = _parse_int_tuple(args.task_class_ids)
+    dataset_source = str(getattr(args, "dataset_source", "biovid_part_a"))
+    task_class_ids = (
+        _default_task_class_ids(dataset_source)
+        if args.task_class_ids is None
+        else _parse_int_tuple(args.task_class_ids)
+    )
 
     logger.info("Stage 1/5: Building run configuration")
     config = PainDatasetConfig(
         seed=args.seed,
         deterministic_ops=bool(args.deterministic_ops),
-        dataset_source=args.dataset_source,
+        dataset_source=dataset_source,
         data_variant=args.data_variant,
         task_class_ids=task_class_ids,
         k_shot=args.k_shot,
@@ -158,6 +171,10 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         tasks_per_epoch=max(1, int(args.tasks_per_epoch)),
         val_tasks=max(1, int(args.val_tasks)),
         heldout_eval_tasks=max(1, int(args.heldout_eval_tasks)),
+        matched_query_eval=bool(args.matched_query_eval),
+        matched_query_support_repeats=max(
+            1, int(args.matched_query_support_repeats)
+        ),
         num_epochs=max(1, int(args.num_epochs)),
         k_shot_adaptation_steps=max(0, int(args.k_shot_adaptation_steps)),
         train_log_every=max(1, int(args.train_log_every)),
@@ -177,12 +194,6 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
             1, int(args.train_progress_write_every_n_batches)
         ),
         csv_flush_every_events=max(1, int(args.csv_flush_every_events)),
-        export_can_feature_maps=not bool(
-            getattr(args, "disable_can_feature_export", False)
-        ),
-        export_raw_can_feature_maps=bool(
-            getattr(args, "export_raw_can_feature_maps", False)
-        ),
         single_loso_fold=False,  # Full LOSO over all available subjects.
         loso_start_index=args.loso_start_index,
         loso_stop_index=args.loso_stop_index,
@@ -248,6 +259,16 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
 
     logger.info("Stage 4/5: Aggregating fold metrics")
     summary = _build_summary(cv_results)
+    matched_query_summary = None
+    if config.matched_query_eval:
+        matched_query_summary = run_analysis(
+            cv_results["matched_query_repeat_metric_files"],
+            args.matched_query_analysis_output_dir,
+            bootstrap_trials=20_000,
+            confidence=0.95,
+            seed=int(config.seed),
+        )
+        summary["matched_query_primary"] = matched_query_summary
 
     config_payload = {
         "seed": int(config.seed),
@@ -317,11 +338,16 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "task_chunk_size": int(config.task_chunk_size),
         "val_tasks": int(config.val_tasks),
         "heldout_eval_tasks": int(config.heldout_eval_tasks),
+        "matched_query_eval": bool(config.matched_query_eval),
+        "matched_query_support_repeats": int(
+            config.matched_query_support_repeats
+        ),
+        "matched_query_analysis_output_dir": str(
+            args.matched_query_analysis_output_dir
+        ),
         "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
         "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
         "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
-        "export_can_feature_maps": bool(config.export_can_feature_maps),
-        "export_raw_can_feature_maps": bool(config.export_raw_can_feature_maps),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
         "deterministic_ops": bool(config.deterministic_ops),
@@ -369,7 +395,7 @@ def main() -> None:
         "--dataset-source",
         type=str,
         default="biovid_part_a",
-        choices=("painmonit", "biovid_part_a"),
+        choices=SUPPORTED_DATASET_SOURCES,
     )
     parser.add_argument(
         "--data-variant",
@@ -380,7 +406,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--k-shot", type=int, default=10)
     parser.add_argument("--q-query", type=int, default=10)
-    parser.add_argument("--task-class-ids", type=str, default="0,4")
+    parser.add_argument(
+        "--task-class-ids",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated raw class ids. Defaults to 0,4 for BioVid/PainMonit "
+            "and 0,1,2,3 for SenseEmotion."
+        ),
+    )
     parser.add_argument(
         "--task-construction-mode",
         type=str,
@@ -491,6 +525,26 @@ def main() -> None:
     parser.add_argument("--val-tasks", type=int, default=1)
     parser.add_argument("--heldout-eval-tasks", type=int, default=1)
     parser.add_argument(
+        "--matched-query-eval",
+        action="store_true",
+        help=(
+            "Run the primary matched-query comparison using held-out Train support, "
+            "fixed held-out Test queries, and fold-source normalization. Requires "
+            "--normalize-mode split and zero adaptation steps."
+        ),
+    )
+    parser.add_argument(
+        "--matched-query-support-repeats",
+        type=int,
+        default=500,
+        help="Independent target-support draws per held-out subject.",
+    )
+    parser.add_argument(
+        "--matched-query-analysis-output-dir",
+        type=str,
+        default="outputs/matched_query_personalization",
+    )
+    parser.add_argument(
         "--subject-eval-tasks",
         type=int,
         default=None,
@@ -526,16 +580,6 @@ def main() -> None:
         "--csv-flush-every-events",
         type=int,
         default=100,
-    )
-    parser.add_argument(
-        "--disable-can-feature-export",
-        action="store_true",
-        help="Disable compact CAN feature-map NPZ exports.",
-    )
-    parser.add_argument(
-        "--export-raw-can-feature-maps",
-        action="store_true",
-        help="Include raw temporal CAN feature maps in diagnostic NPZ exports.",
     )
     parser.add_argument("--disable-window-shift", action="store_true")
     parser.add_argument(

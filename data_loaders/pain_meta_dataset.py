@@ -18,7 +18,10 @@ from pathlib import Path
 import warnings
 
 from utils.logger import setup_logger
-from data_loaders.pain_ds_config import PainDatasetConfig
+from data_loaders.pain_ds_config import (
+    PREDEFINED_SPLIT_DATASET_SOURCES,
+    PainDatasetConfig,
+)
 
 
 class PainMetaDataset:
@@ -90,8 +93,8 @@ class PainMetaDataset:
         common dtypes, and creates all/test/train masks used by samplers.
         """
         self.logger.info(f"Loading data from {self.data_dir}...")
-        if self.config.dataset_source == "biovid_part_a":
-            self._load_biovid_part_a_data()
+        if self.config.dataset_source in PREDEFINED_SPLIT_DATASET_SOURCES:
+            self._load_predefined_split_data()
         else:
             self._load_painmonit_data()
 
@@ -148,7 +151,7 @@ class PainMetaDataset:
         """
         if self.has_predefined_split:
             raise ValueError(
-                "split_strategy='predefined' requires dataset_source='biovid_part_a'."
+                "split_strategy='predefined' requires a predefined split dataset source."
             )
 
         self.X = self._load_numpy_array(self.data_dir / self.config.data_path)[
@@ -213,24 +216,54 @@ class PainMetaDataset:
                 )
         return loaded
 
-    def _resolve_biovid_part_dir(self) -> Path:
-        """Resolve the BioVid PartA directory from common repository layouts.
+    def _predefined_dataset_layout(self) -> tuple[str, Tuple[str, ...], str, str, tuple[Path, ...]]:
+        """Return root candidates and split metadata for predefined datasets."""
+        if self.config.dataset_source == "biovid_part_a":
+            dataset_label = "BioVid Part A"
+            candidates = (
+                self.data_dir / "BioVid" / self.config.biovid_part_dir,
+                self.data_dir / self.config.biovid_part_dir,
+                self.data_dir,
+            )
+            return (
+                dataset_label,
+                tuple(self.config.biovid_modalities),
+                self.config.biovid_train_split_dir,
+                self.config.biovid_test_split_dir,
+                candidates,
+            )
+        if self.config.dataset_source == "senseemotion":
+            dataset_label = "SenseEmotion"
+            candidates = (
+                self.data_dir / self.config.senseemotion_dir,
+                self.data_dir / "senseemotion",
+                self.data_dir,
+            )
+            return (
+                dataset_label,
+                tuple(self.config.senseemotion_modalities),
+                self.config.senseemotion_train_split_dir,
+                self.config.senseemotion_test_split_dir,
+                candidates,
+            )
+        raise ValueError(
+            f"Unsupported predefined dataset_source={self.config.dataset_source!r}"
+        )
+
+    def _resolve_predefined_split_dir(self) -> Path:
+        """Resolve a predefined dataset directory from common repository layouts.
 
         Returns:
             Directory containing the configured Train and Test split folders.
         """
-        candidates = (
-            self.data_dir / "BioVid" / self.config.biovid_part_dir,
-            self.data_dir / self.config.biovid_part_dir,
-            self.data_dir,
+        dataset_label, _, train_split_dir, test_split_dir, candidates = (
+            self._predefined_dataset_layout()
         )
         for candidate in candidates:
-            if (candidate / self.config.biovid_train_split_dir).is_dir() and (
-                candidate / self.config.biovid_test_split_dir
-            ).is_dir():
+            if (candidate / train_split_dir).is_dir() and (candidate / test_split_dir).is_dir():
                 return candidate
         raise FileNotFoundError(
-            "Could not resolve BioVid PartA directory with Train/Test subfolders from "
+            f"Could not resolve {dataset_label} directory with Train/Test subfolders from "
             f"data_dir={self.data_dir!s}"
         )
 
@@ -306,25 +339,27 @@ class PainMetaDataset:
             for subject_key, subject_paths in grouped_paths.items()
         }
 
-    def _load_biovid_part_a_data(self) -> None:
-        """Load BioVid Part A pre-segmented train/test files.
+    def _load_predefined_split_data(self) -> None:
+        """Load pre-segmented Train/Test modality files.
 
         Data are assembled across configured modalities while preserving subject
         IDs and predefined split labels.
         """
-        part_dir = self._resolve_biovid_part_dir()
-        self.logger.info(f"Resolved BioVid Part A directory: {part_dir}")
-        modalities = tuple(self.config.biovid_modalities)
+        dataset_label, modalities, train_split_dir, test_split_dir, _ = (
+            self._predefined_dataset_layout()
+        )
+        dataset_dir = self._resolve_predefined_split_dir()
+        self.logger.info(f"Resolved {dataset_label} directory: {dataset_dir}")
         split_dir_names = {
-            "train": self.config.biovid_train_split_dir,
-            "test": self.config.biovid_test_split_dir,
+            "train": train_split_dir,
+            "test": test_split_dir,
         }
 
         split_maps: Dict[str, Dict[str, Dict[str, Path]]] = {}
         all_subject_keys = set()
 
         for split_name, split_dir_name in split_dir_names.items():
-            split_dir = part_dir / split_dir_name
+            split_dir = dataset_dir / split_dir_name
             modality_data_maps: Dict[str, Dict[str, Path]] = {}
             modality_label_maps: Dict[str, Dict[str, Path]] = {}
 
@@ -379,16 +414,18 @@ class PainMetaDataset:
             all_subject_keys.update(common_subjects)
 
         if not all_subject_keys:
-            raise ValueError("BioVid Part A contains no subjects.")
+            raise ValueError(f"{dataset_label} contains no subjects.")
 
         sorted_subject_keys = sorted(all_subject_keys)
-        self.biovid_subject_key_to_int = {
+        self.predefined_subject_key_to_int = {
             subject_key: idx for idx, subject_key in enumerate(sorted_subject_keys)
         }
-        self.biovid_subject_int_to_key = {
+        self.predefined_subject_int_to_key = {
             idx: subject_key
-            for subject_key, idx in self.biovid_subject_key_to_int.items()
+            for subject_key, idx in self.predefined_subject_key_to_int.items()
         }
+        self.biovid_subject_key_to_int = self.predefined_subject_key_to_int
+        self.biovid_subject_int_to_key = self.predefined_subject_int_to_key
 
         X_rows = []
         y_rows = []
@@ -440,7 +477,7 @@ class PainMetaDataset:
                         f"{subject_X.shape[0]} != {subject_y.shape[0]}"
                     )
 
-                subject_id = int(self.biovid_subject_key_to_int[subject_key])
+                subject_id = int(self.predefined_subject_key_to_int[subject_key])
                 X_rows.append(subject_X)
                 y_rows.append(subject_y)
                 subject_rows.append(
@@ -1708,4 +1745,115 @@ class PainMetaDataset:
             "query_X": query_X,
             "query_y": query_y,
             "subject": subject,
+        }
+
+    def build_fixed_normalized_query_task(
+        self,
+        subject: int,
+        *,
+        normalization_stats: Dict[str, np.ndarray],
+        split: str = "test",
+    ) -> Dict[str, np.ndarray]:
+        """Build a deterministic query-only task using externally fitted stats.
+
+        This helper is used by the matched-query personalization experiment.  It
+        deliberately bypasses subject and query-batch normalization so the held-out
+        query set cannot influence preprocessing.
+        """
+        subject = int(subject)
+        split_index = self._get_base_index_for_split(split)
+        query_X, query_y, query_indices = [], [], []
+        for class_id in range(self.config.n_way):
+            indices = np.asarray(split_index[subject][class_id], dtype=np.int64)
+            if indices.size == 0:
+                raise ValueError(
+                    f"No fixed query samples for subject={subject}, class={class_id}, split={split}"
+                )
+            query_X.append(self._gather_samples(indices))
+            query_y.append(np.full(indices.size, class_id, dtype=np.int32))
+            query_indices.append(indices)
+
+        query_X_array = self._apply_stats(
+            np.concatenate(query_X, axis=0), normalization_stats
+        )
+        query_y_array = np.concatenate(query_y, axis=0)
+        query_indices_array = np.concatenate(query_indices, axis=0)
+        support_size = int(self.config.n_way)
+        return {
+            "support_X": np.zeros(
+                (support_size, query_X_array.shape[1], query_X_array.shape[2]),
+                dtype=query_X_array.dtype,
+            ),
+            "support_y": np.arange(self.config.n_way, dtype=np.int32),
+            "support_indices": np.full(support_size, -1, dtype=np.int64),
+            "query_X": query_X_array,
+            "query_y": query_y_array,
+            "query_indices": query_indices_array,
+            "subject": subject,
+            "query_split": split,
+        }
+
+    def sample_support_for_fixed_query(
+        self,
+        subject: int,
+        *,
+        k_shot: int,
+        fixed_query_task: Dict[str, np.ndarray],
+        normalization_stats: Dict[str, np.ndarray],
+        rng: np.random.Generator,
+        support_split: str = "train",
+        repeat_index: int = 0,
+        repeat_seed: int | None = None,
+    ) -> Dict[str, np.ndarray]:
+        """Draw target support while preserving one immutable query set."""
+        subject = int(subject)
+        k_shot = int(k_shot)
+        if k_shot < 1:
+            raise ValueError("k_shot must be >= 1")
+        query_split = str(fixed_query_task.get("query_split", "test"))
+        if support_split == query_split:
+            raise ValueError("Matched support and query must use distinct dataset splits")
+
+        split_index = self._get_base_index_for_split(support_split)
+        support_X, support_y, support_indices = [], [], []
+        for class_id in range(self.config.n_way):
+            candidates = np.asarray(split_index[subject][class_id], dtype=np.int64)
+            if candidates.size < k_shot:
+                raise ValueError(
+                    f"Only {candidates.size} support samples for subject={subject}, "
+                    f"class={class_id}, split={support_split}; requested k={k_shot}"
+                )
+            selected = candidates[
+                rng.choice(candidates.size, size=k_shot, replace=False)
+            ]
+            support_X.append(self._gather_samples(selected))
+            support_y.append(np.full(k_shot, class_id, dtype=np.int32))
+            support_indices.append(selected)
+
+        support_X_array = self._apply_stats(
+            np.concatenate(support_X, axis=0), normalization_stats
+        )
+        support_y_array = np.concatenate(support_y, axis=0)
+        support_indices_array = np.concatenate(support_indices, axis=0)
+        query_indices = np.asarray(fixed_query_task["query_indices"], dtype=np.int64)
+        overlap = np.intersect1d(support_indices_array, query_indices)
+        if overlap.size:
+            raise RuntimeError(
+                f"Matched support/query index overlap detected: {overlap.tolist()}"
+            )
+
+        permutation = rng.permutation(support_y_array.size)
+        return {
+            "support_X": support_X_array[permutation],
+            "support_y": support_y_array[permutation],
+            "support_indices": support_indices_array[permutation],
+            # Reuse the exact arrays so every condition receives identical queries.
+            "query_X": fixed_query_task["query_X"],
+            "query_y": fixed_query_task["query_y"],
+            "query_indices": fixed_query_task["query_indices"],
+            "subject": subject,
+            "support_split": support_split,
+            "query_split": query_split,
+            "repeat_index": int(repeat_index),
+            "repeat_seed": repeat_seed,
         }

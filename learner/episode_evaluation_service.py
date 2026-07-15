@@ -96,6 +96,93 @@ class EpisodeEvaluationService:
             "f1": float(np.mean(f1_per_class)),
         }
 
+    def compute_detailed_classification_metrics(
+        self, y_true: np.ndarray, y_pred: np.ndarray
+    ) -> dict:
+        """Compute aggregate metrics plus per-class F1 for one fixed query set."""
+        num_classes = int(self.config.n_way)
+        conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
+        for truth, pred in zip(y_true, y_pred):
+            conf_mat[int(truth), int(pred)] += 1
+        tp = np.diag(conf_mat).astype(np.float64)
+        fp = np.sum(conf_mat, axis=0) - tp
+        fn = np.sum(conf_mat, axis=1) - tp
+        precision = np.divide(
+            tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0
+        )
+        recall = np.divide(
+            tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0
+        )
+        f1 = np.divide(
+            2.0 * precision * recall,
+            precision + recall,
+            out=np.zeros_like(tp),
+            where=(precision + recall) > 0,
+        )
+        total = int(np.sum(conf_mat))
+        return {
+            "accuracy": float(np.sum(tp) / total) if total else 0.0,
+            "precision": float(np.mean(precision)),
+            "recall": float(np.mean(recall)),
+            "f1": float(np.mean(f1)),
+            "f1_per_class": f1.tolist(),
+            "confusion_matrix": conf_mat.tolist(),
+            "query_count": total,
+        }
+
+    def evaluate_task_batch_detailed(
+        self,
+        task_batch: list[dict],
+        *,
+        forward_batch_size: int = 1,
+        can_support_mode: str,
+    ) -> list[dict]:
+        """Return one classification result per task without pooling repeats."""
+        if not task_batch:
+            raise ValueError("task_batch must contain at least one task")
+        batch_size = max(1, int(forward_batch_size))
+        original_support_mode = self.engine.model.can_support_mode
+        self.engine.model.can_support_mode = can_support_mode
+        results: list[dict] = []
+        try:
+            for start in range(0, len(task_batch), batch_size):
+                chunk = task_batch[start : start + batch_size]
+                if not self.task_pipeline.task_batch_has_uniform_shapes(chunk):
+                    raise ValueError("Detailed matched-query tasks must have uniform shapes")
+                support_x, support_y, query_x, query_y = (
+                    self.task_pipeline.stack_task_batch(chunk)
+                )
+                outputs = self.engine.forward_task_batch(
+                    support_x_batch=tf.convert_to_tensor(support_x, dtype=tf.float32),
+                    support_y_batch=tf.convert_to_tensor(support_y, dtype=tf.int32),
+                    query_x_batch=tf.convert_to_tensor(query_x, dtype=tf.float32),
+                    query_y_batch=tf.convert_to_tensor(query_y, dtype=tf.int32),
+                    training=False,
+                    return_similarity_scores=False,
+                )
+                predictions = tf.argmax(
+                    outputs["logits"], axis=2, output_type=tf.int32
+                ).numpy()
+                labels = np.asarray(query_y, dtype=np.int32)
+                task_losses = np.asarray(outputs["task_losses"].numpy()).reshape(-1)
+                for offset, task in enumerate(chunk):
+                    metrics = self.compute_detailed_classification_metrics(
+                        labels[offset], predictions[offset]
+                    )
+                    results.append(
+                        {
+                            "loss": float(task_losses[offset]),
+                            "metrics": metrics,
+                            "y_true": labels[offset].copy(),
+                            "y_pred": predictions[offset].copy(),
+                            "repeat_index": task.get("repeat_index"),
+                            "repeat_seed": task.get("repeat_seed"),
+                        }
+                    )
+        finally:
+            self.engine.model.can_support_mode = original_support_mode
+        return results
+
     @staticmethod
     def set_sampler_task_size(sampler, k_shot: int, q_query: int) -> None:
         """Update sampler task size in-place for temporary sweeps.
@@ -702,145 +789,5 @@ class EpisodeEvaluationService:
                         )
                     rows.append(row)
             return rows
-        finally:
-            self.engine.model.can_support_mode = original_support_mode
-
-    @staticmethod
-    def _time_pool_feature_maps(feature_maps: np.ndarray) -> np.ndarray:
-        """Pool temporal feature maps to compact per-example vectors."""
-        feature_maps = np.asarray(feature_maps)
-        if feature_maps.ndim < 2:
-            return feature_maps
-        return np.mean(feature_maps, axis=-2)
-
-    def collect_can_feature_export(
-        self,
-        task_batch: list[dict],
-        *,
-        phase: str,
-        can_support_mode: str | None = None,
-        include_raw_feature_maps: bool = False,
-    ) -> dict[str, np.ndarray]:
-        """Collect compact CAN feature-map exports for downstream analysis."""
-        if getattr(self.config, "attention_mode", "none") != "can":
-            return {}
-
-        original_support_mode = self.engine.model.can_support_mode
-        if can_support_mode is not None:
-            self.engine.model.can_support_mode = can_support_mode
-        try:
-            rows: dict[str, list[np.ndarray]] = {
-                "support_features": [],
-                "support_y": [],
-                "support_task_index": [],
-                "query_features": [],
-                "query_y": [],
-                "query_pred": [],
-                "query_correct": [],
-                "query_task_index": [],
-                "query_similarity_scores": [],
-                "prototype_features": [],
-                "prototype_y": [],
-                "prototype_task_index": [],
-            }
-            raw_rows: dict[str, list[np.ndarray]] = {
-                "support_feature_maps": [],
-                "query_feature_maps": [],
-                "prototype_feature_maps": [],
-            }
-            for task_index, task_dict in enumerate(task_batch):
-                support_x = tf.convert_to_tensor(
-                    task_dict["support_X"],
-                    dtype=tf.float32,
-                )
-                support_y = tf.convert_to_tensor(
-                    task_dict["support_y"],
-                    dtype=tf.int32,
-                )
-                query_x = tf.convert_to_tensor(
-                    task_dict["query_X"],
-                    dtype=tf.float32,
-                )
-                query_y = tf.convert_to_tensor(
-                    task_dict["query_y"],
-                    dtype=tf.int32,
-                )
-                outputs = self.engine.forward_task(
-                    support_x=support_x,
-                    support_y=support_y,
-                    query_x=query_x,
-                    query_y=query_y,
-                    training=False,
-                    return_similarity_scores=True,
-                )
-                logits = outputs["logits"].numpy()
-                pred = np.argmax(logits, axis=1).astype(np.int32, copy=False)
-                query_y_np = query_y.numpy().astype(np.int32, copy=False)
-                query_features = self._time_pool_feature_maps(
-                    outputs["query_feature_maps"].numpy()
-                )
-                rows["query_features"].append(query_features)
-                rows["query_y"].append(query_y_np)
-                rows["query_pred"].append(pred)
-                rows["query_correct"].append((pred == query_y_np).astype(np.int32))
-                rows["query_task_index"].append(
-                    np.full(len(query_y_np), task_index, dtype=np.int32)
-                )
-                rows["query_similarity_scores"].append(
-                    outputs["similarity_scores"].numpy()
-                )
-
-                if "support_feature_maps" in outputs:
-                    support_maps = outputs["support_feature_maps"].numpy()
-                    rows["support_features"].append(
-                        self._time_pool_feature_maps(support_maps)
-                    )
-                    support_labels = (
-                        outputs["prototype_support_y"].numpy().astype(np.int32)
-                        if "prototype_support_y" in outputs
-                        else support_y.numpy().astype(np.int32, copy=False)
-                    )
-                    rows["support_y"].append(support_labels)
-                    rows["support_task_index"].append(
-                        np.full(len(support_labels), task_index, dtype=np.int32)
-                    )
-                    if include_raw_feature_maps:
-                        raw_rows["support_feature_maps"].append(support_maps)
-
-                if "prototype_feature_maps" in outputs:
-                    prototype_maps = outputs["prototype_feature_maps"].numpy()
-                    rows["prototype_features"].append(
-                        self._time_pool_feature_maps(prototype_maps)
-                    )
-                    prototype_y = (
-                        outputs["prototype_support_y"].numpy().astype(np.int32)
-                        if "prototype_support_y" in outputs
-                        else np.arange(int(self.config.n_way), dtype=np.int32)
-                    )
-                    rows["prototype_y"].append(prototype_y)
-                    rows["prototype_task_index"].append(
-                        np.full(len(prototype_y), task_index, dtype=np.int32)
-                    )
-                    if include_raw_feature_maps:
-                        raw_rows["prototype_feature_maps"].append(prototype_maps)
-                if include_raw_feature_maps:
-                    raw_rows["query_feature_maps"].append(
-                        outputs["query_feature_maps"].numpy()
-                    )
-
-            export: dict[str, np.ndarray] = {
-                "phase": np.array(phase),
-                "can_support_mode": np.array(
-                    self.engine.model.can_support_mode,
-                ),
-            }
-            for key, pieces in rows.items():
-                if pieces:
-                    export[key] = np.concatenate(pieces, axis=0)
-            if include_raw_feature_maps:
-                for key, pieces in raw_rows.items():
-                    if pieces:
-                        export[key] = np.concatenate(pieces, axis=0)
-            return export
         finally:
             self.engine.model.can_support_mode = original_support_mode
