@@ -44,6 +44,8 @@ class PainDatasetConfig:
     eegnet_pool_size_2: int = 8
     eegnet_dropout_rate: float = 0.25
     eegnet_l2_weight: float = 1e-4
+    eegnet_normalization: str = "group"
+    eegnet_group_norm_groups: int = 4
     encoder_backend: str = "eegnet"
     crossmod_num_heads: int = 8
     crossmod_hidden_dim: int = 128
@@ -84,6 +86,7 @@ class PainDatasetConfig:
     attention_mode: str = "can"  # CAN over temporal feature maps
     can_attention_temperature: float = 1.0
     can_meta_hidden_dim: int = 32
+    can_local_pool_temperature: float = 0.1
     can_local_loss_weight: float = 1.0
     can_margin_loss_weight: float = 0.2
     can_margin_target: float = 0.3
@@ -119,7 +122,9 @@ class PainDatasetConfig:
     eval_log_every: int = 5  # Log validation metrics every N sampled train tasks
     val_batch_size: int = 32  # Validation task batch size
     val_every_n_train_steps: int = 20  # Run validation every N processed train batches
+    disable_validation: bool = False  # Skip validation/checkpoint evaluation entirely
     logging_verbosity: int = 1  # 0=minimal, 1=standard, 2=detailed training logs
+    disable_training_logging: bool = False  # Skip train progress logs and CSV updates
     train_prefetch_batches: int = 256  # Number of asynchronously prepared train batches
     gradient_clip_norm: Optional[float] = (
         1.0  # Per-gradient norm clip for optimizer updates
@@ -273,6 +278,9 @@ class PainDatasetConfig:
         self.can_meta_hidden_dim = int(self.can_meta_hidden_dim)
         if self.can_meta_hidden_dim <= 0:
             raise ValueError("can_meta_hidden_dim must be > 0")
+        self.can_local_pool_temperature = float(self.can_local_pool_temperature)
+        if self.can_local_pool_temperature <= 0:
+            raise ValueError("can_local_pool_temperature must be > 0")
         self.can_local_loss_weight = float(self.can_local_loss_weight)
         if self.can_local_loss_weight < 0:
             raise ValueError("can_local_loss_weight must be non-negative")
@@ -367,6 +375,12 @@ class PainDatasetConfig:
             raise ValueError("eegnet_dropout_rate must be in [0, 1)")
         if self.eegnet_l2_weight < 0:
             raise ValueError("eegnet_l2_weight must be non-negative")
+        self.eegnet_normalization = str(self.eegnet_normalization).strip().lower()
+        if self.eegnet_normalization not in {"group", "layer"}:
+            raise ValueError("eegnet_normalization must be one of: group, layer")
+        self.eegnet_group_norm_groups = int(self.eegnet_group_norm_groups)
+        if self.eegnet_group_norm_groups <= 0:
+            raise ValueError("eegnet_group_norm_groups must be > 0")
         crossmod_positive_ints = {
             "crossmod_num_heads": self.crossmod_num_heads,
             "crossmod_hidden_dim": self.crossmod_hidden_dim,

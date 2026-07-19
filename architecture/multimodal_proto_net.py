@@ -25,6 +25,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         eegnet_pool_size_2: int = 8,
         eegnet_dropout_rate: float = 0.25,
         eegnet_l2_weight: float = 1e-4,
+        eegnet_normalization: str = "group",
+        eegnet_group_norm_groups: int = 4,
         encoder_backend: str = "eegnet",
         crossmod_num_heads: int = 8,
         crossmod_hidden_dim: int = 128,
@@ -35,6 +37,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         attention_mode: str = "can",
         can_attention_temperature: float = 1.0,
         can_meta_hidden_dim: int = 32,
+        can_local_pool_temperature: float = 0.1,
         can_support_mode: str = "sampled",
         learned_prototype_slots_per_class: int = 1,
         seed: int = 0,
@@ -78,6 +81,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.eegnet_pool_size_2 = int(eegnet_pool_size_2)
         self.eegnet_dropout_rate = float(eegnet_dropout_rate)
         self.eegnet_l2_weight = float(eegnet_l2_weight)
+        self.eegnet_normalization = str(eegnet_normalization)
+        self.eegnet_group_norm_groups = int(eegnet_group_norm_groups)
         self.encoder_backend = str(encoder_backend).strip().lower()
         if self.encoder_backend not in {"eegnet", "crossmod"}:
             raise ValueError("encoder_backend must be one of: eegnet, crossmod")
@@ -115,6 +120,8 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 pool_size_2=self.eegnet_pool_size_2,
                 dropout_rate=self.eegnet_dropout_rate,
                 l2_weight=self.eegnet_l2_weight,
+                normalization=self.eegnet_normalization,
+                group_norm_groups=self.eegnet_group_norm_groups,
                 num_heads=self.crossmod_num_heads,
                 hidden_dim=self.crossmod_hidden_dim,
                 num_layers=self.crossmod_num_layers,
@@ -136,10 +143,13 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 pool_size_2=self.eegnet_pool_size_2,
                 dropout_rate=self.eegnet_dropout_rate,
                 l2_weight=self.eegnet_l2_weight,
+                normalization=self.eegnet_normalization,
+                group_norm_groups=self.eegnet_group_norm_groups,
             )
         self.cross_attention = CrossAttentionModule(
             temperature=self.can_attention_temperature,
             meta_hidden_dim=self.can_meta_hidden_dim,
+            local_pool_temperature=can_local_pool_temperature,
         )
         self.prototype_memory = LearnedPrototypeMemory(
             num_classes=self.num_classes,

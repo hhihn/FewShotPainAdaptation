@@ -69,6 +69,9 @@ class CrossValidationResultRecorder:
             "zero_shot_precisions": [],
             "zero_shot_recalls": [],
             "zero_shot_f1s": [],
+            "zero_shot_intra_class_similarities": [],
+            "zero_shot_inter_class_similarities": [],
+            "zero_shot_similarity_margins": [],
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
@@ -85,6 +88,9 @@ class CrossValidationResultRecorder:
             "k_shot_precisions": [],
             "k_shot_recalls": [],
             "k_shot_f1s": [],
+            "k_shot_intra_class_similarities": [],
+            "k_shot_inter_class_similarities": [],
+            "k_shot_similarity_margins": [],
             "k_shot_can_true_class_scores": [],
             "k_shot_can_best_other_scores": [],
             "k_shot_can_score_margins": [],
@@ -139,6 +145,9 @@ class CrossValidationResultRecorder:
             "zero_shot_precisions": [],
             "zero_shot_recalls": [],
             "zero_shot_f1s": [],
+            "zero_shot_intra_class_similarities": [],
+            "zero_shot_inter_class_similarities": [],
+            "zero_shot_similarity_margins": [],
             "zero_shot_can_true_class_scores": [],
             "zero_shot_can_best_other_scores": [],
             "zero_shot_can_score_margins": [],
@@ -147,6 +156,9 @@ class CrossValidationResultRecorder:
             "k_shot_precisions": [],
             "k_shot_recalls": [],
             "k_shot_f1s": [],
+            "k_shot_intra_class_similarities": [],
+            "k_shot_inter_class_similarities": [],
+            "k_shot_similarity_margins": [],
             "k_shot_can_true_class_scores": [],
             "k_shot_can_best_other_scores": [],
             "k_shot_can_score_margins": [],
@@ -218,6 +230,15 @@ class CrossValidationResultRecorder:
         bucket[f"{prefix}_precisions"].append(metrics["precision"])
         bucket[f"{prefix}_recalls"].append(metrics["recall"])
         bucket[f"{prefix}_f1s"].append(metrics["f1"])
+        similarity_fields = {
+            "intra_class_similarities": "intra_class_similarity",
+            "inter_class_similarities": "inter_class_similarity",
+            "similarity_margins": "similarity_margin",
+        }
+        for result_suffix, metric_name in similarity_fields.items():
+            result_key = f"{prefix}_{result_suffix}"
+            if result_key in bucket:
+                bucket[result_key].append(float(metrics.get(metric_name, np.nan)))
         CrossValidationResultRecorder._append_eval_diagnostics(
             bucket,
             prefix,

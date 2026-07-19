@@ -181,6 +181,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         eval_log_every=max(1, int(args.eval_log_every)),
         val_batch_size=max(1, int(args.val_batch_size)),
         val_every_n_train_steps=max(1, int(args.val_every_n_train_steps)),
+        disable_validation=bool(getattr(args, "disable_validation", False)),
         validation_checkpoint_metric=str(
             getattr(args, "validation_checkpoint_metric", "accuracy")
         ),
@@ -220,6 +221,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         enable_window_shift_augmentation=not args.disable_window_shift,
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
+        disable_training_logging=bool(
+            getattr(args, "disable_training_logging", False)
+        ),
     )
 
     logger.info("Stage 2/5: Initializing learner, dataset, and cross-validator")
@@ -347,6 +351,8 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "validation_checkpoint_metric": str(config.validation_checkpoint_metric),
         "validation_checkpoint_mode": str(config.validation_checkpoint_mode),
+        "disable_validation": bool(config.disable_validation),
+        "disable_training_logging": bool(config.disable_training_logging),
         "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
         "gaussian_noise_std": float(config.gaussian_noise_std),
@@ -556,6 +562,11 @@ def main() -> None:
     parser.add_argument("--val-batch-size", type=int, default=32)
     parser.add_argument("--val-every-n-train-steps", type=int, default=20)
     parser.add_argument(
+        "--disable-validation",
+        action="store_true",
+        help="Skip validation evaluation and use the final training state.",
+    )
+    parser.add_argument(
         "--validation-checkpoint-metric",
         type=str,
         default="accuracy",
@@ -588,6 +599,11 @@ def main() -> None:
         default=1,
         choices=(0, 1, 2),
         help="0=minimal, 1=standard, 2=detailed logging",
+    )
+    parser.add_argument(
+        "--disable-training-logging",
+        action="store_true",
+        help="Skip training progress log messages and train-update CSV rows.",
     )
     parser.add_argument(
         "--training-progress-output-dir",

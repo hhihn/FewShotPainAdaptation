@@ -169,14 +169,24 @@ class _FakeDatasetForSampler:
 
 
 class _FakePrototypeDataset:
+    def __init__(self):
+        self.last_query_task_kwargs = None
+
     def build_all_query_task(
         self,
         subject,
         split,
         use_base_index,
         normalize_with_query_subject_stats,
+        split_normalization_stats=None,
     ):
-        del subject, split, use_base_index, normalize_with_query_subject_stats
+        self.last_query_task_kwargs = {
+            "subject": subject,
+            "split": split,
+            "use_base_index": use_base_index,
+            "normalize_with_query_subject_stats": normalize_with_query_subject_stats,
+            "split_normalization_stats": split_normalization_stats,
+        }
         return {
             "support_X": np.zeros((0, 3, 1), dtype=np.float32),
             "support_y": np.zeros((0,), dtype=np.int32),
@@ -359,10 +369,16 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "validation_checkpoint_metrics",
             "source_subject_prototype_vote_accuracies",
             "source_subject_prototype_vote_weight_files",
+            "zero_shot_intra_class_similarities",
+            "zero_shot_inter_class_similarities",
+            "k_shot_intra_class_similarities",
+            "k_shot_inter_class_similarities",
         ):
             self.assertIn(key, results)
         self.assertIn("zero_shot_accuracies", size_bucket)
         self.assertIn("k_shot_accuracies", size_bucket)
+        self.assertIn("zero_shot_intra_class_similarities", size_bucket)
+        self.assertIn("k_shot_inter_class_similarities", size_bucket)
         self.assertEqual(results["validation_checkpoint_metric"], "f1")
         self.assertEqual(results["validation_checkpoint_mode"], "max")
 
@@ -377,6 +393,9 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         )
 
         self.assertTrue(metadata["enabled"])
+        self.assertEqual(
+            metadata["initialization"], "class_conditional_subject_kmeans"
+        )
         self.assertEqual(train_sampler.rng.bit_generator.state, rng_state_before)
         self.assertEqual(metadata["train_subjects"], [0, 1, 2])
         assigned = learner.model.prototype_memory.assigned
@@ -393,13 +412,94 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             self.assertNotIn(3, subjects.tolist())
             counts = [int(np.sum(subjects == subject)) for subject in (0, 1, 2)]
             self.assertLessEqual(max(counts) - min(counts), 1)
-            for slot_id, refs in enumerate(refs_by_slot):
-                expected = np.mean(learner.dataset.X[np.asarray(refs)], axis=0)
+            for slot_id, slot_metadata in enumerate(class_metadata["slots"]):
+                subject_maps = []
+                for subject in slot_metadata["cluster_subjects"]:
+                    subject_refs = slot_metadata["refs"][
+                        slot_metadata["subjects"] == int(subject)
+                    ]
+                    subject_maps.append(
+                        np.mean(learner.dataset.X[np.asarray(subject_refs)], axis=0)
+                    )
+                expected = np.mean(subject_maps, axis=0)
                 np.testing.assert_allclose(
                     assigned[int(class_id), slot_id],
                     expected,
                     atol=1e-6,
                 )
+
+    def test_prototype_bank_subject_clustering_is_deterministic_and_class_conditional(self):
+        learner_a, train_sampler_a = _make_initializer_learner(
+            samples_per_slot=3,
+            slots_per_class=2,
+        )
+        learner_b, train_sampler_b = _make_initializer_learner(
+            samples_per_slot=3,
+            slots_per_class=2,
+        )
+
+        metadata_a = learner_a._initialize_prototype_bank_from_training_samples(
+            fold=2,
+            test_subject=3,
+            train_sampler=train_sampler_a,
+        )
+        metadata_b = learner_b._initialize_prototype_bank_from_training_samples(
+            fold=2,
+            test_subject=3,
+            train_sampler=train_sampler_b,
+        )
+
+        np.testing.assert_allclose(
+            learner_a.model.prototype_memory.assigned,
+            learner_b.model.prototype_memory.assigned,
+            atol=1e-7,
+        )
+        for class_id in range(2):
+            clustered_subjects = np.concatenate(
+                [
+                    slot["cluster_subjects"]
+                    for slot in metadata_a["classes"][class_id]["slots"]
+                ]
+            )
+            self.assertEqual(sorted(clustered_subjects.tolist()), [0, 1, 2])
+            refs = np.concatenate(
+                [slot["refs"] for slot in metadata_a["classes"][class_id]["slots"]]
+            )
+            class_refs = set(
+                np.concatenate(
+                    [
+                        learner_a.dataset.index_by_split["train"][subject][class_id]
+                        for subject in (0, 1, 2)
+                    ]
+                ).tolist()
+            )
+            self.assertTrue(set(refs.tolist()).issubset(class_refs))
+
+    def test_subject_feature_map_clustering_separates_descriptor_directions(self):
+        subject_maps = np.asarray(
+            [
+                [[1.0, 0.0], [1.0, 0.0]],
+                [[1.0, 0.1], [1.0, 0.1]],
+                [[0.9, 0.0], [0.9, 0.0]],
+                [[0.0, 1.0], [0.0, 1.0]],
+                [[0.1, 1.0], [0.1, 1.0]],
+                [[0.0, 0.9], [0.0, 0.9]],
+            ],
+            dtype=np.float32,
+        )
+
+        memberships, inertia = FewShotPainLearner._cluster_subject_feature_maps(
+            subject_maps,
+            slots_per_class=2,
+            random_state=123,
+        )
+
+        clusters = {frozenset(members.tolist()) for members in memberships}
+        self.assertEqual(
+            clusters,
+            {frozenset({0, 1, 2}), frozenset({3, 4, 5})},
+        )
+        self.assertGreaterEqual(inertia, 0.0)
 
     def test_source_subject_prototype_builder_uses_all_base_train_samples(self):
         learner, train_sampler = _make_initializer_learner(
@@ -575,6 +675,9 @@ class LearnerRefactorServiceTests(unittest.TestCase):
             "precision": 0.7,
             "recall": 0.8,
             "f1": 0.74,
+            "intra_class_similarity": 0.85,
+            "inter_class_similarity": 0.25,
+            "similarity_margin": 0.6,
             "can_true_class_score": 0.9,
             "can_best_other_score": 0.2,
             "can_score_margin": 0.7,
@@ -594,6 +697,9 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         bucket = recorder.results["heldout_eval_by_task_size"]["k2_q3"]
         self.assertEqual(bucket["zero_shot_accuracies"], [0.75])
         self.assertEqual(bucket["zero_shot_can_true_class_scores"], [0.9])
+        self.assertEqual(bucket["zero_shot_intra_class_similarities"], [0.85])
+        self.assertEqual(bucket["zero_shot_inter_class_similarities"], [0.25])
+        self.assertEqual(bucket["zero_shot_similarity_margins"], [0.6])
         self.assertEqual(bucket["k_shot_f1s"], [0.74])
 
     def test_cv_result_recorder_metric_kwargs_include_can_scores(self):
@@ -929,6 +1035,72 @@ class LearnerRefactorServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["loss"], "0.7")
         self.assertEqual(rows[0]["accuracy"], "0.45")
         self.assertEqual(rows[0]["f1"], "0.45")
+
+    def test_learned_prototype_holdout_uses_source_split_statistics(self):
+        dataset = _FakePrototypeDataset()
+        split_stats = {"mean": np.array([[[2.0]]]), "std": np.array([[[3.0]]])}
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.config = SimpleNamespace(task_normalize_mode="split")
+        learner.dataset = dataset
+        learner.logger = logging.getLogger("test_learned_prototype_split_stats")
+        learner.evaluator = SimpleNamespace(
+            evaluate_prototype_memory_task_metrics=lambda task: (0.2, {"accuracy": 1.0})
+        )
+        test_sampler = SimpleNamespace(
+            data_split="test", split_normalization_stats=split_stats
+        )
+
+        learner._evaluate_learned_prototype_bank_reference(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            test_sampler=test_sampler,
+            label="test",
+        )
+
+        self.assertIs(
+            dataset.last_query_task_kwargs["split_normalization_stats"], split_stats
+        )
+        self.assertFalse(
+            dataset.last_query_task_kwargs["normalize_with_query_subject_stats"]
+        )
+
+    def test_source_subject_vote_holdout_uses_source_split_statistics(self):
+        dataset = _FakePrototypeDataset()
+        split_stats = {"mean": np.array([[[2.0]]]), "std": np.array([[[3.0]]])}
+        learner = FewShotPainLearner.__new__(FewShotPainLearner)
+        learner.config = SimpleNamespace(task_normalize_mode="split")
+        learner.dataset = dataset
+        learner.logger = logging.getLogger("test_source_vote_split_stats")
+        learner._build_source_subject_class_prototypes = lambda **kwargs: {
+            "prototype_maps": np.zeros((2, 1, 1), dtype=np.float32),
+            "prototype_y": np.array([0, 1], dtype=np.int32),
+        }
+        learner.evaluator = SimpleNamespace(
+            evaluate_source_subject_prototype_vote_task_metrics=lambda **kwargs: (
+                0.2,
+                {"accuracy": 1.0},
+                {},
+            )
+        )
+        test_sampler = SimpleNamespace(
+            data_split="test", split_normalization_stats=split_stats
+        )
+
+        learner._evaluate_source_subject_prototype_vote_reference(
+            fold=0,
+            num_subjects=1,
+            test_subject=7,
+            train_sampler=SimpleNamespace(),
+            test_sampler=test_sampler,
+        )
+
+        self.assertIs(
+            dataset.last_query_task_kwargs["split_normalization_stats"], split_stats
+        )
+        self.assertFalse(
+            dataset.last_query_task_kwargs["normalize_with_query_subject_stats"]
+        )
 
     def test_phase2_initial_sampled_support_evaluation_writes_progress_row_and_restores_rng(self):
         tmp = tempfile.TemporaryDirectory()

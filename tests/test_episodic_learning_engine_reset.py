@@ -37,6 +37,7 @@ def _make_tiny_learner(
     task_chunk_size: int = 1,
     can_support_mode: str = "sampled",
     learned_prototype_slots_per_class: int = 1,
+    lr_schedule: str = "constant",
 ) -> FewShotPainLearner:
     config = PainDatasetConfig(
         dataset_source="painmonit",
@@ -48,6 +49,7 @@ def _make_tiny_learner(
         task_chunk_size=task_chunk_size,
         num_epochs=1,
         tasks_per_epoch=1,
+        lr_schedule=lr_schedule,
         val_tasks=1,
         heldout_eval_tasks=1,
         k_shot_adaptation_steps=0,
@@ -164,6 +166,47 @@ class EpisodicLearningEngineResetTests(unittest.TestCase):
             engine._compiled_train_batch_step.experimental_get_tracing_count(),
             tracing_count,
         )
+
+    def test_prototype_phase_restarts_optimizer_and_cosine_schedule(self):
+        learner = _make_tiny_learner(
+            self.data_dir,
+            train_batch_size=2,
+            can_support_mode="learned_prototype_memory",
+            learned_prototype_slots_per_class=2,
+            lr_schedule="cosine",
+        )
+        engine = learner.engine
+        phase1_optimizer = engine.optimizer
+        engine.train_batch_step_tensors(*_episode_batch(learner, task_count=2))
+        self.assertEqual(int(phase1_optimizer.iterations.numpy()), 1)
+
+        engine.restart_optimizer_for_prototype_phase(
+            updates_per_epoch=3,
+            num_epochs=2,
+        )
+
+        phase2_optimizer = engine.optimizer
+        self.assertIsNot(phase2_optimizer, phase1_optimizer)
+        self.assertEqual(int(phase2_optimizer.iterations.numpy()), 0)
+        self.assertIsInstance(
+            phase2_optimizer._learning_rate,
+            tf.keras.optimizers.schedules.CosineDecay,
+        )
+        self.assertEqual(int(phase2_optimizer._learning_rate.decay_steps), 6)
+        self.assertAlmostEqual(
+            float(phase2_optimizer.learning_rate.numpy()),
+            learner.learning_rate,
+            places=8,
+        )
+
+        engine.train_prototype_memory_batch_step_tensors(
+            *_episode_batch(learner, task_count=2)
+        )
+        self.assertEqual(int(phase2_optimizer.iterations.numpy()), 1)
+
+        engine.reset_model_state_for_new_fold()
+        self.assertIs(engine.optimizer, phase1_optimizer)
+        self.assertEqual(int(engine.optimizer.iterations.numpy()), 0)
 
     def test_compiled_steps_support_multi_task_chunks(self):
         learner = _make_tiny_learner(

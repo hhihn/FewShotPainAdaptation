@@ -13,6 +13,7 @@ class CrossAttentionModule(keras.layers.Layer):
         self,
         temperature: float = 1.0,
         meta_hidden_dim: int = 32,
+        local_pool_temperature: float = 0.1,
         name: str = "cross_attention_module",
     ):
         """Initialize the cross-attention module.
@@ -20,11 +21,15 @@ class CrossAttentionModule(keras.layers.Layer):
         Args:
             temperature: Softmax temperature for temporal attention weights.
             meta_hidden_dim: Hidden width of the meta-kernel generator.
+            local_pool_temperature: Temperature of smooth local temporal matching.
             name: Keras layer name.
         """
         super().__init__(name=name)
         self.temperature = float(temperature)
         self.meta_hidden_dim = int(meta_hidden_dim)
+        self.local_pool_temperature = float(local_pool_temperature)
+        if self.local_pool_temperature <= 0:
+            raise ValueError("local_pool_temperature must be > 0")
         self._built_temporal_shapes = None
 
     def build(self, input_shape):
@@ -77,6 +82,12 @@ class CrossAttentionModule(keras.layers.Layer):
         self.meta_bq = self.add_weight(
             name="meta_bq",
             shape=(proto_time,),
+            initializer="zeros",
+            trainable=True,
+        )
+        self.pool_gate_logit = self.add_weight(
+            name="pool_gate_logit",
+            shape=(),
             initializer="zeros",
             trainable=True,
         )
@@ -144,6 +155,29 @@ class CrossAttentionModule(keras.layers.Layer):
         )
         return kernel_p, kernel_q
 
+    def _pool_temporal_features(
+        self,
+        feature_maps: tf.Tensor,
+        attention: tf.Tensor,
+        temporal_axis: int,
+    ) -> tf.Tensor:
+        """Mix true attention pooling with a stable global-mean fallback."""
+        mean_descriptor = tf.reduce_mean(feature_maps, axis=temporal_axis)
+        attention_descriptor = tf.reduce_sum(
+            feature_maps * attention[..., tf.newaxis], axis=temporal_axis
+        )
+        gate = tf.sigmoid(tf.cast(self.pool_gate_logit, feature_maps.dtype))
+        return (1.0 - gate) * mean_descriptor + gate * attention_descriptor
+
+    def _smooth_local_pool(self, correlation: tf.Tensor) -> tf.Tensor:
+        """Pool prototype-time matches without single-timestep max gradients."""
+        temperature = tf.cast(self.local_pool_temperature, correlation.dtype)
+        time_count = tf.cast(tf.shape(correlation)[3], correlation.dtype)
+        return temperature * (
+            tf.reduce_logsumexp(correlation / temperature, axis=3)
+            - tf.math.log(time_count)
+        )
+
     def call(self, inputs) -> dict[str, tf.Tensor]:
         """Return pairwise CAM logits and attention tensors.
 
@@ -170,20 +204,24 @@ class CrossAttentionModule(keras.layers.Layer):
         proto_attention = tf.nn.softmax(proto_scores / temperature, axis=-1)
         query_attention = tf.nn.softmax(query_scores / temperature, axis=-1)
 
-        attended_proto = prototype_maps[:, tf.newaxis, :, :, :] * (
-            1.0 + proto_attention[:, :, :, :, tf.newaxis]
+        pairwise_proto_maps = prototype_maps[:, tf.newaxis, :, :, :]
+        pairwise_query_maps = query_maps[:, :, tf.newaxis, :, :]
+        attended_proto_descriptors = self._pool_temporal_features(
+            pairwise_proto_maps,
+            proto_attention,
+            temporal_axis=3,
         )
-        attended_query = query_maps[:, :, tf.newaxis, :, :] * (
-            1.0 + query_attention[:, :, :, :, tf.newaxis]
+        attended_query_descriptors = self._pool_temporal_features(
+            pairwise_query_maps,
+            query_attention,
+            temporal_axis=3,
         )
-        attended_proto_descriptors = tf.reduce_mean(attended_proto, axis=3)
-        attended_query_descriptors = tf.reduce_mean(attended_query, axis=3)
         pairwise_similarity = tf.reduce_sum(
             tf.nn.l2_normalize(attended_proto_descriptors, axis=-1)
             * tf.nn.l2_normalize(attended_query_descriptors, axis=-1),
             axis=-1,
         )
-        local_logits = tf.transpose(tf.reduce_max(correlation, axis=3), [0, 1, 3, 2])
+        local_logits = tf.transpose(self._smooth_local_pool(correlation), [0, 1, 3, 2])
         return {
             "similarity_scores": pairwise_similarity,
             "distances": 1.0 - pairwise_similarity,

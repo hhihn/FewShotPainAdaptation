@@ -26,6 +26,8 @@ class CrossModFeatureMapEncoder(keras.Model):
         pool_size_2: int = 8,
         dropout_rate: float = 0.25,
         l2_weight: float = 1e-4,
+        normalization: str = "group",
+        group_norm_groups: int = 4,
         num_heads: int = 8,
         hidden_dim: int = 128,
         num_layers: int = 2,
@@ -48,6 +50,8 @@ class CrossModFeatureMapEncoder(keras.Model):
             pool_size_2: Second temporal pooling factor.
             dropout_rate: Dropout rate inside each frontend.
             l2_weight: L2 regularization weight passed to each frontend.
+            normalization: Subject-invariant frontend normalization type.
+            group_norm_groups: Preferred number of frontend GroupNorm groups.
             num_heads: Number of attention heads.
             hidden_dim: Hidden width of modality Transformer layers.
             num_layers: Number of modality Transformer layers.
@@ -68,6 +72,8 @@ class CrossModFeatureMapEncoder(keras.Model):
         self.pool_size_2 = int(pool_size_2)
         self.dropout_rate = float(dropout_rate)
         self.l2_weight = float(l2_weight)
+        self.normalization = str(normalization)
+        self.group_norm_groups = int(group_norm_groups)
         self.num_heads = int(num_heads)
         self.hidden_dim = int(hidden_dim)
         self.num_layers = int(num_layers)
@@ -184,6 +190,8 @@ class CrossModFeatureMapEncoder(keras.Model):
             pool_size_2=self.pool_size_2,
             dropout_rate=self.dropout_rate,
             l2_weight=self.l2_weight,
+            normalization=self.normalization,
+            group_norm_groups=self.group_norm_groups,
             name=f"{prefix}_eegnet_frontend",
         )
 
@@ -268,6 +276,8 @@ class CrossModFeatureMapEncoder(keras.Model):
             "pool_size_2": self.pool_size_2,
             "dropout_rate": self.dropout_rate,
             "l2_weight": self.l2_weight,
+            "normalization": self.normalization,
+            "group_norm_groups": self.group_norm_groups,
             "num_heads": self.num_heads,
             "hidden_dim": self.hidden_dim,
             "num_layers": self.num_layers,
