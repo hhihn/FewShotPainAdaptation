@@ -207,6 +207,13 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         eegnet_pool_size_2=args.eegnet_pool_size_2,
         eegnet_dropout_rate=args.eegnet_dropout_rate,
         eegnet_l2_weight=args.eegnet_l2_weight,
+        eegnet_normalization=str(getattr(args, "eegnet_normalization", "group")),
+        eegnet_group_norm_groups=int(
+            getattr(args, "eegnet_group_norm_groups", 4)
+        ),
+        can_local_pool_temperature=float(
+            getattr(args, "can_local_pool_temperature", 0.1)
+        ),
         encoder_backend=str(getattr(args, "encoder_backend", "eegnet")),
         crossmod_num_heads=int(getattr(args, "crossmod_num_heads", 8)),
         crossmod_hidden_dim=int(getattr(args, "crossmod_hidden_dim", 128)),
