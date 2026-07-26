@@ -556,57 +556,75 @@ class EpisodicLearningEngine:
         """
         support_maps = tf.cast(episode_outputs["support_feature_maps"], dtype)
         query_maps = tf.cast(episode_outputs["query_feature_maps"], dtype)
-        # Feature maps are [tasks, samples, time, dim]; pool over time.
-        support_emb = tf.reduce_mean(support_maps, axis=2)  # [B, S, D]
-        query_emb = tf.reduce_mean(query_maps, axis=2)      # [B, Q, D]
-        emb = tf.concat([support_emb, query_emb], axis=1)   # [B, S+Q, D]
-        labels = tf.concat(
-            [tf.cast(support_y_batch, tf.int32), tf.cast(query_y_batch, tf.int32)],
-            axis=1,
-        )  # [B, S+Q]
+        support_y = tf.cast(support_y_batch, tf.int32)
+        query_y = tf.cast(query_y_batch, tf.int32)
 
-        num_tasks = tf.shape(emb)[0]
-        per_task = tf.shape(emb)[1]
-        feat_dim = tf.shape(emb)[2]
-        total = num_tasks * per_task
+        # Guard: this loss only makes sense when each feature-map sample has a
+        # corresponding label. In eval / phase-2 prototype forward passes the
+        # support "feature maps" are learned prototypes (a different count than
+        # the labels), so skip and return zero there.
+        counts_match = tf.logical_and(
+            tf.equal(tf.shape(support_maps)[1], tf.shape(support_y)[1]),
+            tf.equal(tf.shape(query_maps)[1], tf.shape(query_y)[1]),
+        )
 
-        z = tf.reshape(emb, [total, feat_dim])
-        z = tf.math.l2_normalize(z, axis=1)
-        y = tf.reshape(labels, [total])
-        # Task index acts as the subject proxy (one subject per task).
-        subject = tf.repeat(tf.range(num_tasks), per_task)
+        def _supcon() -> tf.Tensor:
+            # Feature maps are [tasks, samples, time, dim]; pool over time.
+            support_emb = tf.reduce_mean(support_maps, axis=2)  # [B, S, D]
+            query_emb = tf.reduce_mean(query_maps, axis=2)      # [B, Q, D]
+            emb = tf.concat([support_emb, query_emb], axis=1)   # [B, S+Q, D]
+            labels = tf.concat([support_y, query_y], axis=1)    # [B, S+Q]
 
-        temperature = tf.cast(self.config.contrastive_temperature, dtype)
-        logits = tf.matmul(z, z, transpose_b=True) / temperature  # [N, N]
+            num_tasks = tf.shape(emb)[0]
+            per_task = tf.shape(emb)[1]
+            feat_dim = tf.shape(emb)[2]
+            total = num_tasks * per_task
 
-        self_mask = tf.eye(total, dtype=tf.bool)
-        same_label = tf.equal(y[:, tf.newaxis], y[tf.newaxis, :])
-        positive_mask = same_label & tf.logical_not(self_mask)
-        if bool(getattr(self.config, "contrastive_cross_subject", True)):
-            diff_subject = tf.not_equal(
-                subject[:, tf.newaxis], subject[tf.newaxis, :]
+            z = tf.reshape(emb, [total, feat_dim])
+            z = tf.math.l2_normalize(z, axis=1)
+            y = tf.reshape(labels, [total])
+            # Task index acts as the subject proxy (one subject per task).
+            subject = tf.repeat(tf.range(num_tasks), per_task)
+
+            temperature = tf.cast(self.config.contrastive_temperature, dtype)
+            logits = tf.matmul(z, z, transpose_b=True) / temperature  # [N, N]
+
+            self_mask = tf.eye(total, dtype=tf.bool)
+            same_label = tf.equal(y[:, tf.newaxis], y[tf.newaxis, :])
+            positive_mask = same_label & tf.logical_not(self_mask)
+            if bool(getattr(self.config, "contrastive_cross_subject", True)):
+                diff_subject = tf.not_equal(
+                    subject[:, tf.newaxis], subject[tf.newaxis, :]
+                )
+                positive_mask = positive_mask & diff_subject
+
+            # Numerically stable log-softmax over all non-self entries.
+            logits_max = tf.stop_gradient(
+                tf.reduce_max(logits, axis=1, keepdims=True)
             )
-            positive_mask = positive_mask & diff_subject
+            logits_shifted = logits - logits_max
+            exp_logits = tf.exp(logits_shifted) * tf.cast(
+                tf.logical_not(self_mask), dtype
+            )
+            log_prob = logits_shifted - tf.math.log(
+                tf.reduce_sum(exp_logits, axis=1, keepdims=True) + 1e-12
+            )
 
-        # Numerically stable log-softmax over all non-self entries.
-        logits_max = tf.stop_gradient(tf.reduce_max(logits, axis=1, keepdims=True))
-        logits = logits - logits_max
-        exp_logits = tf.exp(logits) * tf.cast(
-            tf.logical_not(self_mask), dtype
-        )
-        log_prob = logits - tf.math.log(
-            tf.reduce_sum(exp_logits, axis=1, keepdims=True) + 1e-12
-        )
+            positive_mask_f = tf.cast(positive_mask, dtype)
+            positive_count = tf.reduce_sum(positive_mask_f, axis=1)  # [N]
+            mean_log_prob_pos = tf.reduce_sum(
+                positive_mask_f * log_prob, axis=1
+            ) / tf.maximum(positive_count, tf.ones_like(positive_count))
+            per_anchor_loss = -mean_log_prob_pos
+            valid = tf.cast(positive_count > 0, dtype)  # anchors with a positive
+            return tf.reduce_sum(per_anchor_loss * valid) / tf.maximum(
+                tf.reduce_sum(valid), tf.constant(1.0, dtype=dtype)
+            )
 
-        positive_mask_f = tf.cast(positive_mask, dtype)
-        positive_count = tf.reduce_sum(positive_mask_f, axis=1)  # [N]
-        mean_log_prob_pos = tf.reduce_sum(positive_mask_f * log_prob, axis=1) / (
-            tf.maximum(positive_count, tf.ones_like(positive_count))
-        )
-        per_anchor_loss = -mean_log_prob_pos
-        valid = tf.cast(positive_count > 0, dtype)  # anchors with a positive
-        return tf.reduce_sum(per_anchor_loss * valid) / tf.maximum(
-            tf.reduce_sum(valid), tf.constant(1.0, dtype=dtype)
+        return tf.cond(
+            counts_match,
+            _supcon,
+            lambda: tf.constant(0.0, dtype=dtype),
         )
 
     def compute_task_batch_objective(
