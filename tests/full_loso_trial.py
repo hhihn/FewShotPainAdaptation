@@ -126,6 +126,15 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         can_local_loss_weight=float(getattr(args, "can_local_loss_weight", 1.0)),
         can_margin_loss_weight=float(getattr(args, "can_margin_loss_weight", 0.2)),
         can_margin_target=float(getattr(args, "can_margin_target", 0.3)),
+        contrastive_loss_weight=float(
+            getattr(args, "contrastive_loss_weight", 0.0)
+        ),
+        contrastive_temperature=float(
+            getattr(args, "contrastive_temperature", 0.1)
+        ),
+        contrastive_cross_subject=bool(
+            getattr(args, "contrastive_cross_subject", True)
+        ),
         can_support_mode=str(
             getattr(args, "can_support_mode", "learned_prototype_memory")
         ),
@@ -296,6 +305,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "can_local_loss_weight": float(config.can_local_loss_weight),
         "can_margin_loss_weight": float(config.can_margin_loss_weight),
         "can_margin_target": float(config.can_margin_target),
+        "contrastive_loss_weight": float(config.contrastive_loss_weight),
+        "contrastive_temperature": float(config.contrastive_temperature),
+        "contrastive_cross_subject": bool(config.contrastive_cross_subject),
         "can_support_mode": str(config.can_support_mode),
         "learned_prototype_slots_per_class": int(
             config.learned_prototype_slots_per_class

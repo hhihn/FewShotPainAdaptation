@@ -530,6 +530,85 @@ class EpisodicLearningEngine:
             unique_variables.append(variable)
         return unique_variables
 
+    def compute_batch_contrastive_loss(
+        self,
+        episode_outputs: dict[str, tf.Tensor],
+        support_y_batch: tf.Tensor,
+        query_y_batch: tf.Tensor,
+        dtype: tf.DType,
+    ) -> tf.Tensor:
+        """Cross-subject supervised-contrastive loss over the task chunk.
+
+        Pools support and query feature maps to per-sample embeddings, then
+        applies SupCon where positives are same-class samples drawn from a
+        *different* task (a proxy for a different subject under
+        ``task_construction_mode='single_subject'``). Anchors with no valid
+        positive are excluded from the average.
+
+        Args:
+            episode_outputs: Task-major model outputs with feature maps.
+            support_y_batch: Task-major support labels ``[B, S]``.
+            query_y_batch: Task-major query labels ``[B, Q]``.
+            dtype: Working dtype (matches the task-loss dtype).
+
+        Returns:
+            Scalar unweighted SupCon loss.
+        """
+        support_maps = tf.cast(episode_outputs["support_feature_maps"], dtype)
+        query_maps = tf.cast(episode_outputs["query_feature_maps"], dtype)
+        # Feature maps are [tasks, samples, time, dim]; pool over time.
+        support_emb = tf.reduce_mean(support_maps, axis=2)  # [B, S, D]
+        query_emb = tf.reduce_mean(query_maps, axis=2)      # [B, Q, D]
+        emb = tf.concat([support_emb, query_emb], axis=1)   # [B, S+Q, D]
+        labels = tf.concat(
+            [tf.cast(support_y_batch, tf.int32), tf.cast(query_y_batch, tf.int32)],
+            axis=1,
+        )  # [B, S+Q]
+
+        num_tasks = tf.shape(emb)[0]
+        per_task = tf.shape(emb)[1]
+        feat_dim = tf.shape(emb)[2]
+        total = num_tasks * per_task
+
+        z = tf.reshape(emb, [total, feat_dim])
+        z = tf.math.l2_normalize(z, axis=1)
+        y = tf.reshape(labels, [total])
+        # Task index acts as the subject proxy (one subject per task).
+        subject = tf.repeat(tf.range(num_tasks), per_task)
+
+        temperature = tf.cast(self.config.contrastive_temperature, dtype)
+        logits = tf.matmul(z, z, transpose_b=True) / temperature  # [N, N]
+
+        self_mask = tf.eye(total, dtype=tf.bool)
+        same_label = tf.equal(y[:, tf.newaxis], y[tf.newaxis, :])
+        positive_mask = same_label & tf.logical_not(self_mask)
+        if bool(getattr(self.config, "contrastive_cross_subject", True)):
+            diff_subject = tf.not_equal(
+                subject[:, tf.newaxis], subject[tf.newaxis, :]
+            )
+            positive_mask = positive_mask & diff_subject
+
+        # Numerically stable log-softmax over all non-self entries.
+        logits_max = tf.stop_gradient(tf.reduce_max(logits, axis=1, keepdims=True))
+        logits = logits - logits_max
+        exp_logits = tf.exp(logits) * tf.cast(
+            tf.logical_not(self_mask), dtype
+        )
+        log_prob = logits - tf.math.log(
+            tf.reduce_sum(exp_logits, axis=1, keepdims=True) + 1e-12
+        )
+
+        positive_mask_f = tf.cast(positive_mask, dtype)
+        positive_count = tf.reduce_sum(positive_mask_f, axis=1)  # [N]
+        mean_log_prob_pos = tf.reduce_sum(positive_mask_f * log_prob, axis=1) / (
+            tf.maximum(positive_count, tf.ones_like(positive_count))
+        )
+        per_anchor_loss = -mean_log_prob_pos
+        valid = tf.cast(positive_count > 0, dtype)  # anchors with a positive
+        return tf.reduce_sum(per_anchor_loss * valid) / tf.maximum(
+            tf.reduce_sum(valid), tf.constant(1.0, dtype=dtype)
+        )
+
     def compute_task_batch_objective(
         self,
         episode_outputs: dict[str, tf.Tensor],
@@ -594,16 +673,35 @@ class EpisodicLearningEngine:
                 task_losses.dtype,
             ) * tf.reduce_mean(per_query_margin_loss, axis=1)
 
+        contrastive_losses = tf.zeros_like(task_losses)
+        if (
+            float(getattr(self.config, "contrastive_loss_weight", 0.0)) > 0
+            and "support_feature_maps" in episode_outputs
+            and "query_feature_maps" in episode_outputs
+        ):
+            contrastive_scalar = self.compute_batch_contrastive_loss(
+                episode_outputs,
+                support_y_batch,
+                query_y_batch,
+                task_losses.dtype,
+            )
+            contrastive_losses = tf.cast(
+                self.config.contrastive_loss_weight,
+                task_losses.dtype,
+            ) * contrastive_scalar * tf.ones_like(task_losses)
+
         return {
             "losses": (
                 task_losses
                 + model_aux_loss
                 + can_local_losses
                 + can_margin_losses
+                + contrastive_losses
             ),
             "task_losses": task_losses,
             "can_local_losses": can_local_losses,
             "can_margin_losses": can_margin_losses,
+            "contrastive_losses": contrastive_losses,
             "model_aux_loss": model_aux_loss,
         }
 

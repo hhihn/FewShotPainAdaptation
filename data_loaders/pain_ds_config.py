@@ -90,6 +90,9 @@ class PainDatasetConfig:
     can_local_loss_weight: float = 1.0
     can_margin_loss_weight: float = 0.2
     can_margin_target: float = 0.3
+    contrastive_loss_weight: float = 0.0
+    contrastive_temperature: float = 0.1
+    contrastive_cross_subject: bool = True
     can_support_mode: str = "sampled"
     learned_prototype_slots_per_class: int = 1
     prototype_bank_init_samples_per_class: int = 0
@@ -290,6 +293,13 @@ class PainDatasetConfig:
         self.can_margin_target = float(self.can_margin_target)
         if self.can_margin_target < 0:
             raise ValueError("can_margin_target must be non-negative")
+        self.contrastive_loss_weight = float(self.contrastive_loss_weight)
+        if self.contrastive_loss_weight < 0:
+            raise ValueError("contrastive_loss_weight must be non-negative")
+        self.contrastive_temperature = float(self.contrastive_temperature)
+        if self.contrastive_temperature <= 0:
+            raise ValueError("contrastive_temperature must be > 0")
+        self.contrastive_cross_subject = bool(self.contrastive_cross_subject)
         self.can_support_mode = str(self.can_support_mode).strip().lower()
         if self.can_support_mode not in CAN_SUPPORT_MODES:
             raise ValueError(
