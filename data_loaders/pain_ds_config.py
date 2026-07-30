@@ -22,6 +22,11 @@ PROTOTYPE_PHASE2_LOSS_MODES = ("ce_can",)
 SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES = ("global",)
 SUPPORTED_DATASET_SOURCES = ("painmonit", "biovid_part_a", "senseemotion")
 PREDEFINED_SPLIT_DATASET_SOURCES = ("biovid_part_a", "senseemotion")
+ALLOWED_MODALITIES_BY_DATASET = {
+    "biovid_part_a": ("ECG", "EMG", "GSR"),
+    "senseemotion": ("ECG", "EMG", "GSR", "RSP"),
+}
+MODALITY_ALIASES = {"EDA": "GSR", "GRS": "GSR"}
 
 
 @dataclass
@@ -170,6 +175,7 @@ class PainDatasetConfig:
     senseemotion_train_split_dir: str = "Train"
     senseemotion_test_split_dir: str = "Test"
     senseemotion_modalities: Tuple[str, ...] = ("GSR", "ECG")
+    modalities: Optional[Tuple[str, ...]] = None
 
     def __post_init__(self) -> None:
         """Normalize derived fields and validate configuration values.
@@ -178,6 +184,11 @@ class PainDatasetConfig:
             ValueError: If dataset, model, sampler, or training settings are
                 inconsistent or outside supported ranges.
         """
+        self.dataset_source = str(self.dataset_source).strip().lower()
+        if self.dataset_source not in SUPPORTED_DATASET_SOURCES:
+            raise ValueError(
+                "dataset_source must be one of: " + ", ".join(SUPPORTED_DATASET_SOURCES)
+            )
         if self.subject_eval_tasks is not None:
             self.heldout_eval_tasks = int(self.subject_eval_tasks)
         self.matched_query_support_repeats = int(self.matched_query_support_repeats)
@@ -191,19 +202,62 @@ class PainDatasetConfig:
                 raise ValueError(
                     "encoder_backend='crossmod' requires attention_mode='can'"
                 )
-            self.num_sensors = 2
-            self.sensor_idx = (1, 4)
-            self.modality_names = ("EDA", "ECG")
-            self.biovid_modalities = ("GSR", "ECG")
-            self.senseemotion_modalities = ("GSR", "ECG")
-        self.dataset_source = str(self.dataset_source).strip().lower()
-        if self.dataset_source not in SUPPORTED_DATASET_SOURCES:
-            raise ValueError(
-                "dataset_source must be one of: " + ", ".join(SUPPORTED_DATASET_SOURCES)
-            )
+            if self.dataset_source == "painmonit":
+                self.num_sensors = 2
+                self.sensor_idx = (1, 4)
+                self.modality_names = ("EDA", "ECG")
         if self.split_strategy not in {"loso", "predefined"}:
             raise ValueError("split_strategy must be one of: 'loso', 'predefined'")
         if self.dataset_source in PREDEFINED_SPLIT_DATASET_SOURCES:
+            configured_modalities = self.modalities
+            if configured_modalities is None:
+                if self.encoder_backend == "crossmod":
+                    configured_modalities = ("GSR", "ECG")
+                else:
+                    configured_modalities = (
+                        self.biovid_modalities
+                        if self.dataset_source == "biovid_part_a"
+                        else self.senseemotion_modalities
+                    )
+            if isinstance(configured_modalities, str):
+                configured_modalities = tuple(configured_modalities.split(","))
+            normalized_modalities = tuple(
+                MODALITY_ALIASES.get(
+                    str(modality).strip().upper(), str(modality).strip().upper()
+                )
+                for modality in configured_modalities
+            )
+            if (
+                self.modalities is not None or self.encoder_backend == "crossmod"
+            ) and len(normalized_modalities) != 2:
+                raise ValueError("modalities must contain exactly two modalities")
+            if len(set(normalized_modalities)) != 2:
+                raise ValueError(
+                    "modalities must contain two distinct modalities; GSR and EDA are synonyms"
+                )
+            allowed_modalities = ALLOWED_MODALITIES_BY_DATASET[self.dataset_source]
+            invalid_modalities = tuple(
+                modality
+                for modality in normalized_modalities
+                if modality not in allowed_modalities
+            )
+            if invalid_modalities:
+                raise ValueError(
+                    f"Unsupported modalities for {self.dataset_source}: "
+                    f"{', '.join(invalid_modalities)}. Allowed: "
+                    f"{', '.join(allowed_modalities)} (EDA is an alias for GSR)"
+                )
+            self.modalities = normalized_modalities
+            self.num_sensors = len(normalized_modalities)
+            self.sensor_idx = tuple(range(self.num_sensors))
+            self.modality_names = tuple(
+                "EDA" if modality == "GSR" else modality
+                for modality in normalized_modalities
+            )
+            if self.dataset_source == "biovid_part_a":
+                self.biovid_modalities = normalized_modalities
+            else:
+                self.senseemotion_modalities = normalized_modalities
             # BioVid Part A and SenseEmotion ship with explicit train/test splits.
             self.split_strategy = "predefined"
             # Avoid applying an additional sliding-window augmentation on top of
@@ -220,9 +274,6 @@ class PainDatasetConfig:
                 self.task_class_ids = (0, 4)
         elif self.dataset_source == "senseemotion":
             self.sequence_length = 1664
-            self.num_sensors = len(self.senseemotion_modalities)
-            self.sensor_idx = (1, 4)
-            self.modality_names = ("EDA", "ECG")
             if self.task_class_ids == (0, 5):
                 self.task_class_ids = (0, 1, 2, 3)
 

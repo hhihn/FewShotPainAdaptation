@@ -31,6 +31,13 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     return values
 
 
+def _parse_modalities(raw: str) -> tuple[str, ...]:
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not values:
+        raise argparse.ArgumentTypeError("Expected comma-separated modalities.")
+    return values
+
+
 def _default_task_class_ids(dataset_source: str) -> tuple[int, ...]:
     if str(dataset_source).strip().lower() == "senseemotion":
         return (0, 1, 2, 3)
@@ -112,6 +119,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         seed=args.seed,
         deterministic_ops=bool(args.deterministic_ops),
         dataset_source=dataset_source,
+        modalities=getattr(args, "modalities", None),
         data_variant=args.data_variant,
         task_class_ids=task_class_ids,
         k_shot=args.k_shot,
@@ -277,6 +285,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     config_payload = {
         "seed": int(config.seed),
         "dataset_source": str(config.dataset_source),
+        "modalities": list(config.modalities or ()),
         "data_variant": str(config.data_variant),
         "task_class_ids": list(config.task_class_ids),
         "k_shot": int(config.k_shot),
@@ -404,6 +413,15 @@ def main() -> None:
         choices=SUPPORTED_DATASET_SOURCES,
     )
     parser.add_argument(
+        "--modalities",
+        type=_parse_modalities,
+        default=("GSR", "ECG"),
+        help=(
+            "Exactly two comma-separated modalities. BioVid allows ECG, EMG, GSR; "
+            "SenseEmotion also allows RSP. EDA is accepted as an alias for GSR."
+        ),
+    )
+    parser.add_argument(
         "--data-variant",
         type=str,
         default="real",
@@ -505,7 +523,7 @@ def main() -> None:
         type=str,
         default="crossmod",
         choices=("eegnet", "crossmod"),
-        help="Encoder backend. 'crossmod' is a CAN-only EDA/ECG feature-map encoder.",
+        help="Encoder backend. 'crossmod' is a CAN-only two-modality feature-map encoder.",
     )
     parser.add_argument("--crossmod-num-heads", type=int, default=8)
     parser.add_argument("--crossmod-hidden-dim", type=int, default=128)

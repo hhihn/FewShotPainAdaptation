@@ -25,6 +25,13 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     return values
 
 
+def _parse_modalities(raw: str) -> tuple[str, ...]:
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not values:
+        raise argparse.ArgumentTypeError("Expected comma-separated modalities.")
+    return values
+
+
 def _default_task_class_ids(dataset_source: str) -> tuple[int, ...]:
     if str(dataset_source).strip().lower() == "senseemotion":
         return (0, 1, 2, 3)
@@ -128,6 +135,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         seed=args.seed,
         deterministic_ops=True,
         dataset_source=dataset_source,
+        modalities=getattr(args, "modalities", None),
         task_class_ids=(
             _default_task_class_ids(dataset_source)
             if args.task_class_ids is None
@@ -298,6 +306,7 @@ def _run_single_quick_trial(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_seconds": elapsed_seconds,
         "seed": args.seed,
         "dataset_source": str(config.dataset_source),
+        "modalities": list(config.modalities or ()),
         "held_out_subject": held_out_subject,
         "train_subject_count": int(fold["n_train_subjects"]),
         "val_subject_count": int(fold["n_val_subjects"]),
@@ -557,6 +566,15 @@ def main() -> None:
         type=str,
         default="biovid_part_a",
         choices=SUPPORTED_DATASET_SOURCES,
+    )
+    parser.add_argument(
+        "--modalities",
+        type=_parse_modalities,
+        default=("GSR", "ECG"),
+        help=(
+            "Exactly two comma-separated modalities. BioVid allows ECG, EMG, GSR; "
+            "SenseEmotion also allows RSP. EDA is accepted as an alias for GSR."
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--held-out-subject", type=int, default=None)

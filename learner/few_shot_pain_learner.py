@@ -220,7 +220,10 @@ class FewShotPainLearner:
         )
         self.logger.info(f"Modalities: {config.modality_names}")
         if self.config.encoder_backend == "crossmod":
-            self.logger.info("Encoder: CrossMod EDA/ECG feature-map encoder")
+            self.logger.info(
+                "Encoder: CrossMod two-modality feature-map encoder (%s)",
+                ", ".join(config.modality_names),
+            )
         else:
             self.logger.info("Encoder: EEGNet-style joint sensor encoder")
         self.logger.info(
