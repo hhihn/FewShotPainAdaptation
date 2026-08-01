@@ -258,6 +258,26 @@ class PainDatasetConfig:
         if len(set(self.task_class_ids)) != len(self.task_class_ids):
             raise ValueError("task_class_ids must be unique")
         self.n_way = len(self.task_class_ids)
+
+        # sensor_idx selects raw channels; num_sensors is always derived from it
+        # so the two can never disagree. CrossMod / senseemotion have already
+        # forced their own (1, 4) selection above; anything else (e.g. EEGNet on
+        # PainMonit with EMG or all channels) keeps the requested selection.
+        self.sensor_idx = tuple(int(idx) for idx in self.sensor_idx)
+        if not self.sensor_idx:
+            raise ValueError("sensor_idx must contain at least one channel index")
+        if len(set(self.sensor_idx)) != len(self.sensor_idx):
+            raise ValueError("sensor_idx must be unique")
+        self.num_sensors = len(self.sensor_idx)
+        # Keep modality labels aligned with the selected channels. Only rebuild
+        # on a length mismatch so the explicit CrossMod/senseemotion ("EDA","ECG")
+        # labels are preserved; a custom EEGNet selection (e.g. all channels)
+        # gets generic names for the unlabelled indices.
+        if len(self.modality_names) != len(self.sensor_idx):
+            _known_channel_names = {1: "EDA", 4: "ECG", 5: "EMG"}
+            self.modality_names = tuple(
+                _known_channel_names.get(idx, f"ch{idx}") for idx in self.sensor_idx
+            )
         if self.task_normalize_mode not in {"subject", "split", "support", "none"}:
             raise ValueError(
                 "task_normalize_mode must be one of: 'subject', 'split', 'support', 'none'"

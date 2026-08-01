@@ -107,6 +107,21 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         else _parse_int_tuple(args.task_class_ids)
     )
 
+    # sensor_idx selects which raw channels to use. Default (1,4,5)=EDA,ECG,EMG
+    # for EEGNet; CrossMod forces its own 2-channel (EDA,ECG) selection.
+    sensor_idx_raw = getattr(args, "sensor_idx", None)
+    encoder_backend = str(getattr(args, "encoder_backend", "eegnet")).strip().lower()
+    if sensor_idx_raw:
+        sensor_idx = _parse_int_tuple(sensor_idx_raw)
+        if encoder_backend == "crossmod" and tuple(sensor_idx) != (1, 4):
+            raise ValueError(
+                "encoder_backend='crossmod' only supports the 2-channel EDA+ECG "
+                f"input (sensor_idx=1,4), but sensor_idx={sensor_idx_raw!r} was set. "
+                "Use encoder_backend='eegnet' to train on more channels (e.g. EMG)."
+            )
+    else:
+        sensor_idx = (1, 4, 5)
+
     logger.info("Stage 1/5: Building run configuration")
     config = PainDatasetConfig(
         seed=args.seed,
@@ -114,6 +129,7 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         dataset_source=dataset_source,
         data_variant=args.data_variant,
         task_class_ids=task_class_ids,
+        sensor_idx=sensor_idx,
         k_shot=args.k_shot,
         q_query=args.q_query,
         task_normalize_mode=args.normalize_mode,
@@ -295,6 +311,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "dataset_source": str(config.dataset_source),
         "data_variant": str(config.data_variant),
         "task_class_ids": list(config.task_class_ids),
+        "sensor_idx": list(config.sensor_idx),
+        "num_sensors": int(config.num_sensors),
+        "modality_names": list(config.modality_names),
         "k_shot": int(config.k_shot),
         "q_query": int(config.q_query),
         "task_construction_mode": str(config.task_construction_mode),
