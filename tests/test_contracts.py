@@ -313,6 +313,12 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(senseemotion_config.num_sensors, 2)
 
     def test_predefined_dataset_modalities_are_selected_and_validated(self):
+        default_biovid_config = PainDatasetConfig(dataset_source="biovid_part_a")
+        self.assertEqual(
+            default_biovid_config.biovid_modalities, ("GSR", "ECG", "EMG")
+        )
+        self.assertEqual(default_biovid_config.num_sensors, 3)
+
         biovid_config = PainDatasetConfig(
             dataset_source="biovid_part_a",
             modalities=("EMG", "EDA"),

@@ -231,9 +231,9 @@ class PainDatasetConfig:
                 self.modalities is not None or self.encoder_backend == "crossmod"
             ) and len(normalized_modalities) != 2:
                 raise ValueError("modalities must contain exactly two modalities")
-            if len(set(normalized_modalities)) != 2:
+            if len(set(normalized_modalities)) != len(normalized_modalities):
                 raise ValueError(
-                    "modalities must contain two distinct modalities; GSR and EDA are synonyms"
+                    "modalities must contain distinct modalities; GSR and EDA are synonyms"
                 )
             allowed_modalities = ALLOWED_MODALITIES_BY_DATASET[self.dataset_source]
             invalid_modalities = tuple(
