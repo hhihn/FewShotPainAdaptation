@@ -71,6 +71,18 @@ class FoldIndices:
     target_subject: int
 
 
+@dataclass(frozen=True)
+class NestedFoldIndices:
+    inner_train: np.ndarray
+    inner_validation: np.ndarray
+    final_train: np.ndarray
+    test: np.ndarray
+    source_subjects: tuple[int, ...]
+    inner_train_subjects: tuple[int, ...]
+    inner_validation_subjects: tuple[int, ...]
+    target_subject: int
+
+
 def load_biovid_binary(data_dir: str, config: PainNASConfig) -> BioVidArrays:
     """Load GSR/ECG/EMG and filter BioVid to T0 versus T4."""
 
@@ -160,6 +172,74 @@ def build_loso_fold_indices(arrays: BioVidArrays, target_subject: int) -> FoldIn
         validation=validation,
         test=test,
         source_subjects=source_subjects,
+        target_subject=target_subject,
+    )
+
+
+def build_nested_loso_fold_indices(
+    arrays: BioVidArrays,
+    target_subject: int,
+    *,
+    validation_subjects: int,
+    seed: int,
+) -> NestedFoldIndices:
+    """Build a subject-disjoint inner NAS split for one outer LOSO fold."""
+
+    target_subject = int(target_subject)
+    all_subjects = tuple(int(value) for value in arrays.unique_subjects)
+    if target_subject not in all_subjects:
+        raise ValueError(f"Unknown target subject: {target_subject}")
+    source_subjects = tuple(
+        subject for subject in all_subjects if subject != target_subject
+    )
+    inner_train_subjects, inner_validation_subjects = (
+        deterministic_search_subject_split(
+            source_subjects,
+            validation_subjects=validation_subjects,
+            seed=seed,
+        )
+    )
+    inner_train = indices_for_subjects(
+        arrays, inner_train_subjects, split_code=arrays.train_split_code
+    )
+    inner_validation = indices_for_subjects(
+        arrays, inner_validation_subjects, split_code=arrays.test_split_code
+    )
+    final_train = indices_for_subjects(
+        arrays, source_subjects, split_code=arrays.train_split_code
+    )
+    test = indices_for_subjects(
+        arrays, (target_subject,), split_code=arrays.test_split_code
+    )
+    split_indices = {
+        "inner_train": inner_train,
+        "inner_validation": inner_validation,
+        "final_train": final_train,
+        "test": test,
+    }
+    empty = [name for name, indices in split_indices.items() if not len(indices)]
+    if empty:
+        raise ValueError(
+            f"Nested fold {target_subject} contains empty splits: {', '.join(empty)}"
+        )
+    for split_name in ("inner_train", "inner_validation", "final_train"):
+        split_values = split_indices[split_name]
+        if np.any(arrays.subjects[split_values] == target_subject):
+            raise RuntimeError(f"Target subject leaked into {split_name}")
+    if set(inner_train_subjects) & set(inner_validation_subjects):
+        raise RuntimeError("Inner train and validation subjects overlap")
+    if set(inner_train_subjects) | set(inner_validation_subjects) != set(
+        source_subjects
+    ):
+        raise RuntimeError("Inner split does not cover every source subject")
+    return NestedFoldIndices(
+        inner_train=inner_train,
+        inner_validation=inner_validation,
+        final_train=final_train,
+        test=test,
+        source_subjects=source_subjects,
+        inner_train_subjects=inner_train_subjects,
+        inner_validation_subjects=inner_validation_subjects,
         target_subject=target_subject,
     )
 

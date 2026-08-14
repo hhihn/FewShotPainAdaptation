@@ -11,6 +11,7 @@ from painnas.config import PainNASConfig
 from painnas.data import load_biovid_binary
 from painnas.io import to_jsonable
 from painnas.loso import run_loso
+from painnas.nested_loso import run_nested_loso_nas
 from painnas.runtime import require_gpu
 from painnas.search import load_architecture, run_search
 
@@ -61,7 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     all_parser = subparsers.add_parser(
         "all", parents=[common], help="Run search followed by full LOSO."
     )
-    for fold_parser in (loso_parser, all_parser):
+    nested_parser = subparsers.add_parser(
+        "nested",
+        parents=[common],
+        help="Run one NAS and fresh refit inside every outer LOSO fold.",
+    )
+    nested_parser.set_defaults(n_trials=10, search_max_epochs=20)
+    for fold_parser in (loso_parser, all_parser, nested_parser):
         fold_parser.add_argument("--loso-start-index", type=int, default=None)
         fold_parser.add_argument("--loso-stop-index", type=int, default=None)
         fold_parser.add_argument(
@@ -98,6 +105,19 @@ def run_command(args: argparse.Namespace) -> dict[str, Any]:
         "gpu_devices": devices,
         "output_dir": str(output_dir),
     }
+
+    if args.command == "nested":
+        result["nested_loso"] = run_nested_loso_nas(
+            arrays,
+            config,
+            output_dir / "nested_loso",
+            resume=bool(args.resume),
+            start_index=getattr(args, "loso_start_index", None),
+            stop_index=getattr(args, "loso_stop_index", None),
+            max_folds=getattr(args, "max_folds", None),
+            verbose=args.verbose,
+        )
+        return result
 
     if args.command in {"search", "all"}:
         result["search"] = run_search(

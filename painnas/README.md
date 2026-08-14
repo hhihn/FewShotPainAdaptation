@@ -11,30 +11,26 @@ trials may change convolutional depth, width, temporal kernel size, dense depth,
 dense width, and Adam learning rate. ELU, softmax, `(1, 2)` pooling, and dropout
 `0.25` remain fixed.
 
-## Protocol warning
+## Nested LOSO protocol
 
-The selected protocol performs architecture search once using all BioVid
-subject identities and then reuses that architecture in 87 fresh LOSO trainings.
-This is computationally practical but is not an unbiased nested-LOSO estimate.
-Every output manifest records this limitation.
+Every outer fold holds out one subject completely. The remaining 86 subjects
+are deterministically divided into 69 inner-training and 17 inner-validation
+subjects. NAS candidates train on the 69 subjects' predefined `Train` samples
+and are selected by macro-F1 on the 17 subjects' predefined `Test` samples.
 
-By default, the one-time search deterministically assigns 70 subjects to search
-training and 17 subjects to search validation. Search training uses those 70
-subjects' predefined `Train` samples; validation uses the 17 held-out subjects'
-predefined `Test` samples. No NAS weights are carried into LOSO.
-
-Within each LOSO fold, the target subject is excluded from training,
-source-validation, and source-only normalization. The other 86 subjects'
-predefined `Train` samples train the fold, their `Test` samples provide early
-stopping, and only the target subject's `Test` samples provide fold metrics. The
-model and optimizer are newly constructed for every fold.
+The winning candidate's weights are discarded. A fresh model and optimizer are
+created, source normalization is recomputed from all 86 subjects' `Train`
+samples, and the selected architecture is fitted for its inner-selected best
+epoch. Evaluation uses only the outer target subject's `Test` samples; all of
+that subject's `Train` samples remain unused. The default nested budget is 10
+trials of at most 20 epochs per outer fold.
 
 ## Run
 
 The paper-scale defaults require a TensorFlow GPU:
 
 ```bash
-python -m painnas all \
+python -m painnas nested \
   --data-dir "/content/drive/MyDrive/PainData/BioVid 2" \
   --output-dir "/content/drive/MyDrive/PainNAS/run_001" \
   --resume
@@ -43,31 +39,33 @@ python -m painnas all \
 For Colab, open `painnas/colab_entrypoint.ipynb`. It checks out the repository,
 installs the pinned environment, stages `BioVid.tar.gz` from Drive onto the
 Colab SSD (with an extracted-Drive fallback), validates the real T0/T4 arrays,
-runs/resumes NAS, visualizes trial progress, and optionally continues with LOSO.
-Only the durable search and fold artifacts are stored in Drive.
+runs/resumes per-fold NAS and refitting, audits target isolation, and visualizes
+search and LOSO progress. Only durable search and fold artifacts are stored in
+Drive.
 
-Stages may be run separately:
+The original one-time global search and fixed-architecture LOSO remain available
+as explicitly exploratory compatibility commands:
 
 ```bash
 python -m painnas search --data-dir DATA --output-dir RUN --resume
 python -m painnas loso --data-dir DATA --output-dir RUN --resume
 ```
 
-Long LOSO jobs can be split across sessions without changing the manifest:
+Nested jobs can be split across sessions without changing the manifest:
 
 ```bash
-python -m painnas loso --data-dir DATA --output-dir RUN --resume \
+python -m painnas nested --data-dir DATA --output-dir RUN --resume \
   --loso-start-index 1 --loso-stop-index 30
-python -m painnas loso --data-dir DATA --output-dir RUN --resume \
+python -m painnas nested --data-dir DATA --output-dir RUN --resume \
   --loso-start-index 31 --loso-stop-index 60
-python -m painnas loso --data-dir DATA --output-dir RUN --resume \
+python -m painnas nested --data-dir DATA --output-dir RUN --resume \
   --loso-start-index 61 --loso-stop-index 87
 ```
 
 Use `--allow-cpu`, small epoch counts, and `--max-folds` only for debugging:
 
 ```bash
-python -m painnas all \
+python -m painnas nested \
   --data-dir "data/BioVid 2" \
   --output-dir /tmp/painnas_smoke \
   --n-trials 1 \
@@ -81,12 +79,13 @@ python -m painnas all \
 
 ## Outputs
 
-- `search/study.sqlite3`: resumable Optuna study
-- `search/trials.csv`: trial parameters and outcomes
-- `search/best_architecture.json`: selected architecture only, without weights
-- `loso/folds/fold_NNN.json`: atomic fold histories, metrics, and predictions
-- `loso/fold_metrics.csv` and `loso/predictions.csv`: analysis-ready tables
-- `loso/summary.json`: aggregate metrics, confusion matrix, and bootstrap CIs
+- `nested_loso/folds/fold_NNN/search/study.sqlite3`: resumable fold study
+- `nested_loso/folds/fold_NNN/search/trials.csv`: fold trial outcomes
+- `nested_loso/folds/fold_NNN/search/best_architecture.json`: fold selection
+- `nested_loso/folds/fold_NNN/result.json`: refit history, audit, and predictions
+- `nested_loso/fold_metrics.csv` and `predictions.csv`: analysis-ready tables
+- `nested_loso/architecture_frequencies.csv`: selected-architecture counts
+- `nested_loso/summary.json`: metrics, confusion matrix, and bootstrap CIs
 
 Resume is guarded by configuration and architecture fingerprints. If settings
 change, start a new output directory.

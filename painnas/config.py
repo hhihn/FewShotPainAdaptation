@@ -69,3 +69,10 @@ PROTOCOL_WARNING = (
     "The subsequent 87-fold result is exploratory and is not an unbiased nested-LOSO "
     "estimate."
 )
+
+NESTED_PROTOCOL_DESCRIPTION = (
+    "For every outer LOSO fold, architecture search uses only source subjects. "
+    "The selected architecture is reinitialized, fitted on all source-subject Train "
+    "samples for its inner-selected best epoch, and evaluated once on the untouched "
+    "target subject's Test samples."
+)

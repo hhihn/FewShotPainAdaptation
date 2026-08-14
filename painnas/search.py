@@ -5,7 +5,7 @@ from __future__ import annotations
 import gc
 from pathlib import Path
 import time
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import optuna
@@ -131,7 +131,13 @@ def _trial_rows(study: optuna.Study) -> list[dict[str, Any]]:
     return rows
 
 
-def _persist_search(study: optuna.Study, output_dir: Path) -> None:
+def _persist_search(
+    study: optuna.Study,
+    output_dir: Path,
+    *,
+    protocol_note: str,
+    search_context: Mapping[str, Any],
+) -> None:
     atomic_write_csv(output_dir / "trials.csv", _trial_rows(study))
     complete = [
         trial
@@ -150,7 +156,8 @@ def _persist_search(study: optuna.Study, output_dir: Path) -> None:
             "best_validation_macro_f1": float(best.value),
             "parameter_count": int(best.user_attrs.get("parameter_count", -1)),
             "best_epoch": int(best.user_attrs.get("best_epoch", -1)),
-            "protocol_warning": PROTOCOL_WARNING,
+            "protocol_note": protocol_note,
+            **dict(search_context),
         },
     )
 
@@ -168,22 +175,58 @@ def run_search(
     *,
     resume: bool,
     verbose: int = 1,
+    train_subjects: Iterable[int] | None = None,
+    validation_subjects: Iterable[int] | None = None,
+    outer_target_subject: int | None = None,
+    search_seed: int | None = None,
+    study_name: str = STUDY_NAME,
+    protocol_note: str = PROTOCOL_WARNING,
 ) -> dict[str, Any]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     arrays.validate(config, require_expected_subjects=False)
-    train_subjects, validation_subjects = deterministic_search_subject_split(
-        arrays.unique_subjects,
-        validation_subjects=config.search_validation_subjects,
-        seed=config.seed,
-    )
+    effective_seed = config.seed if search_seed is None else int(search_seed)
+    if (train_subjects is None) != (validation_subjects is None):
+        raise ValueError(
+            "train_subjects and validation_subjects must either both be provided "
+            "or both be omitted"
+        )
+    if train_subjects is None:
+        train_subjects, validation_subjects = deterministic_search_subject_split(
+            arrays.unique_subjects,
+            validation_subjects=config.search_validation_subjects,
+            seed=effective_seed,
+        )
+    else:
+        train_subjects = tuple(sorted(int(value) for value in train_subjects))
+        validation_subjects = tuple(
+            sorted(int(value) for value in validation_subjects or ())
+        )
+    if not train_subjects or not validation_subjects:
+        raise ValueError("Search train and validation subject sets must be non-empty")
+    if set(train_subjects) & set(validation_subjects):
+        raise ValueError("Search train and validation subjects must be disjoint")
+    known_subjects = set(int(value) for value in arrays.unique_subjects)
+    selected_subjects = set(train_subjects) | set(validation_subjects)
+    if not selected_subjects <= known_subjects:
+        raise ValueError("Search subject sets contain an unknown subject")
+    if outer_target_subject is not None and int(outer_target_subject) in selected_subjects:
+        raise ValueError("Outer target subject leaked into architecture search")
+    search_context = {
+        "outer_target_subject": (
+            None if outer_target_subject is None else int(outer_target_subject)
+        ),
+        "train_subjects": train_subjects,
+        "validation_subjects": validation_subjects,
+        "search_seed": effective_seed,
+    }
     manifest = {
         "stage": "search",
         "config": config.to_dict(),
         "config_fingerprint": config.fingerprint(),
-        "train_subjects": train_subjects,
-        "validation_subjects": validation_subjects,
-        "protocol_warning": PROTOCOL_WARNING,
+        "study_name": study_name,
+        "protocol_note": protocol_note,
+        **search_context,
     }
     ensure_manifest(output_dir / "manifest.json", manifest, resume=resume)
 
@@ -204,7 +247,7 @@ def run_search(
             f"Optuna study already exists; pass --resume to reuse it: {database_path}"
         )
     sampler = optuna.samplers.TPESampler(
-        seed=config.seed,
+        seed=effective_seed,
         n_startup_trials=min(10, max(1, config.n_trials // 5)),
     )
     min_resource = min(5, config.search_max_epochs)
@@ -214,7 +257,7 @@ def run_search(
         reduction_factor=3,
     )
     study = optuna.create_study(
-        study_name=STUDY_NAME,
+        study_name=study_name,
         storage=f"sqlite:///{database_path}",
         direction="maximize",
         sampler=sampler,
@@ -228,7 +271,7 @@ def run_search(
 
     def objective(trial: optuna.Trial) -> float:
         trial_start = time.perf_counter()
-        reset_runtime(config.seed + int(trial.number))
+        reset_runtime(effective_seed + int(trial.number))
         spec = suggest_architecture(trial)
         model = build_early_fusion_model(
             spec, input_shape=input_shape, num_classes=config.num_classes
@@ -250,7 +293,7 @@ def run_search(
             std=std,
             batch_size=config.batch_size,
             training=True,
-            seed=config.seed + int(trial.number),
+            seed=effective_seed + int(trial.number),
         )
         validation_dataset = make_tf_dataset(
             arrays,
@@ -259,7 +302,7 @@ def run_search(
             std=std,
             batch_size=config.batch_size,
             training=False,
-            seed=config.seed,
+            seed=effective_seed,
         )
         callbacks = [
             keras.callbacks.TerminateOnNaN(),
@@ -289,7 +332,7 @@ def run_search(
             return best_value
         finally:
             del callbacks, train_dataset, validation_dataset, model
-            reset_runtime(config.seed + int(trial.number) + 1_000_000)
+            reset_runtime(effective_seed + int(trial.number) + 1_000_000)
 
     finished_states = {
         optuna.trial.TrialState.COMPLETE,
@@ -304,14 +347,32 @@ def run_search(
         study.optimize(
             objective,
             n_trials=remaining_trials,
-            callbacks=[lambda current_study, _: _persist_search(current_study, output_dir)],
+            callbacks=[
+                lambda current_study, _: _persist_search(
+                    current_study,
+                    output_dir,
+                    protocol_note=protocol_note,
+                    search_context=search_context,
+                )
+            ],
             catch=(tf.errors.ResourceExhaustedError,),
             gc_after_trial=True,
         )
-    _persist_search(study, output_dir)
-    best_payload = read_json(output_dir / "best_architecture.json")
+    _persist_search(
+        study,
+        output_dir,
+        protocol_note=protocol_note,
+        search_context=search_context,
+    )
+    best_path = output_dir / "best_architecture.json"
+    if not best_path.exists():
+        raise RuntimeError(
+            "Architecture search produced no completed trial. Inspect trials.csv "
+            f"and start a new run after correcting the failure: {output_dir}"
+        )
+    best_payload = read_json(best_path)
     return {
-        "study_name": STUDY_NAME,
+        "study_name": study_name,
         "trial_count": len(study.trials),
         "best_architecture_path": str(output_dir / "best_architecture.json"),
         **best_payload,
