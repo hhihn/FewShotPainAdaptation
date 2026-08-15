@@ -58,6 +58,7 @@ class PainDatasetConfig:
     crossmod_positional_base: float = 10000.0
     crossmod_attention_dropout_rate: float = 0.0
     crossmod_ff_activation: str = "relu"
+    crossmod_fusion_mode: str = "cross_attention_concat"
     clear_session_per_fold: bool = True  # Legacy flag; LOSO folds now reuse one graph
     single_loso_fold: bool = True  # If True, run only one LOSO fold (testing mode)
     single_loso_test_subject: Optional[int] = None  # Optional explicit held-out subject
@@ -91,12 +92,19 @@ class PainDatasetConfig:
     attention_mode: str = "can"  # CAN over temporal feature maps
     can_attention_temperature: float = 1.0
     can_meta_hidden_dim: int = 32
+    can_meta_depth: int = 1
+    can_meta_activation: str = "gelu"
+    can_temporal_pooling: str = "gated"
     can_local_pool_temperature: float = 0.1
+    can_logit_scale_initial: float = 10.0
     can_local_loss_weight: float = 1.0
     can_margin_loss_weight: float = 0.2
     can_margin_target: float = 0.3
     can_support_mode: str = "sampled"
     learned_prototype_slots_per_class: int = 1
+    prototype_feature_normalization: str = "none"
+    prototype_aggregation: str = "mean"
+    prototype_attention_temperature: float = 0.2
     prototype_bank_init_samples_per_class: int = 0
     prototype_finetune_epochs: int = 1
     prototype_finetune_tasks_per_epoch: Optional[int] = None
@@ -329,9 +337,23 @@ class PainDatasetConfig:
         self.can_meta_hidden_dim = int(self.can_meta_hidden_dim)
         if self.can_meta_hidden_dim <= 0:
             raise ValueError("can_meta_hidden_dim must be > 0")
+        self.can_meta_depth = int(self.can_meta_depth)
+        if self.can_meta_depth <= 0:
+            raise ValueError("can_meta_depth must be > 0")
+        self.can_meta_activation = str(self.can_meta_activation).strip().lower()
+        if self.can_meta_activation not in {"gelu", "relu"}:
+            raise ValueError("can_meta_activation must be one of: gelu, relu")
+        self.can_temporal_pooling = str(self.can_temporal_pooling).strip().lower()
+        if self.can_temporal_pooling not in {"mean", "attention", "gated"}:
+            raise ValueError(
+                "can_temporal_pooling must be one of: mean, attention, gated"
+            )
         self.can_local_pool_temperature = float(self.can_local_pool_temperature)
         if self.can_local_pool_temperature <= 0:
             raise ValueError("can_local_pool_temperature must be > 0")
+        self.can_logit_scale_initial = float(self.can_logit_scale_initial)
+        if self.can_logit_scale_initial <= 0:
+            raise ValueError("can_logit_scale_initial must be > 0")
         self.can_local_loss_weight = float(self.can_local_loss_weight)
         if self.can_local_loss_weight < 0:
             raise ValueError("can_local_loss_weight must be non-negative")
@@ -351,6 +373,21 @@ class PainDatasetConfig:
         )
         if self.learned_prototype_slots_per_class <= 0:
             raise ValueError("learned_prototype_slots_per_class must be > 0")
+        self.prototype_feature_normalization = str(
+            self.prototype_feature_normalization
+        ).strip().lower()
+        if self.prototype_feature_normalization not in {"none", "l2", "layer_l2"}:
+            raise ValueError(
+                "prototype_feature_normalization must be one of: none, l2, layer_l2"
+            )
+        self.prototype_aggregation = str(self.prototype_aggregation).strip().lower()
+        if self.prototype_aggregation not in {"mean", "attention"}:
+            raise ValueError("prototype_aggregation must be one of: mean, attention")
+        self.prototype_attention_temperature = float(
+            self.prototype_attention_temperature
+        )
+        if self.prototype_attention_temperature <= 0:
+            raise ValueError("prototype_attention_temperature must be > 0")
         self.prototype_bank_init_samples_per_class = int(
             self.prototype_bank_init_samples_per_class
         )
@@ -451,6 +488,16 @@ class PainDatasetConfig:
         self.crossmod_positional_base = float(self.crossmod_positional_base)
         if self.crossmod_positional_base <= 0:
             raise ValueError("crossmod_positional_base must be > 0")
+        self.crossmod_fusion_mode = str(self.crossmod_fusion_mode).strip().lower()
+        if self.crossmod_fusion_mode not in {
+            "cross_attention_concat",
+            "residual_concat",
+            "gated_sum",
+        }:
+            raise ValueError(
+                "crossmod_fusion_mode must be one of: cross_attention_concat, "
+                "residual_concat, gated_sum"
+            )
         if (
             self.encoder_backend == "crossmod"
             and int(self.eegnet_separable_filters) % int(self.crossmod_num_heads) != 0

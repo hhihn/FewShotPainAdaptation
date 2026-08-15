@@ -34,12 +34,20 @@ class MultimodalPrototypicalNetwork(keras.Model):
         crossmod_positional_base: float = 10000.0,
         crossmod_attention_dropout_rate: float = 0.0,
         crossmod_ff_activation: str = "relu",
+        crossmod_fusion_mode: str = "cross_attention_concat",
         attention_mode: str = "can",
         can_attention_temperature: float = 1.0,
         can_meta_hidden_dim: int = 32,
+        can_meta_depth: int = 1,
+        can_meta_activation: str = "gelu",
+        can_temporal_pooling: str = "gated",
         can_local_pool_temperature: float = 0.1,
+        can_logit_scale_initial: float = 10.0,
         can_support_mode: str = "sampled",
         learned_prototype_slots_per_class: int = 1,
+        prototype_feature_normalization: str = "none",
+        prototype_aggregation: str = "mean",
+        prototype_attention_temperature: float = 0.2,
         seed: int = 0,
     ):
         """Initialize a feature-map CAN model.
@@ -63,6 +71,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.can_enabled = True
         self.can_attention_temperature = float(can_attention_temperature)
         self.can_meta_hidden_dim = int(can_meta_hidden_dim)
+        self.can_meta_depth = int(can_meta_depth)
+        self.can_meta_activation = str(can_meta_activation)
+        self.can_temporal_pooling = str(can_temporal_pooling)
         self.can_support_mode = str(can_support_mode).strip().lower()
         if self.can_support_mode not in {"sampled", "learned_prototype_memory"}:
             raise ValueError(
@@ -71,6 +82,11 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.learned_prototype_slots_per_class = int(learned_prototype_slots_per_class)
         if self.learned_prototype_slots_per_class <= 0:
             raise ValueError("learned_prototype_slots_per_class must be > 0")
+        self.prototype_feature_normalization = str(
+            prototype_feature_normalization
+        ).strip().lower()
+        self.prototype_aggregation = str(prototype_aggregation).strip().lower()
+        self.prototype_attention_temperature = float(prototype_attention_temperature)
 
         self.eegnet_temporal_filters = int(eegnet_temporal_filters)
         self.eegnet_depth_multiplier = int(eegnet_depth_multiplier)
@@ -101,7 +117,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.logit_scale = self.add_weight(
             name="logit_scale",
             shape=(),
-            initializer=keras.initializers.Constant(10.0),
+            initializer=keras.initializers.Constant(float(can_logit_scale_initial)),
             trainable=True,
             constraint=keras.constraints.NonNeg(),
         )
@@ -128,6 +144,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
                 positional_base=self.crossmod_positional_base,
                 attention_dropout_rate=self.crossmod_attention_dropout_rate,
                 ff_activation=self.crossmod_ff_activation,
+                fusion_mode=crossmod_fusion_mode,
             )
         else:
             self.encoder = EEGNetStyleEncoder(
@@ -149,6 +166,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         self.cross_attention = CrossAttentionModule(
             temperature=self.can_attention_temperature,
             meta_hidden_dim=self.can_meta_hidden_dim,
+            meta_depth=self.can_meta_depth,
+            meta_activation=self.can_meta_activation,
+            temporal_pooling=self.can_temporal_pooling,
             local_pool_temperature=can_local_pool_temperature,
         )
         self.prototype_memory = LearnedPrototypeMemory(
@@ -185,7 +205,32 @@ class MultimodalPrototypicalNetwork(keras.Model):
         class_weights = tf.cast(class_mask, support_feature_maps.dtype)
         class_sums = tf.einsum("bstd,bsc->bctd", support_feature_maps, class_weights)
         class_counts = tf.reduce_sum(class_weights, axis=1)
-        return class_sums / (class_counts[:, :, tf.newaxis, tf.newaxis] + 1e-8)
+        means = class_sums / (class_counts[:, :, tf.newaxis, tf.newaxis] + 1e-8)
+        if self.prototype_aggregation == "mean":
+            return means
+        support_summary = tf.nn.l2_normalize(
+            tf.reduce_mean(support_feature_maps, axis=2), axis=-1
+        )
+        mean_summary = tf.nn.l2_normalize(tf.reduce_mean(means, axis=2), axis=-1)
+        consistency = tf.einsum("bsd,bcd->bsc", support_summary, mean_summary)
+        masked = tf.where(
+            class_mask,
+            consistency / self.prototype_attention_temperature,
+            tf.fill(tf.shape(consistency), tf.cast(-1e9, consistency.dtype)),
+        )
+        weights = tf.nn.softmax(masked, axis=1) * class_weights
+        weights = weights / (tf.reduce_sum(weights, axis=1, keepdims=True) + 1e-8)
+        return tf.einsum("bstd,bsc->bctd", support_feature_maps, weights)
+
+    def _normalize_can_feature_maps(self, feature_maps: tf.Tensor) -> tf.Tensor:
+        """Apply optional per-timestep normalization before CAN scoring."""
+        if self.prototype_feature_normalization == "none":
+            return feature_maps
+        if self.prototype_feature_normalization == "layer_l2":
+            feature_maps = feature_maps - tf.reduce_mean(
+                feature_maps, axis=-1, keepdims=True
+            )
+        return tf.nn.l2_normalize(feature_maps, axis=-1)
 
     def _forward_episode_batch_can(
         self,
@@ -211,6 +256,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
             tf.concat([support_flat, query_flat], axis=0),
             training=training,
         )
+        all_feature_maps = self._normalize_can_feature_maps(all_feature_maps)
 
         support_count = num_tasks * support_size
         support_maps_flat = all_feature_maps[:support_count]
@@ -256,7 +302,9 @@ class MultimodalPrototypicalNetwork(keras.Model):
         query_flat = tf.reshape(
             query_x, [num_tasks * query_size, sequence_length, num_sensors]
         )
-        query_feature_maps_flat = self.encode_feature_map(query_flat, training=training)
+        query_feature_maps_flat = self._normalize_can_feature_maps(
+            self.encode_feature_map(query_flat, training=training)
+        )
         feature_time = tf.shape(query_feature_maps_flat)[1]
         feature_dim = tf.shape(query_feature_maps_flat)[2]
         return tf.reshape(
@@ -303,6 +351,7 @@ class MultimodalPrototypicalNetwork(keras.Model):
         """Run CAN using learned prototype-memory slots as support."""
         query_feature_maps = self._encode_query_feature_maps(query_x, training=training)
         prototype_maps, prototype_y = self.prototype_memory(query_feature_maps)
+        prototype_maps = self._normalize_can_feature_maps(prototype_maps)
         cam_outputs = self.cross_attention((prototype_maps, query_feature_maps))
         similarity_scores = self._aggregate_slot_scores(
             cam_outputs["similarity_scores"]

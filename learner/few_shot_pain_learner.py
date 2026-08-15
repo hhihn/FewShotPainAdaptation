@@ -38,6 +38,7 @@ class FewShotPainLearner:
         config: PainDatasetConfig,
         data_dir: str = "./dataset/np-dataset",
         learning_rate: float = 1e-3,
+        dataset: PainMetaDataset | None = None,
     ):
         """
         Args:
@@ -88,9 +89,13 @@ class FewShotPainLearner:
         )
 
         # Initialize dataset and cross-validator
-        self.dataset = PainMetaDataset(
+        self.dataset = dataset or PainMetaDataset(
             data_dir=data_dir, config=config, normalize=True, normalize_per_subject=True
         )
+        # NAS trials may safely share immutable loaded arrays while using a fresh
+        # learner/model. Dataset and episodic settings are fixed across those trials.
+        self.dataset.config = config
+        self.dataset.task_class_ids = tuple(int(v) for v in config.task_class_ids)
 
         self.cv = LOSOCrossValidator(
             dataset=self.dataset,
@@ -146,12 +151,19 @@ class FewShotPainLearner:
             "attention_mode": self.config.attention_mode,
             "can_attention_temperature": self.config.can_attention_temperature,
             "can_meta_hidden_dim": self.config.can_meta_hidden_dim,
+            "can_meta_depth": self.config.can_meta_depth,
+            "can_meta_activation": self.config.can_meta_activation,
+            "can_temporal_pooling": self.config.can_temporal_pooling,
             "can_local_pool_temperature": self.config.can_local_pool_temperature,
+            "can_logit_scale_initial": self.config.can_logit_scale_initial,
             "can_local_loss_weight": self.config.can_local_loss_weight,
             "can_margin_loss_weight": self.config.can_margin_loss_weight,
             "can_margin_target": self.config.can_margin_target,
             "can_support_mode": self.config.can_support_mode,
             "learned_prototype_slots_per_class": self.config.learned_prototype_slots_per_class,
+            "prototype_feature_normalization": self.config.prototype_feature_normalization,
+            "prototype_aggregation": self.config.prototype_aggregation,
+            "prototype_attention_temperature": self.config.prototype_attention_temperature,
             "prototype_bank_init_samples_per_class": self.config.prototype_bank_init_samples_per_class,
             "prototype_finetune_epochs": self.config.prototype_finetune_epochs,
             "prototype_finetune_tasks_per_epoch": self.config.prototype_finetune_tasks_per_epoch,
@@ -196,6 +208,7 @@ class FewShotPainLearner:
             "crossmod_positional_base": self.config.crossmod_positional_base,
             "crossmod_attention_dropout_rate": self.config.crossmod_attention_dropout_rate,
             "crossmod_ff_activation": self.config.crossmod_ff_activation,
+            "crossmod_fusion_mode": self.config.crossmod_fusion_mode,
             "clear_session_per_fold": self.config.clear_session_per_fold,
             "single_loso_fold": self.config.single_loso_fold,
             "single_loso_test_subject": self.config.single_loso_test_subject,

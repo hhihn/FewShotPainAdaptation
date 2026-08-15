@@ -13,6 +13,9 @@ class CrossAttentionModule(keras.layers.Layer):
         self,
         temperature: float = 1.0,
         meta_hidden_dim: int = 32,
+        meta_depth: int = 1,
+        meta_activation: str = "gelu",
+        temporal_pooling: str = "gated",
         local_pool_temperature: float = 0.1,
         name: str = "cross_attention_module",
     ):
@@ -27,9 +30,18 @@ class CrossAttentionModule(keras.layers.Layer):
         super().__init__(name=name)
         self.temperature = float(temperature)
         self.meta_hidden_dim = int(meta_hidden_dim)
+        self.meta_depth = int(meta_depth)
+        self.meta_activation = str(meta_activation).strip().lower()
+        self.temporal_pooling = str(temporal_pooling).strip().lower()
         self.local_pool_temperature = float(local_pool_temperature)
         if self.local_pool_temperature <= 0:
             raise ValueError("local_pool_temperature must be > 0")
+        if self.meta_depth <= 0:
+            raise ValueError("meta_depth must be > 0")
+        if self.meta_activation not in {"gelu", "relu"}:
+            raise ValueError("meta_activation must be one of: gelu, relu")
+        if self.temporal_pooling not in {"mean", "attention", "gated"}:
+            raise ValueError("temporal_pooling must be one of: mean, attention, gated")
         self._built_temporal_shapes = None
 
     def build(self, input_shape):
@@ -61,6 +73,25 @@ class CrossAttentionModule(keras.layers.Layer):
             initializer="zeros",
             trainable=True,
         )
+        self.meta_hidden_weights = []
+        self.meta_hidden_biases = []
+        for layer_index in range(1, self.meta_depth):
+            self.meta_hidden_weights.append(
+                self.add_weight(
+                    name=f"meta_w{layer_index + 1}",
+                    shape=(self.meta_hidden_dim, self.meta_hidden_dim),
+                    initializer="glorot_uniform",
+                    trainable=True,
+                )
+            )
+            self.meta_hidden_biases.append(
+                self.add_weight(
+                    name=f"meta_b{layer_index + 1}",
+                    shape=(self.meta_hidden_dim,),
+                    initializer="zeros",
+                    trainable=True,
+                )
+            )
         self.meta_wp = self.add_weight(
             name="meta_wp",
             shape=(self.meta_hidden_dim, query_time),
@@ -142,9 +173,12 @@ class CrossAttentionModule(keras.layers.Layer):
         normalized over their corresponding temporal axes.
         """
         descriptor = self._pair_descriptor(prototype_maps, query_maps)
-        hidden = tf.nn.gelu(
+        activation = tf.nn.gelu if self.meta_activation == "gelu" else tf.nn.relu
+        hidden = activation(
             tf.einsum("bqcd,dh->bqch", descriptor, self.meta_w1) + self.meta_b1
         )
+        for weight, bias in zip(self.meta_hidden_weights, self.meta_hidden_biases):
+            hidden = activation(tf.einsum("bqch,hk->bqck", hidden, weight) + bias)
         kernel_p = tf.nn.softmax(
             tf.einsum("bqch,ht->bqct", hidden, self.meta_wp) + self.meta_bp,
             axis=-1,
@@ -166,6 +200,10 @@ class CrossAttentionModule(keras.layers.Layer):
         attention_descriptor = tf.reduce_sum(
             feature_maps * attention[..., tf.newaxis], axis=temporal_axis
         )
+        if self.temporal_pooling == "mean":
+            return mean_descriptor
+        if self.temporal_pooling == "attention":
+            return attention_descriptor
         gate = tf.sigmoid(tf.cast(self.pool_gate_logit, feature_maps.dtype))
         return (1.0 - gate) * mean_descriptor + gate * attention_descriptor
 

@@ -34,6 +34,7 @@ class CrossModFeatureMapEncoder(keras.Model):
         positional_base: float = 10000.0,
         attention_dropout_rate: float = 0.0,
         ff_activation: str = "relu",
+        fusion_mode: str = "cross_attention_concat",
         name: str = "crossmod_encoder",
     ):
         """Initialize the CrossMod feature-map encoder.
@@ -80,6 +81,7 @@ class CrossModFeatureMapEncoder(keras.Model):
         self.positional_base = float(positional_base)
         self.attention_dropout_rate = float(attention_dropout_rate)
         self.ff_activation = str(ff_activation)
+        self.fusion_mode = str(fusion_mode).strip().lower()
 
         self._validate_config()
         self.eda_branch = self._build_frontend_branch("eda")
@@ -132,6 +134,15 @@ class CrossModFeatureMapEncoder(keras.Model):
             dropout=self.attention_dropout_rate,
             name="crossmod_ecg_to_eda_attention",
         )
+        self.eda_cross_gate_logit = self.add_weight(
+            name="eda_cross_gate_logit", shape=(), initializer="zeros", trainable=True
+        )
+        self.ecg_cross_gate_logit = self.add_weight(
+            name="ecg_cross_gate_logit", shape=(), initializer="zeros", trainable=True
+        )
+        self.modality_gate_logit = self.add_weight(
+            name="modality_gate_logit", shape=(), initializer="zeros", trainable=True
+        )
 
     def _validate_config(self) -> None:
         """Validate CrossMod encoder hyperparameters.
@@ -170,6 +181,15 @@ class CrossModFeatureMapEncoder(keras.Model):
         if self.separable_filters % self.num_heads != 0:
             raise ValueError(
                 "eegnet_separable_filters must be divisible by crossmod_num_heads"
+            )
+        if self.fusion_mode not in {
+            "cross_attention_concat",
+            "residual_concat",
+            "gated_sum",
+        }:
+            raise ValueError(
+                "crossmod_fusion_mode must be one of: cross_attention_concat, "
+                "residual_concat, gated_sum"
             )
 
     def _build_frontend_branch(self, prefix: str):
@@ -247,7 +267,14 @@ class CrossModFeatureMapEncoder(keras.Model):
             key=eda_projected,
             training=training,
         )
-        return tf.concat([eda_to_ecg, ecg_to_eda], axis=-1)
+        if self.fusion_mode == "cross_attention_concat":
+            return tf.concat([eda_to_ecg, ecg_to_eda], axis=-1)
+        eda_residual = eda_projected + tf.sigmoid(self.eda_cross_gate_logit) * eda_to_ecg
+        ecg_residual = ecg_encoded + tf.sigmoid(self.ecg_cross_gate_logit) * ecg_to_eda
+        if self.fusion_mode == "residual_concat":
+            return tf.concat([eda_residual, ecg_residual], axis=-1)
+        modality_gate = tf.sigmoid(self.modality_gate_logit)
+        return modality_gate * eda_residual + (1.0 - modality_gate) * ecg_residual
 
     def call(self, x, training=False):
         """Return fused feature maps for a batch of EDA/ECG windows.
@@ -284,4 +311,5 @@ class CrossModFeatureMapEncoder(keras.Model):
             "positional_base": self.positional_base,
             "attention_dropout_rate": self.attention_dropout_rate,
             "ff_activation": self.ff_activation,
+            "fusion_mode": self.fusion_mode,
         }
