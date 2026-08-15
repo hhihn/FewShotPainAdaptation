@@ -83,6 +83,77 @@ class NestedFoldIndices:
     target_subject: int
 
 
+@dataclass(frozen=True)
+class CrossFittedSubjectPlan:
+    """Deterministic outer blocks and their inner development folds."""
+
+    outer_blocks: tuple[tuple[int, ...], ...]
+    inner_folds_by_block: tuple[tuple[tuple[int, ...], ...], ...]
+    seed: int
+
+    def validate(self, subjects: Iterable[int]) -> None:
+        known = {int(value) for value in subjects}
+        flattened_outer = [subject for block in self.outer_blocks for subject in block]
+        if len(flattened_outer) != len(set(flattened_outer)):
+            raise RuntimeError("Outer subject blocks overlap")
+        if set(flattened_outer) != known:
+            raise RuntimeError("Outer subject blocks do not cover all subjects")
+        for block, inner_folds in zip(
+            self.outer_blocks, self.inner_folds_by_block
+        ):
+            development = known - set(block)
+            flattened_inner = [
+                subject for fold in inner_folds for subject in fold
+            ]
+            if len(flattened_inner) != len(set(flattened_inner)):
+                raise RuntimeError("Inner subject folds overlap")
+            if set(flattened_inner) != development:
+                raise RuntimeError(
+                    "Inner subject folds do not cover the development subjects"
+                )
+
+
+def _balanced_subject_folds(
+    subjects: Iterable[int], *, fold_count: int, seed: int
+) -> tuple[tuple[int, ...], ...]:
+    ordered = np.asarray(sorted(int(value) for value in subjects), dtype=np.int32)
+    if fold_count < 2 or fold_count > len(ordered):
+        raise ValueError("fold_count must be between 2 and the subject count")
+    shuffled = np.random.default_rng(seed).permutation(ordered)
+    return tuple(
+        tuple(sorted(int(value) for value in fold.tolist()))
+        for fold in np.array_split(shuffled, fold_count)
+    )
+
+
+def build_cross_fitted_subject_plan(
+    subjects: Iterable[int], *, outer_block_count: int, inner_fold_count: int,
+    seed: int,
+) -> CrossFittedSubjectPlan:
+    """Build balanced outer blocks and inner folds without subject overlap."""
+
+    ordered = tuple(sorted(int(value) for value in subjects))
+    outer_blocks = _balanced_subject_folds(
+        ordered, fold_count=outer_block_count, seed=seed
+    )
+    known = set(ordered)
+    inner_folds_by_block = tuple(
+        _balanced_subject_folds(
+            known - set(block),
+            fold_count=inner_fold_count,
+            seed=seed + (block_index + 1) * 100_000,
+        )
+        for block_index, block in enumerate(outer_blocks)
+    )
+    plan = CrossFittedSubjectPlan(
+        outer_blocks=outer_blocks,
+        inner_folds_by_block=inner_folds_by_block,
+        seed=int(seed),
+    )
+    plan.validate(ordered)
+    return plan
+
+
 def load_biovid_binary(data_dir: str, config: PainNASConfig) -> BioVidArrays:
     """Load GSR/ECG/EMG and filter BioVid to T0 versus T4."""
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from painnas.config import PainNASConfig
+from painnas.cross_fitted_loso import run_cross_fitted_loso_nas
 from painnas.data import load_biovid_binary
 from painnas.io import to_jsonable
 from painnas.loso import run_loso
@@ -28,6 +29,9 @@ def _common_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-patience", type=int, default=8)
     parser.add_argument("--loso-patience", type=int, default=15)
     parser.add_argument("--search-validation-subjects", type=int, default=17)
+    parser.add_argument("--outer-block-count", type=int, default=5)
+    parser.add_argument("--inner-fold-count", type=int, default=3)
+    parser.add_argument("--uncertainty-beta", type=float, default=1.0)
     parser.add_argument("--max-parameters", type=int, default=32_000_000)
     parser.add_argument("--bootstrap-samples", type=int, default=10_000)
     parser.add_argument("--resume", action="store_true")
@@ -68,7 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run one NAS and fresh refit inside every outer LOSO fold.",
     )
     nested_parser.set_defaults(n_trials=10, search_max_epochs=20)
-    for fold_parser in (loso_parser, all_parser, nested_parser):
+    cross_fitted_parser = subparsers.add_parser(
+        "cross-fitted",
+        parents=[common],
+        help="Run uncertainty-aware block NAS and warm-started LOSO.",
+    )
+    cross_fitted_parser.set_defaults(n_trials=10, search_max_epochs=20)
+    for fold_parser in (loso_parser, all_parser, nested_parser, cross_fitted_parser):
         fold_parser.add_argument("--loso-start-index", type=int, default=None)
         fold_parser.add_argument("--loso-stop-index", type=int, default=None)
         fold_parser.add_argument(
@@ -90,6 +100,9 @@ def _config_from_args(args: argparse.Namespace) -> PainNASConfig:
         search_patience=args.search_patience,
         loso_patience=args.loso_patience,
         search_validation_subjects=args.search_validation_subjects,
+        outer_block_count=args.outer_block_count,
+        inner_fold_count=args.inner_fold_count,
+        uncertainty_beta=args.uncertainty_beta,
         max_parameters=args.max_parameters,
         bootstrap_samples=args.bootstrap_samples,
     )
@@ -105,6 +118,19 @@ def run_command(args: argparse.Namespace) -> dict[str, Any]:
         "gpu_devices": devices,
         "output_dir": str(output_dir),
     }
+
+    if args.command == "cross-fitted":
+        result["cross_fitted_loso"] = run_cross_fitted_loso_nas(
+            arrays,
+            config,
+            output_dir / "cross_fitted_loso",
+            resume=bool(args.resume),
+            start_index=getattr(args, "loso_start_index", None),
+            stop_index=getattr(args, "loso_stop_index", None),
+            max_folds=getattr(args, "max_folds", None),
+            verbose=args.verbose,
+        )
+        return result
 
     if args.command == "nested":
         result["nested_loso"] = run_nested_loso_nas(

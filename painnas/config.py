@@ -20,6 +20,9 @@ class PainNASConfig:
     search_patience: int = 8
     loso_patience: int = 15
     search_validation_subjects: int = 17
+    outer_block_count: int = 5
+    inner_fold_count: int = 3
+    uncertainty_beta: float = 1.0
     max_parameters: int = 32_000_000
     bootstrap_samples: int = 10_000
     dropout_rate: float = 0.25
@@ -36,6 +39,8 @@ class PainNASConfig:
             "search_max_epochs",
             "loso_max_epochs",
             "search_validation_subjects",
+            "outer_block_count",
+            "inner_fold_count",
             "max_parameters",
             "bootstrap_samples",
             "num_classes",
@@ -47,6 +52,12 @@ class PainNASConfig:
                 raise ValueError(f"{field_name} must be > 0")
         if self.search_patience < 0 or self.loso_patience < 0:
             raise ValueError("early-stopping patience must be >= 0")
+        if self.outer_block_count < 2:
+            raise ValueError("outer_block_count must be >= 2")
+        if self.inner_fold_count < 2:
+            raise ValueError("inner_fold_count must be >= 2")
+        if self.uncertainty_beta < 0:
+            raise ValueError("uncertainty_beta must be >= 0")
         if self.num_classes != 2 or self.raw_class_ids != (0, 4):
             raise ValueError("PainNAS currently implements binary BioVid T0-vs-T4 only")
         if len(self.modalities) != 3:
@@ -75,4 +86,13 @@ NESTED_PROTOCOL_DESCRIPTION = (
     "The selected architecture is reinitialized, fitted on all source-subject Train "
     "samples for its inner-selected best epoch, and evaluated once on the untouched "
     "target subject's Test samples."
+)
+
+CROSS_FITTED_PROTOCOL_DESCRIPTION = (
+    "Subjects are partitioned into deterministic outer blocks. For each block, "
+    "architecture search uses only subjects outside that block and evaluates each "
+    "development subject once through inner subject-fold validation. The winning "
+    "fold checkpoint warm-starts a fresh-optimizer LOSO continuation on every "
+    "subject except the current outer target, which is evaluated only on its "
+    "predefined Test samples."
 )
