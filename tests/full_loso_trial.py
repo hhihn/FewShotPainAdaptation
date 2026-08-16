@@ -428,7 +428,13 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the full LOSO CLI parser.
+
+    Split out of ``main`` so callers can inspect the registered flags without
+    running a trial; the notebook sanity check uses this to verify that the
+    module in memory is the one on disk.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Run full LOSO training/evaluation with learned CAN prototype memory "
@@ -688,7 +694,11 @@ def main() -> None:
         type=str,
         default="outputs/full_loso/full_loso_results.json",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.subject_eval_tasks is not None:
         args.heldout_eval_tasks = int(args.subject_eval_tasks)
 
