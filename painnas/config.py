@@ -17,6 +17,7 @@ class PainNASConfig:
     n_trials: int = 50
     search_max_epochs: int = 50
     loso_max_epochs: int = 100
+    cross_fitted_continuation_epochs: int | None = None
     search_patience: int = 8
     loso_patience: int = 15
     search_validation_subjects: int = 17
@@ -52,6 +53,11 @@ class PainNASConfig:
                 raise ValueError(f"{field_name} must be > 0")
         if self.search_patience < 0 or self.loso_patience < 0:
             raise ValueError("early-stopping patience must be >= 0")
+        if (
+            self.cross_fitted_continuation_epochs is not None
+            and self.cross_fitted_continuation_epochs <= 0
+        ):
+            raise ValueError("cross_fitted_continuation_epochs must be > 0 or None")
         if self.outer_block_count < 2:
             raise ValueError("outer_block_count must be >= 2")
         if self.inner_fold_count < 2:
@@ -66,7 +72,12 @@ class PainNASConfig:
             raise ValueError("dropout_rate must be in [0, 1)")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # Omitting the disabled option preserves manifests and fingerprints from
+        # runs created before this override was introduced.
+        if self.cross_fitted_continuation_epochs is None:
+            payload.pop("cross_fitted_continuation_epochs")
+        return payload
 
     def fingerprint(self) -> str:
         """Return a stable hash used to guard resumable artifacts."""

@@ -37,6 +37,20 @@ python -m painnas cross-fitted \
   --resume
 ```
 
+By default, post-NAS warm-start training uses the rounded median best epoch from
+the winning trial's inner folds. To force a fixed continuation length instead,
+pass `--cross-fitted-continuation-epochs EPOCHS`, or set
+`cross_fitted_continuation_epochs=EPOCHS` on `PainNASConfig` in the Colab
+configuration cell.
+
+With `--verbose 1` (the default), PainNAS prints intermediate loss, accuracy,
+macro F1, and subject-macro validation accuracy after every NAS/continuation
+epoch. It also reports epoch-level ETAs, held-out metrics after every completed
+LOSO fold, and a continuation ETA for the remaining selected folds. Explicit
+stage messages identify the current outer block and whether PainNAS is searching
+for an architecture, has selected one, is fitting a LOSO target subject, or has
+completed the block. Use `--verbose 0` to disable this progress output.
+
 For Colab, open `painnas/colab_entrypoint.ipynb`. It checks out the repository,
 installs the pinned environment, stages `BioVid.tar.gz` from Drive onto the
 Colab SSD (with an extracted-Drive fallback), validates the real T0/T4 arrays,
@@ -87,6 +101,19 @@ python -m painnas cross-fitted \
 - `cross_fitted_loso/fold_metrics.csv` and `predictions.csv`: analysis-ready tables
 - `cross_fitted_loso/architecture_frequencies.csv`: selected-architecture counts
 - `cross_fitted_loso/summary.json`: metrics, confusion matrix, and bootstrap CIs
+
+Visualize a completed run as a publication-ready PNG (and optionally a vector
+PDF) and print its selection and test metrics:
+
+```bash
+python -m painnas.visualize_cross_fitted_results \
+  --run-dir data/cross_fitted_loso \
+  --pdf
+```
+
+The selection panel reports the inner subject-macro validation accuracy used to
+choose each block's architecture, including its standard error and penalized
+objective. It is distinct from the held-out LOSO test accuracy and macro F1.
 
 Resume is guarded by configuration and architecture fingerprints. If settings
 change, start a new output directory.

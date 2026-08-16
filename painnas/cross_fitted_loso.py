@@ -71,6 +71,85 @@ def _round_positive_median(values: Iterable[int]) -> int:
     return max(1, int(np.floor(median + 0.5)))
 
 
+def resolve_continuation_epochs(
+    search_result: dict[str, Any], config: PainNASConfig
+) -> int:
+    """Resolve the fixed override or the search-derived continuation length."""
+    if config.cross_fitted_continuation_epochs is not None:
+        return int(config.cross_fitted_continuation_epochs)
+    return int(search_result["median_best_epoch"])
+
+
+def _format_duration(seconds: float | None) -> str:
+    """Format an ETA or elapsed duration compactly for progress output."""
+    if seconds is None or not np.isfinite(seconds) or seconds < 0:
+        return "unknown"
+    rounded = int(round(float(seconds)))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds_part:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds_part:02d}s"
+    return f"{seconds_part}s"
+
+
+def _continuation_eta(durations: Iterable[float], remaining_folds: int) -> float | None:
+    """Estimate remaining continuation time from the robust median fold duration."""
+    finite = np.asarray(
+        [value for value in durations if np.isfinite(value) and value >= 0],
+        dtype=np.float64,
+    )
+    if finite.size == 0 or remaining_folds <= 0:
+        return 0.0 if remaining_folds <= 0 else None
+    return float(np.median(finite)) * int(remaining_folds)
+
+
+class EpochProgressCallback(keras.callbacks.Callback):
+    """Print intermediate metrics and an epoch-level ETA without a noisy batch bar."""
+
+    def __init__(
+        self,
+        *,
+        label: str,
+        total_epochs: int,
+        metric_names: Iterable[str],
+    ) -> None:
+        super().__init__()
+        self.label = label
+        self.total_epochs = int(total_epochs)
+        self.metric_names = tuple(metric_names)
+        self.started_at = 0.0
+
+    def on_train_begin(self, logs=None) -> None:
+        del logs
+        self.started_at = time.perf_counter()
+
+    def on_epoch_end(self, epoch: int, logs=None) -> None:
+        logs = logs or {}
+        elapsed = time.perf_counter() - self.started_at
+        completed = epoch + 1
+        remaining = max(0, self.total_epochs - completed)
+        eta = elapsed / completed * remaining if completed else None
+        metrics = []
+        for name in self.metric_names:
+            value = logs.get(name)
+            if value is None:
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(numeric):
+                metrics.append(f"{name}={numeric:.4f}")
+        metric_text = " | ".join(metrics) if metrics else "metrics unavailable"
+        print(
+            f"[{self.label}] epoch {completed}/{self.total_epochs} | {metric_text} | "
+            f"elapsed {_format_duration(elapsed)} | ETA {_format_duration(eta)}",
+            flush=True,
+        )
+
+
 def _subject_accuracy_rows(
     arrays: BioVidArrays,
     indices: np.ndarray,
@@ -307,6 +386,13 @@ def run_uncertainty_aware_block_search(
     def objective(trial: optuna.Trial) -> float:
         trial_start = time.perf_counter()
         spec = suggest_architecture(trial)
+        if verbose:
+            print(
+                f"[PainNAS block {outer_block_index}/{config.outer_block_count}] "
+                f"stage=architecture search | trial {trial.number + 1}/{config.n_trials} "
+                f"started",
+                flush=True,
+            )
         architecture_fingerprint = _architecture_fingerprint(spec)
         trial_dir = trials_dir / f"trial_{trial.number:04d}"
         trial_dir.mkdir(exist_ok=True)
@@ -331,6 +417,15 @@ def run_uncertainty_aware_block_search(
                 )
                 if not len(train_indices) or not len(validation_indices):
                     raise RuntimeError("Inner fold contains an empty sample split")
+                if verbose:
+                    print(
+                        f"[PainNAS block {outer_block_index}/{config.outer_block_count}] "
+                        f"stage=architecture search | trial {trial.number + 1}/{config.n_trials} | "
+                        f"inner fold {fold_offset}/{len(inner_folds)} | "
+                        f"fitting candidate on {len(training_subjects)} subjects | "
+                        f"validating on {len(validation_subjects)} subjects",
+                        flush=True,
+                    )
                 mean, std = compute_source_normalization(arrays.X, train_indices)
                 reset_runtime(fold_seed)
                 model = build_early_fusion_model(
@@ -371,12 +466,29 @@ def run_uncertainty_aware_block_search(
                         restore_best_weights=True,
                     ),
                 ]
+                if verbose:
+                    callbacks.append(
+                        EpochProgressCallback(
+                            label=(
+                                f"NAS block {outer_block_index} "
+                                f"trial {trial.number + 1}/{config.n_trials} "
+                                f"inner fold {fold_offset}/{len(inner_folds)}"
+                            ),
+                            total_epochs=config.search_max_epochs,
+                            metric_names=(
+                                "loss",
+                                "accuracy",
+                                "macro_f1",
+                                "val_subject_macro_accuracy",
+                            ),
+                        )
+                    )
                 try:
                     history = model.fit(
                         train_dataset,
                         epochs=config.search_max_epochs,
                         callbacks=callbacks,
-                        verbose=verbose,
+                        verbose=0 if verbose else verbose,
                     ).history
                     scores = np.asarray(metric_callback.values, dtype=np.float64)
                     if scores.size == 0 or not np.any(np.isfinite(scores)):
@@ -676,6 +788,11 @@ def run_cross_fitted_loso_nas(
     blocks_dir.mkdir(parents=True, exist_ok=True)
     folds_dir.mkdir(parents=True, exist_ok=True)
     config_fingerprint = config.fingerprint()
+    continuation_epoch_rule = (
+        "fixed config.cross_fitted_continuation_epochs"
+        if config.cross_fitted_continuation_epochs is not None
+        else "additional rounded median inner best epoch"
+    )
     manifest = {
         "stage": "cross_fitted_loso_nas",
         "config": config.to_dict(),
@@ -683,7 +800,7 @@ def run_cross_fitted_loso_nas(
         "subject_plan": _plan_payload(plan),
         "objective": "subject_accuracy_mean - uncertainty_beta * standard_error",
         "warm_start_rule": "highest-inner-fold-macro-accuracy checkpoint",
-        "continuation_epoch_rule": "additional rounded median inner best epoch",
+        "continuation_epoch_rule": continuation_epoch_rule,
         "protocol_description": CROSS_FITTED_PROTOCOL_DESCRIPTION,
     }
     ensure_manifest(output_dir / "manifest.json", manifest, resume=resume)
@@ -711,11 +828,48 @@ def run_cross_fitted_loso_nas(
                 raise ValueError(f"Configuration mismatch in resumed fold: {result_path}")
             payload_by_fold[int(payload["fold_index"])] = payload
 
+    selected_fold_indices = {fold_number_by_subject[subject] for subject in selected}
+    completed_selected = selected_fold_indices.intersection(payload_by_fold)
+    pending_folds = len(selected_fold_indices) - len(completed_selected)
+    continuation_durations = [
+        float(payload["continuation_elapsed_seconds"])
+        for fold_index, payload in payload_by_fold.items()
+        if fold_index in selected_fold_indices
+        and payload.get("continuation_elapsed_seconds") is not None
+    ]
+    completed_this_run = 0
+    if verbose:
+        initial_eta = _continuation_eta(continuation_durations, pending_folds)
+        print(
+            f"[PainNAS] selected LOSO folds: {len(selected_fold_indices)} | "
+            f"already complete: {len(completed_selected)} | pending: {pending_folds} | "
+            f"continuation ETA: {_format_duration(initial_eta)}",
+            flush=True,
+        )
+
     required_blocks = sorted({block_index_by_subject[subject] for subject in selected})
     for block_index in required_blocks:
         block = plan.outer_blocks[block_index - 1]
         inner_folds = plan.inner_folds_by_block[block_index - 1]
         block_dir = blocks_dir / f"block_{block_index:03d}"
+        block_targets = [subject for subject in selected if subject in set(block)]
+        completed_block_targets = sum(
+            fold_number_by_subject[subject] in payload_by_fold for subject in block_targets
+        )
+        if verbose:
+            search_action = (
+                "resuming/checking saved search"
+                if (block_dir / "search" / "study.sqlite3").exists()
+                else "starting search"
+            )
+            print(
+                f"\n[PainNAS block {block_index}/{config.outer_block_count}] "
+                f"stage=architecture search | {search_action} | "
+                f"trials={config.n_trials} | inner folds={len(inner_folds)} | "
+                f"LOSO targets={len(block_targets)} "
+                f"({completed_block_targets} already complete)",
+                flush=True,
+            )
         search_result = run_uncertainty_aware_block_search(
             arrays,
             config,
@@ -726,8 +880,19 @@ def run_cross_fitted_loso_nas(
             resume=resume,
             verbose=verbose,
         )
-        block_targets = [subject for subject in selected if subject in set(block)]
-        for target_subject in block_targets:
+        block_continuation_epochs = resolve_continuation_epochs(search_result, config)
+        if verbose:
+            print(
+                f"[PainNAS block {block_index}/{config.outer_block_count}] "
+                f"stage=architecture selected | trial="
+                f"{int(search_result['best_trial_number']) + 1}/{config.n_trials} | "
+                f"validation accuracy={search_result['best_subject_accuracy_mean']:.4f} | "
+                f"selection objective={search_result['best_uncertainty_objective']:.4f} | "
+                f"parameters={int(search_result['parameter_count']):,} | "
+                f"LOSO continuation epochs={block_continuation_epochs}",
+                flush=True,
+            )
+        for block_target_position, target_subject in enumerate(block_targets, start=1):
             fold_index = fold_number_by_subject[target_subject]
             fold_dir = folds_dir / f"fold_{fold_index:03d}"
             fold_dir.mkdir(exist_ok=True)
@@ -770,7 +935,16 @@ def run_cross_fitted_loso_nas(
             checkpoint_path = block_dir / "search" / search_result[
                 "warm_start_checkpoint"
             ]
-            continuation_epochs = int(search_result["median_best_epoch"])
+            continuation_epochs = resolve_continuation_epochs(search_result, config)
+            if verbose:
+                print(
+                    f"[PainNAS block {block_index}/{config.outer_block_count}] "
+                    f"stage=fitting LOSO subject {block_target_position}/{len(block_targets)} | "
+                    f"global fold={fold_index}/{len(all_subjects)} | "
+                    f"target={arrays.subject_keys.get(target_subject, target_subject)} | "
+                    f"continuation epochs={continuation_epochs}",
+                    flush=True,
+                )
             reset_runtime(fold_seed)
             model = build_early_fusion_model(
                 spec,
@@ -783,13 +957,21 @@ def run_cross_fitted_loso_nas(
             if optimizer_initial_iterations != 0:
                 raise RuntimeError("Warm-start optimizer did not start at iteration zero")
             callbacks = [keras.callbacks.TerminateOnNaN()]
+            if verbose:
+                callbacks.append(
+                    EpochProgressCallback(
+                        label=f"LOSO fold {fold_index}/{len(all_subjects)}",
+                        total_epochs=continuation_epochs,
+                        metric_names=("loss", "accuracy", "macro_f1"),
+                    )
+                )
             continuation_start = time.perf_counter()
             try:
                 history = model.fit(
                     train_dataset,
                     epochs=continuation_epochs,
                     callbacks=callbacks,
-                    verbose=verbose,
+                    verbose=0 if verbose else verbose,
                 ).history
                 losses = np.asarray(history.get("loss", []), dtype=np.float64)
                 if losses.size != continuation_epochs or not np.all(np.isfinite(losses)):
@@ -800,6 +982,7 @@ def run_cross_fitted_loso_nas(
                 probabilities = np.asarray(model.predict(test_dataset, verbose=0))
                 y_true = arrays.y[test_indices]
                 metrics = classification_metrics(y_true, probabilities)
+                continuation_elapsed_seconds = time.perf_counter() - continuation_start
                 predictions = np.argmax(probabilities, axis=1).astype(np.int32)
                 subject_key = arrays.subject_keys.get(
                     target_subject, str(target_subject)
@@ -863,6 +1046,7 @@ def run_cross_fitted_loso_nas(
                         "warm_start_checkpoint_metadata"
                     ],
                     "continuation_epochs": continuation_epochs,
+                    "continuation_epoch_rule": continuation_epoch_rule,
                     "continuation_epochs_ran": int(losses.size),
                     "optimizer_initial_iterations": optimizer_initial_iterations,
                     "parameter_count": int(model.count_params()),
@@ -870,14 +1054,29 @@ def run_cross_fitted_loso_nas(
                     "continuation_history": history,
                     "metrics": metrics,
                     "predictions": prediction_rows,
-                    "continuation_elapsed_seconds": (
-                        time.perf_counter() - continuation_start
-                    ),
+                    "continuation_elapsed_seconds": continuation_elapsed_seconds,
                     "elapsed_seconds": time.perf_counter() - fold_start,
                     "protocol_description": CROSS_FITTED_PROTOCOL_DESCRIPTION,
                 }
                 atomic_write_json(result_path, payload)
                 payload_by_fold[fold_index] = payload
+                continuation_durations.append(continuation_elapsed_seconds)
+                completed_this_run += 1
+                remaining_folds = max(0, pending_folds - completed_this_run)
+                if verbose:
+                    eta = _continuation_eta(continuation_durations, remaining_folds)
+                    print(
+                        f"[LOSO fold {fold_index}/{len(all_subjects)} complete] "
+                        f"accuracy={metrics['accuracy']:.4f} | "
+                        f"macro_f1={metrics['macro_f1']:.4f} | "
+                        f"precision_t4={metrics['precision_t4']:.4f} | "
+                        f"recall_t4={metrics['recall_t4']:.4f} | "
+                        f"auroc={metrics['auroc']:.4f} | "
+                        f"cross_entropy={metrics['cross_entropy']:.4f} | "
+                        f"elapsed={_format_duration(continuation_elapsed_seconds)} | "
+                        f"continuation ETA={_format_duration(eta)}",
+                        flush=True,
+                    )
             finally:
                 del callbacks, train_dataset, test_dataset, model
                 reset_runtime(fold_seed + 500_000)
@@ -887,6 +1086,17 @@ def run_cross_fitted_loso_nas(
                 config,
                 output_dir,
                 total_folds=len(all_subjects),
+            )
+        if verbose:
+            completed_now = sum(
+                fold_number_by_subject[subject] in payload_by_fold
+                for subject in block_targets
+            )
+            print(
+                f"[PainNAS block {block_index}/{config.outer_block_count}] "
+                f"stage=block complete | LOSO targets complete="
+                f"{completed_now}/{len(block_targets)}",
+                flush=True,
             )
     return _aggregate_cross_fitted_results(
         [payload_by_fold[key] for key in sorted(payload_by_fold)],

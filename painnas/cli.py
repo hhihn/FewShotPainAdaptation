@@ -26,6 +26,15 @@ def _common_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--search-max-epochs", type=int, default=50)
     parser.add_argument("--loso-max-epochs", type=int, default=100)
+    parser.add_argument(
+        "--cross-fitted-continuation-epochs",
+        type=int,
+        default=None,
+        help=(
+            "Fixed post-NAS epochs for cross-fitted LOSO. By default, use the "
+            "rounded median inner best epoch."
+        ),
+    )
     parser.add_argument("--search-patience", type=int, default=8)
     parser.add_argument("--loso-patience", type=int, default=15)
     parser.add_argument("--search-validation-subjects", type=int, default=17)
@@ -97,6 +106,7 @@ def _config_from_args(args: argparse.Namespace) -> PainNASConfig:
         n_trials=args.n_trials,
         search_max_epochs=args.search_max_epochs,
         loso_max_epochs=args.loso_max_epochs,
+        cross_fitted_continuation_epochs=args.cross_fitted_continuation_epochs,
         search_patience=args.search_patience,
         loso_patience=args.loso_patience,
         search_validation_subjects=args.search_validation_subjects,
