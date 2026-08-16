@@ -27,7 +27,12 @@ from painnas.data import (
 )
 from painnas.io import atomic_write_csv, atomic_write_json, ensure_manifest, read_json
 from painnas.loso import METRIC_NAMES, classification_metrics
-from painnas.model import ArchitectureSpec, build_early_fusion_model, compile_model
+from painnas.model import (
+    ArchitectureSpec,
+    build_early_fusion_model,
+    compile_model,
+    early_stopping_callbacks,
+)
 from painnas.runtime import reset_runtime
 from painnas.search import (
     architecture_from_parameters,
@@ -456,16 +461,13 @@ def run_uncertainty_aware_block_search(
                     validation_subjects,
                     inner_fold_index=fold_offset,
                 )
-                callbacks = [
-                    keras.callbacks.TerminateOnNaN(),
-                    metric_callback,
-                    keras.callbacks.EarlyStopping(
+                callbacks = [metric_callback]
+                callbacks.extend(
+                    early_stopping_callbacks(
                         monitor="val_subject_macro_accuracy",
-                        mode="max",
                         patience=config.search_patience,
-                        restore_best_weights=True,
-                    ),
-                ]
+                    )
+                )
                 if verbose:
                     callbacks.append(
                         EpochProgressCallback(
@@ -694,6 +696,11 @@ def _aggregate_cross_fitted_results(
                 "best_epoch"
             ],
             "continuation_epochs": payload["continuation_epochs"],
+            "continuation_epochs_ran": payload["continuation_epochs_ran"],
+            "continuation_best_epoch": payload["continuation_best_epoch"],
+            "continuation_validation_samples": payload[
+                "continuation_validation_samples"
+            ],
             "parameter_count": payload["parameter_count"],
             "architecture_fingerprint": payload["architecture_fingerprint"],
             "elapsed_seconds": payload["elapsed_seconds"],
@@ -915,10 +922,17 @@ def run_cross_fitted_loso_nas(
             test_indices = indices_for_subjects(
                 arrays, (target_subject,), split_code=arrays.test_split_code
             )
+            validation_indices = indices_for_subjects(
+                arrays, source_subjects, split_code=arrays.test_split_code
+            )
             if len(source_subjects) != len(all_subjects) - 1:
                 raise RuntimeError("Final LOSO source set must exclude only the target")
             if target_subject in source_subjects:
                 raise RuntimeError("Outer target leaked into final training subjects")
+            if not len(validation_indices) or np.any(
+                arrays.subjects[validation_indices] == target_subject
+            ):
+                raise RuntimeError("Outer target leaked into continuation validation")
             mean, std = compute_source_normalization(arrays.X, train_indices)
             train_dataset = make_tf_dataset(
                 arrays, train_indices, mean=mean, std=std,
@@ -926,6 +940,10 @@ def run_cross_fitted_loso_nas(
             )
             test_dataset = make_tf_dataset(
                 arrays, test_indices, mean=mean, std=std,
+                batch_size=config.batch_size, training=False, seed=fold_seed,
+            )
+            validation_dataset = make_tf_dataset(
+                arrays, validation_indices, mean=mean, std=std,
                 batch_size=config.batch_size, training=False, seed=fold_seed,
             )
             spec = ArchitectureSpec.from_dict(search_result["architecture"])
@@ -956,29 +974,42 @@ def run_cross_fitted_loso_nas(
             optimizer_initial_iterations = int(model.optimizer.iterations.numpy())
             if optimizer_initial_iterations != 0:
                 raise RuntimeError("Warm-start optimizer did not start at iteration zero")
-            callbacks = [keras.callbacks.TerminateOnNaN()]
+            callbacks = early_stopping_callbacks(
+                monitor="val_macro_f1", patience=config.loso_patience
+            )
             if verbose:
                 callbacks.append(
                     EpochProgressCallback(
                         label=f"LOSO fold {fold_index}/{len(all_subjects)}",
                         total_epochs=continuation_epochs,
-                        metric_names=("loss", "accuracy", "macro_f1"),
+                        metric_names=("loss", "accuracy", "macro_f1", "val_macro_f1"),
                     )
                 )
             continuation_start = time.perf_counter()
             try:
                 history = model.fit(
                     train_dataset,
+                    validation_data=validation_dataset,
                     epochs=continuation_epochs,
                     callbacks=callbacks,
                     verbose=0 if verbose else verbose,
                 ).history
                 losses = np.asarray(history.get("loss", []), dtype=np.float64)
-                if losses.size != continuation_epochs or not np.all(np.isfinite(losses)):
+                if not 1 <= losses.size <= continuation_epochs or not np.all(
+                    np.isfinite(losses)
+                ):
                     raise RuntimeError(
                         f"Warm continuation for fold {fold_index} did not complete "
-                        f"all {continuation_epochs} finite-loss epochs"
+                        "a valid finite-loss training run"
                     )
+                validation_scores = np.asarray(
+                    history.get("val_macro_f1", []), dtype=np.float64
+                )
+                if validation_scores.size != losses.size or not np.any(
+                    np.isfinite(validation_scores)
+                ):
+                    raise RuntimeError("Continuation produced no finite validation score")
+                continuation_best_epoch = int(np.nanargmax(validation_scores)) + 1
                 probabilities = np.asarray(model.predict(test_dataset, verbose=0))
                 y_true = arrays.y[test_indices]
                 metrics = classification_metrics(y_true, probabilities)
@@ -1023,6 +1054,7 @@ def run_cross_fitted_loso_nas(
                     "source_subject_count": len(source_subjects),
                     "source_subjects": source_subjects,
                     "final_train_samples": len(train_indices),
+                    "continuation_validation_samples": len(validation_indices),
                     "target_test_samples": len(test_indices),
                     "target_train_samples_excluded": len(excluded_target_train),
                     "selected_trial": int(search_result["best_trial_number"]),
@@ -1048,6 +1080,7 @@ def run_cross_fitted_loso_nas(
                     "continuation_epochs": continuation_epochs,
                     "continuation_epoch_rule": continuation_epoch_rule,
                     "continuation_epochs_ran": int(losses.size),
+                    "continuation_best_epoch": continuation_best_epoch,
                     "optimizer_initial_iterations": optimizer_initial_iterations,
                     "parameter_count": int(model.count_params()),
                     "final_normalization": {"mean": mean, "std": std},
@@ -1078,7 +1111,7 @@ def run_cross_fitted_loso_nas(
                         flush=True,
                     )
             finally:
-                del callbacks, train_dataset, test_dataset, model
+                del callbacks, train_dataset, validation_dataset, test_dataset, model
                 reset_runtime(fold_seed + 500_000)
                 gc.collect()
             _aggregate_cross_fitted_results(

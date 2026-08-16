@@ -22,7 +22,12 @@ from painnas.data import (
 )
 from painnas.io import atomic_write_csv, atomic_write_json, ensure_manifest, read_json
 from painnas.loso import METRIC_NAMES, classification_metrics
-from painnas.model import ArchitectureSpec, build_early_fusion_model, compile_model
+from painnas.model import (
+    ArchitectureSpec,
+    build_early_fusion_model,
+    compile_model,
+    early_stopping_callbacks,
+)
 from painnas.runtime import reset_runtime
 from painnas.search import run_search
 
@@ -114,6 +119,7 @@ def _aggregate_rows(
             ],
             "refit_epochs": payload["refit_epochs"],
             "refit_epochs_ran": payload["refit_epochs_ran"],
+            "refit_best_epoch": payload["refit_best_epoch"],
             "parameter_count": payload["parameter_count"],
             "architecture_fingerprint": fingerprint,
             "num_blocks": spec["num_blocks"],
@@ -300,6 +306,15 @@ def run_nested_loso_nas(
             training=False,
             seed=refit_seed,
         )
+        validation_dataset = make_tf_dataset(
+            arrays,
+            fold_indices.inner_validation,
+            mean=mean,
+            std=std,
+            batch_size=config.batch_size,
+            training=False,
+            seed=refit_seed,
+        )
         model = build_early_fusion_model(
             spec,
             input_shape=(arrays.num_modalities, arrays.sequence_length, 1),
@@ -309,23 +324,34 @@ def run_nested_loso_nas(
         optimizer_initial_iterations = int(model.optimizer.iterations.numpy())
         if optimizer_initial_iterations != 0:
             raise RuntimeError("Fresh refit optimizer did not start at iteration zero")
-        callbacks = [keras.callbacks.TerminateOnNaN()]
+        callbacks = early_stopping_callbacks(
+            monitor="val_macro_f1", patience=config.loso_patience
+        )
         refit_start = time.perf_counter()
         try:
             history = model.fit(
                 train_dataset,
+                validation_data=validation_dataset,
                 epochs=refit_epochs,
                 callbacks=callbacks,
                 verbose=verbose,
             ).history
             refit_losses = np.asarray(history.get("loss", []), dtype=np.float64)
-            if refit_losses.size != refit_epochs or not np.all(
+            if not 1 <= refit_losses.size <= refit_epochs or not np.all(
                 np.isfinite(refit_losses)
             ):
                 raise RuntimeError(
-                    f"Final refit for fold {fold_index} did not complete all "
-                    f"{refit_epochs} finite-loss epochs"
+                    f"Final refit for fold {fold_index} did not produce a valid "
+                    "finite-loss training run"
                 )
+            validation_scores = np.asarray(
+                history.get("val_macro_f1", []), dtype=np.float64
+            )
+            if validation_scores.size != refit_losses.size or not np.any(
+                np.isfinite(validation_scores)
+            ):
+                raise RuntimeError("Final refit produced no finite validation score")
+            refit_best_epoch = int(np.nanargmax(validation_scores)) + 1
             probabilities = np.asarray(model.predict(test_dataset, verbose=0))
             y_true = arrays.y[fold_indices.test]
             metrics = classification_metrics(y_true, probabilities)
@@ -390,6 +416,7 @@ def run_nested_loso_nas(
                 "architecture_fingerprint": architecture_fingerprint,
                 "refit_epochs": refit_epochs,
                 "refit_epochs_ran": int(refit_losses.size),
+                "refit_best_epoch": refit_best_epoch,
                 "optimizer_initial_iterations": optimizer_initial_iterations,
                 "parameter_count": int(model.count_params()),
                 "final_normalization": {"mean": mean, "std": std},
@@ -404,7 +431,7 @@ def run_nested_loso_nas(
             atomic_write_json(result_path, payload)
             payload_by_fold[fold_index] = payload
         finally:
-            del callbacks, train_dataset, test_dataset, model
+            del callbacks, train_dataset, validation_dataset, test_dataset, model
             reset_runtime(refit_seed + 500_000)
             gc.collect()
 

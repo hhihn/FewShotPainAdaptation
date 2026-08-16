@@ -21,7 +21,12 @@ from painnas.data import (
     make_tf_dataset,
 )
 from painnas.io import atomic_write_csv, atomic_write_json, ensure_manifest, read_json
-from painnas.model import ArchitectureSpec, build_early_fusion_model, compile_model
+from painnas.model import (
+    ArchitectureSpec,
+    build_early_fusion_model,
+    compile_model,
+    early_stopping_callbacks,
+)
 from painnas.runtime import reset_runtime
 
 
@@ -304,16 +309,10 @@ def run_search(
             training=False,
             seed=effective_seed,
         )
-        callbacks = [
-            keras.callbacks.TerminateOnNaN(),
-            keras.callbacks.EarlyStopping(
-                monitor="val_macro_f1",
-                mode="max",
-                patience=config.search_patience,
-                restore_best_weights=True,
-            ),
-            OptunaPruningCallback(trial),
-        ]
+        callbacks = early_stopping_callbacks(
+            monitor="val_macro_f1", patience=config.search_patience
+        )
+        callbacks.append(OptunaPruningCallback(trial))
         try:
             history = model.fit(
                 train_dataset,

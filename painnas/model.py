@@ -133,3 +133,17 @@ def compile_model(model: keras.Model, spec: ArchitectureSpec) -> keras.Model:
         ],
     )
     return model
+
+
+def early_stopping_callbacks(*, monitor: str, patience: int) -> list[keras.callbacks.Callback]:
+    """Build the finite-loss and best-weight callbacks used by every fit."""
+
+    return [
+        keras.callbacks.TerminateOnNaN(),
+        keras.callbacks.EarlyStopping(
+            monitor=monitor,
+            mode="max",
+            patience=int(patience),
+            restore_best_weights=True,
+        ),
+    ]

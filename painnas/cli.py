@@ -31,8 +31,8 @@ def _common_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Fixed post-NAS epochs for cross-fitted LOSO. By default, use the "
-            "rounded median inner best epoch."
+            "Maximum post-NAS epochs for cross-fitted LOSO with early stopping. "
+            "By default, use the rounded median inner best epoch as the maximum."
         ),
     )
     parser.add_argument("--search-patience", type=int, default=8)

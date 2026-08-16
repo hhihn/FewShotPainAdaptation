@@ -95,8 +95,9 @@ PROTOCOL_WARNING = (
 NESTED_PROTOCOL_DESCRIPTION = (
     "For every outer LOSO fold, architecture search uses only source subjects. "
     "The selected architecture is reinitialized, fitted on all source-subject Train "
-    "samples for its inner-selected best epoch, and evaluated once on the untouched "
-    "target subject's Test samples."
+    "samples for at most its inner-selected best epoch, with source-only validation "
+    "for early stopping, and evaluated once on the untouched target subject's Test "
+    "samples."
 )
 
 CROSS_FITTED_PROTOCOL_DESCRIPTION = (
@@ -104,6 +105,6 @@ CROSS_FITTED_PROTOCOL_DESCRIPTION = (
     "architecture search uses only subjects outside that block and evaluates each "
     "development subject once through inner subject-fold validation. The winning "
     "fold checkpoint warm-starts a fresh-optimizer LOSO continuation on every "
-    "subject except the current outer target, which is evaluated only on its "
-    "predefined Test samples."
+    "subject except the current outer target. Source-subject Test samples control "
+    "early stopping; the target is evaluated only on its predefined Test samples."
 )

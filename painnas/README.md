@@ -22,9 +22,10 @@ subject accuracy minus its standard error.
 The winning trial retains the checkpoint from its strongest inner fold. For
 each subject in the excluded block, that checkpoint initializes a new model, a
 fresh optimizer is created, and training continues on all other 86 subjects for
-the median inner best epoch. Evaluation uses only the target subject's
-predefined `Test` samples. The five block searches replace 87 independent NAS
-runs while keeping each target excluded from architecture selection.
+at most the median inner best epoch. Source-subject `Test` samples control early
+stopping with best-weight restoration; the target subject remains excluded and
+is evaluated only after fitting. The five block searches replace 87 independent
+NAS runs while keeping each target excluded from architecture selection.
 
 ## Run
 
@@ -38,8 +39,8 @@ python -m painnas cross-fitted \
 ```
 
 By default, post-NAS warm-start training uses the rounded median best epoch from
-the winning trial's inner folds. To force a fixed continuation length instead,
-pass `--cross-fitted-continuation-epochs EPOCHS`, or set
+the winning trial's inner folds as its maximum budget. To set a different
+maximum, pass `--cross-fitted-continuation-epochs EPOCHS`, or set
 `cross_fitted_continuation_epochs=EPOCHS` on `PainNASConfig` in the Colab
 configuration cell.
 
