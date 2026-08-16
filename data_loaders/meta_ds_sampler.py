@@ -88,6 +88,8 @@ class SixWayKShotSampler:
                 )
             self.tasks_per_epoch = self.config.heldout_eval_tasks
         self.active_subjects_array = np.asarray(self.active_subjects, dtype=np.int32)
+        if self.mode == "train" and self.task_construction_mode == "single_subject":
+            self._drop_undersized_train_subjects()
         if self.mode in {"val", "test"}:
             self._apply_eval_task_size_fallback()
 
@@ -203,6 +205,58 @@ class SixWayKShotSampler:
         # samples instead of the fixed fallback, which would still be too large.
         fitted = max(1, available_count // 2)
         return fitted, fitted
+
+    def _drop_undersized_train_subjects(self) -> None:
+        """Drop train subjects that cannot supply a full k+q task in every class.
+
+        Single-subject tasks take support and query from one subject, so a
+        subject whose smallest class pool is below ``k_shot + q_query`` cannot
+        form a task at all. Window-shift augmentation normally hides this by
+        expanding each trial into many windows; with augmentation disabled the
+        raw trial counts apply, and PainMonit subject 15 has only 7 samples in
+        raw class 5 against a required 8.
+
+        Dropping the subject keeps every task at the configured size, so a
+        windowing-off run stays comparable to a windowed one. Shrinking k/q
+        instead - the fallback used for val/test - would change the task size
+        for all subjects and confound that comparison.
+        """
+        required = int(self.k_shot) + int(self.q_query)
+        split_index = self.dataset._get_sampling_index_for_split(
+            self.data_split,
+            use_base_index=False,
+        )
+        usable: List[int] = []
+        dropped: List[tuple[int, int]] = []
+        for subject in self.active_subjects:
+            smallest = min(
+                int(len(split_index[subject][class_id]))
+                for class_id in range(self.config.n_way)
+            )
+            if smallest >= required:
+                usable.append(subject)
+            else:
+                dropped.append((subject, smallest))
+
+        if not dropped:
+            return
+        if not usable:
+            raise ValueError(
+                f"No train subject can supply k_shot+q_query={required} samples "
+                f"in every class for split={self.data_split}."
+            )
+
+        self.active_subjects = usable
+        self.active_subjects_array = np.asarray(self.active_subjects, dtype=np.int32)
+        self.logger.warning(
+            "Dropped %d of %d train subject(s) with fewer than %d samples in "
+            "some class: %s. Remaining train subjects: %d.",
+            len(dropped),
+            len(dropped) + len(usable),
+            required,
+            ", ".join(f"subject {s} (min {n})" for s, n in dropped),
+            len(usable),
+        )
 
     def _apply_eval_task_size_fallback(self) -> None:
         """Use fixed evaluation task sizes when configured sizes are too large.
