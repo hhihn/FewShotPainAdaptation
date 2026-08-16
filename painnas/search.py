@@ -31,6 +31,7 @@ from painnas.runtime import reset_runtime
 
 
 STUDY_NAME = "painnas_early_fusion_binary"
+SEARCH_SPACE_VERSION = 2
 
 
 def baseline_trial_parameters() -> dict[str, Any]:
@@ -47,6 +48,11 @@ def baseline_trial_parameters() -> dict[str, Any]:
         "dense_1_units": 1024,
         "dense_2_units": 512,
         "learning_rate": 1e-5,
+        "head_type": "flatten",
+        "convolution_type": "standard",
+        "normalization_type": "batch",
+        "pooling_type": "max",
+        "pooling_size": 2,
     }
 
 
@@ -67,6 +73,11 @@ def architecture_from_parameters(parameters: Mapping[str, Any]) -> ArchitectureS
         temporal_kernel_size=int(parameters["temporal_kernel_size"]),
         dense_units=tuple(dense_units),
         learning_rate=float(parameters["learning_rate"]),
+        head_type=str(parameters.get("head_type", "flatten")),
+        convolution_type=str(parameters.get("convolution_type", "standard")),
+        normalization_type=str(parameters.get("normalization_type", "batch")),
+        pooling_type=str(parameters.get("pooling_type", "max")),
+        pooling_size=int(parameters.get("pooling_size", 2)),
     )
 
 
@@ -83,9 +94,22 @@ def suggest_architecture(trial: optuna.Trial) -> ArchitectureSpec:
     parameters["temporal_kernel_size"] = trial.suggest_categorical(
         "temporal_kernel_size", [7, 11, 15]
     )
+    parameters["head_type"] = trial.suggest_categorical(
+        "head_type", ["flatten", "global_average"]
+    )
+    parameters["convolution_type"] = trial.suggest_categorical(
+        "convolution_type", ["standard", "separable"]
+    )
+    parameters["normalization_type"] = trial.suggest_categorical(
+        "normalization_type", ["batch", "group", "layer"]
+    )
+    parameters["pooling_type"] = trial.suggest_categorical(
+        "pooling_type", ["max", "average"]
+    )
+    parameters["pooling_size"] = trial.suggest_categorical("pooling_size", [2, 4])
     parameters["dense_depth"] = trial.suggest_int("dense_depth", 1, 2)
     parameters["dense_1_units"] = trial.suggest_categorical(
-        "dense_1_units", [256, 512, 1024]
+        "dense_1_units", [128, 256, 512, 1024]
     )
     if parameters["dense_depth"] == 2:
         parameters["dense_2_units"] = trial.suggest_categorical(
@@ -229,6 +253,7 @@ def run_search(
         "stage": "search",
         "config": config.to_dict(),
         "config_fingerprint": config.fingerprint(),
+        "search_space_version": SEARCH_SPACE_VERSION,
         "study_name": study_name,
         "protocol_note": protocol_note,
         **search_context,

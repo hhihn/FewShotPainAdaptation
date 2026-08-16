@@ -35,6 +35,7 @@ from painnas.model import (
 )
 from painnas.runtime import reset_runtime
 from painnas.search import (
+    SEARCH_SPACE_VERSION,
     architecture_from_parameters,
     baseline_trial_parameters,
     suggest_architecture,
@@ -354,6 +355,7 @@ def run_uncertainty_aware_block_search(
         "stage": "uncertainty_aware_block_search",
         "config": config.to_dict(),
         "config_fingerprint": config.fingerprint(),
+        "search_space_version": SEARCH_SPACE_VERSION,
         "outer_block_index": int(outer_block_index),
         "outer_block_subjects": outer_block_subjects,
         "development_subjects": development_subjects,

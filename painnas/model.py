@@ -20,6 +20,11 @@ class ArchitectureSpec:
     dense_units: tuple[int, ...]
     learning_rate: float
     dropout_rate: float = 0.25
+    head_type: str = "flatten"
+    convolution_type: str = "standard"
+    normalization_type: str = "batch"
+    pooling_type: str = "max"
+    pooling_size: int = 2
 
     def __post_init__(self) -> None:
         if not 3 <= self.num_blocks <= 5:
@@ -40,6 +45,16 @@ class ArchitectureSpec:
             raise ValueError("learning_rate must be > 0")
         if self.dropout_rate != 0.25:
             raise ValueError("The requested architecture fixes dropout at 0.25")
+        if self.head_type not in {"flatten", "global_average"}:
+            raise ValueError("Unsupported classifier head type")
+        if self.convolution_type not in {"standard", "separable"}:
+            raise ValueError("Unsupported convolution type")
+        if self.normalization_type not in {"batch", "group", "layer"}:
+            raise ValueError("Unsupported normalization type")
+        if self.pooling_type not in {"max", "average"}:
+            raise ValueError("Unsupported pooling type")
+        if self.pooling_size not in {2, 4}:
+            raise ValueError("pooling_size must be 2 or 4")
 
     @classmethod
     def baseline(cls) -> "ArchitectureSpec":
@@ -50,6 +65,11 @@ class ArchitectureSpec:
             temporal_kernel_size=11,
             dense_units=(1024, 512),
             learning_rate=1e-5,
+            head_type="flatten",
+            convolution_type="standard",
+            normalization_type="batch",
+            pooling_type="max",
+            pooling_size=2,
         )
 
     @classmethod
@@ -62,6 +82,11 @@ class ArchitectureSpec:
             dense_units=tuple(int(value) for value in payload["dense_units"]),
             learning_rate=float(payload["learning_rate"]),
             dropout_rate=float(payload.get("dropout_rate", 0.25)),
+            head_type=str(payload.get("head_type", "flatten")),
+            convolution_type=str(payload.get("convolution_type", "standard")),
+            normalization_type=str(payload.get("normalization_type", "batch")),
+            pooling_type=str(payload.get("pooling_type", "max")),
+            pooling_size=int(payload.get("pooling_size", 2)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,26 +114,57 @@ def build_early_fusion_model(
     ):
         kernel_height = 2 if block_index == 1 else 1
         for repeat_index in range(1, repeat_count + 1):
-            x = keras.layers.Conv2D(
+            convolution_class = (
+                keras.layers.Conv2D
+                if spec.convolution_type == "standard"
+                else keras.layers.SeparableConv2D
+            )
+            convolution_name = (
+                f"block_{block_index}_conv_{repeat_index}"
+                if spec.convolution_type == "standard"
+                else f"block_{block_index}_separable_conv_{repeat_index}"
+            )
+            x = convolution_class(
                 filters=filters,
                 kernel_size=(kernel_height, spec.temporal_kernel_size),
                 strides=(1, 1),
                 padding="same",
                 activation="elu",
-                name=f"block_{block_index}_conv_{repeat_index}",
+                name=convolution_name,
             )(x)
-        x = keras.layers.BatchNormalization(name=f"block_{block_index}_batch_norm")(x)
-        x = keras.layers.MaxPooling2D(
-            pool_size=(1, 2),
-            strides=(1, 2),
-            name=f"block_{block_index}_max_pool",
+        if spec.normalization_type == "batch":
+            x = keras.layers.BatchNormalization(
+                name=f"block_{block_index}_batch_norm"
+            )(x)
+        elif spec.normalization_type == "group":
+            x = keras.layers.GroupNormalization(
+                groups=min(8, filters),
+                axis=-1,
+                name=f"block_{block_index}_group_norm",
+            )(x)
+        else:
+            x = keras.layers.LayerNormalization(
+                axis=-1, name=f"block_{block_index}_layer_norm"
+            )(x)
+        pooling_class = (
+            keras.layers.MaxPooling2D
+            if spec.pooling_type == "max"
+            else keras.layers.AveragePooling2D
+        )
+        x = pooling_class(
+            pool_size=(1, spec.pooling_size),
+            strides=(1, spec.pooling_size),
+            name=f"block_{block_index}_{spec.pooling_type}_pool",
         )(x)
         x = keras.layers.Dropout(
             spec.dropout_rate, name=f"block_{block_index}_dropout"
         )(x)
 
-    x = keras.layers.Flatten(name="flatten")(x)
-    x = keras.layers.Dropout(spec.dropout_rate, name="flatten_dropout")(x)
+    if spec.head_type == "flatten":
+        x = keras.layers.Flatten(name="flatten")(x)
+    else:
+        x = keras.layers.GlobalAveragePooling2D(name="global_average_pooling")(x)
+    x = keras.layers.Dropout(spec.dropout_rate, name="head_dropout")(x)
     for dense_index, units in enumerate(spec.dense_units, start=1):
         x = keras.layers.Dense(
             units, activation="elu", name=f"dense_{dense_index}"

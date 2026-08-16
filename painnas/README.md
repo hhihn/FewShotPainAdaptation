@@ -7,9 +7,9 @@ samplers, prototypes, support/query construction, or few-shot adaptation.
 The input is early-fused in the order GSR/EDA, ECG, EMG and transformed from the
 repository layout `[batch, 1152, 3]` to `[batch, 3, 1152, 1]`. Only `T0` and `T4`
 are retained. The exact supplied Table 2 CNN is enqueued as Optuna trial 0; later
-trials may change convolutional depth, width, temporal kernel size, dense depth,
-dense width, and Adam learning rate. ELU, softmax, `(1, 2)` pooling, and dropout
-`0.25` remain fixed.
+trials may change convolutional depth, width and type, temporal kernel size,
+normalization, pooling type and size, classifier-head pooling, dense depth and
+width, and Adam learning rate. ELU, softmax, and dropout `0.25` remain fixed.
 
 ## Cross-fitted block NAS protocol
 
