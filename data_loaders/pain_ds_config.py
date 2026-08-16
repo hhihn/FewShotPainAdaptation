@@ -269,14 +269,29 @@ class PainDatasetConfig:
         if len(set(self.sensor_idx)) != len(self.sensor_idx):
             raise ValueError("sensor_idx must be unique")
         self.num_sensors = len(self.sensor_idx)
-        # Keep modality labels aligned with the selected channels. Only rebuild
-        # on a length mismatch so the explicit CrossMod/senseemotion ("EDA","ECG")
-        # labels are preserved; a custom EEGNet selection (e.g. all channels)
-        # gets generic names for the unlabelled indices.
-        if len(self.modality_names) != len(self.sensor_idx):
-            _known_channel_names = {1: "EDA", 4: "ECG", 5: "EMG"}
+        # PainMonit raw channel order, per the authors' PMED/config.py:
+        # ["Bvp", "Eda_E4", "Resp", "Eda_RB", "Ecg", "Emg"]. Note idx 3 is a
+        # second (lab-grade) EDA sensor, not temperature.
+        _painmonit_channel_names = {
+            0: "Bvp",
+            1: "Eda_E4",
+            2: "Resp",
+            3: "Eda_RB",
+            4: "Ecg",
+            5: "Emg",
+        }
+        # Keep modality labels aligned with the selected channels. For PainMonit
+        # always relabel from the raw channel map: a length check alone would
+        # leave stale labels on any 3-channel selection, so sensor_idx=(3,4,5)
+        # would silently keep the ("EDA","ECG","EMG") default and log Eda_RB as
+        # "EDA". Other datasets index their own channel layout, so they only get
+        # rebuilt when the label count no longer matches.
+        if self.dataset_source == "painmonit" or len(self.modality_names) != len(
+            self.sensor_idx
+        ):
             self.modality_names = tuple(
-                _known_channel_names.get(idx, f"ch{idx}") for idx in self.sensor_idx
+                _painmonit_channel_names.get(idx, f"ch{idx}")
+                for idx in self.sensor_idx
             )
         if self.task_normalize_mode not in {"subject", "split", "support", "none"}:
             raise ValueError(

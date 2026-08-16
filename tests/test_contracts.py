@@ -291,7 +291,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(painmonit_config.encoder_backend, "crossmod")
         self.assertEqual(painmonit_config.num_sensors, 2)
         self.assertEqual(painmonit_config.sensor_idx, (1, 4))
-        self.assertEqual(painmonit_config.modality_names, ("EDA", "ECG"))
+        # PainMonit labels come from the authors' raw channel order, so channel 1
+        # is the Empatica-E4 EDA and channel 4 is ECG.
+        self.assertEqual(painmonit_config.modality_names, ("Eda_E4", "Ecg"))
 
         biovid_config = PainDatasetConfig(
             dataset_source="biovid_part_a",

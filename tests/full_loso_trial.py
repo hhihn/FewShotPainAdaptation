@@ -107,8 +107,9 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         else _parse_int_tuple(args.task_class_ids)
     )
 
-    # sensor_idx selects which raw channels to use. Default (1,4,5)=EDA,ECG,EMG
-    # for EEGNet; CrossMod forces its own 2-channel (EDA,ECG) selection.
+    # sensor_idx selects which raw channels to use. PainMonit order is
+    # 0=Bvp, 1=Eda_E4, 2=Resp, 3=Eda_RB, 4=Ecg, 5=Emg, so the (1,4,5) default is
+    # the weak wrist EDA + ECG + EMG; CrossMod forces its own (1,4) selection.
     sensor_idx_raw = getattr(args, "sensor_idx", None)
     encoder_backend = str(getattr(args, "encoder_backend", "eegnet")).strip().lower()
     if sensor_idx_raw:
@@ -457,6 +458,16 @@ def main() -> None:
         help=(
             "Comma-separated raw class ids. Defaults to 0,4 for BioVid/PainMonit "
             "and 0,1,2,3 for SenseEmotion."
+        ),
+    )
+    parser.add_argument(
+        "--sensor-idx",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated raw channel indices. PainMonit channel order is "
+            "0=Bvp, 1=Eda_E4, 2=Resp, 3=Eda_RB, 4=Ecg, 5=Emg. Defaults to 1,4,5. "
+            "CrossMod only supports 1,4."
         ),
     )
     parser.add_argument(
