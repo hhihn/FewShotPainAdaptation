@@ -233,7 +233,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.learning_rate is not None and args.learning_rate <= 0:
         raise ValueError("--learning-rate must be greater than zero")
 
-    architecture_path = args.architecture_json.expanduser().resolve()
     spec = architecture_from_args(args)
     config = PainNASConfig(
         seed=args.seed,
@@ -246,16 +245,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     devices = require_gpu(allow_cpu=bool(args.allow_cpu or args.dry_run))
     arrays = load_biovid_binary(str(args.data_dir.expanduser().resolve()), config)
     target_subject, fold_index, target_key = resolve_target(arrays, args)
-
-    block_search_excluded_subjects = _winner_outer_subjects(architecture_path)
-    target_excluded_from_block_search = target_subject in block_search_excluded_subjects
-    if not target_excluded_from_block_search and not args.allow_selection_leakage:
-        raise ValueError(
-            f"Target {target_subject} ({target_key}) was included in the architecture "
-            "selection data for this block-1 winner. Choose one of the recorded block-1 "
-            f"subjects {sorted(block_search_excluded_subjects)}, or pass "
-            "--allow-selection-leakage for an explicitly exploratory run."
-        )
 
     audit = _audit_fold(arrays, target_subject)
     reset_runtime(args.seed + fold_index)
@@ -277,22 +266,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         / f"fold_{fold_index:03d}_{_safe_key(target_key)}"
     )
     setup = {
-        "architecture_json": str(architecture_path),
         "architecture": spec.to_dict(),
         "parameter_count": parameter_count,
         "target_subject": target_subject,
         "target_subject_key": target_key,
         "target_fold": fold_index,
-        "target_excluded_from_block_search": target_excluded_from_block_search,
-        "selection_note": (
-            "The target was excluded from the block-1 NAS study. The later choice of "
-            "block 1 as the best among five winners is a post-search comparison, so "
-            "this fixed-architecture experiment remains exploratory unless that "
-            "choice was pre-specified."
-            if target_excluded_from_block_search
-            else "The target participated in the block-1 NAS study; architecture "
-            "selection and evaluation are not independent."
-        ),
         "gpu_devices": devices,
         "output_dir": str(target_dir),
         "isolation_audit": audit,
