@@ -49,15 +49,6 @@ from painnas.model import ArchitectureSpec, build_early_fusion_model
 from painnas.runtime import require_gpu, reset_runtime
 from painnas.search import load_architecture
 
-DEFAULT_ARCHITECTURE = (
-    REPO_ROOT
-    / "data"
-    / "cross_fitted_loso_new"
-    / "blocks"
-    / "block_001"
-    / "search"
-    / "best_architecture.json"
-)
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "outputs" / "painnas" / "block_001_best_single_loso"
 
 
@@ -74,12 +65,6 @@ def _integer_tuple(value: str) -> tuple[int, ...]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True, help="BioVid dataset root")
-    parser.add_argument(
-        "--architecture-json",
-        type=Path,
-        default=DEFAULT_ARCHITECTURE,
-        help=f"Selected architecture JSON (default: {DEFAULT_ARCHITECTURE})",
-    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -158,11 +143,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def architecture_from_args(
-    selected: ArchitectureSpec, args: argparse.Namespace
+     args: argparse.Namespace
 ) -> ArchitectureSpec:
     """Apply explicitly supplied architecture overrides to the selected winner."""
-    payload = selected.to_dict()
-    overrides = {
+    payload = {
         "num_blocks": args.num_blocks,
         "conv_repeats": args.conv_repeats,
         "width_multiplier": args.width_multiplier,
@@ -175,7 +159,6 @@ def architecture_from_args(
         "pooling_type": args.pooling_type,
         "pooling_size": args.pooling_size,
     }
-    payload.update({key: value for key, value in overrides.items() if value is not None})
     if len(payload["conv_repeats"]) != int(payload["num_blocks"]):
         raise ValueError(
             "--conv-repeats must contain exactly one value per block; provide it "
@@ -251,8 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("--learning-rate must be greater than zero")
 
     architecture_path = args.architecture_json.expanduser().resolve()
-    selected = load_architecture(architecture_path)
-    spec = architecture_from_args(selected, args)
+    spec = architecture_from_args(args)
     config = PainNASConfig(
         seed=args.seed,
         batch_size=args.batch_size,
