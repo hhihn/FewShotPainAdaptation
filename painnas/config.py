@@ -28,7 +28,7 @@ class PainNASConfig:
     bootstrap_samples: int = 10_000
     dropout_rate: float = 0.25
     num_classes: int = 2
-    raw_class_ids: tuple[int, int] = (0, 4)
+    raw_class_ids: tuple[int, ...] = (0, 4)
     modalities: tuple[str, str, str] = ("GSR", "ECG", "EMG")
     expected_sequence_length: int = 1152
     expected_subjects: int = 87
@@ -64,8 +64,12 @@ class PainNASConfig:
             raise ValueError("inner_fold_count must be >= 2")
         if self.uncertainty_beta < 0:
             raise ValueError("uncertainty_beta must be >= 0")
-        if self.num_classes != 2 or self.raw_class_ids != (0, 4):
-            raise ValueError("PainNAS currently implements binary BioVid T0-vs-T4 only")
+        if len(self.raw_class_ids) < 2:
+            raise ValueError("raw_class_ids must contain at least two class indices")
+        if len(set(self.raw_class_ids)) != len(self.raw_class_ids):
+            raise ValueError("raw_class_ids must not contain duplicates")
+        if self.num_classes != len(self.raw_class_ids):
+            raise ValueError("num_classes must equal len(raw_class_ids)")
         if len(self.modalities) != 3:
             raise ValueError("PainNAS requires exactly three physiological modalities")
         if not 0.0 <= self.dropout_rate < 1.0:

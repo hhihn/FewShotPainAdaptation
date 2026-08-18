@@ -14,7 +14,7 @@ from painnas.config import PainNASConfig
 
 @dataclass
 class BioVidArrays:
-    """In-memory binary BioVid arrays independent of few-shot samplers."""
+    """In-memory BioVid arrays with class labels remapped to consecutive indices."""
 
     X: np.ndarray
     y: np.ndarray
@@ -56,8 +56,12 @@ class BioVidArrays:
                 f"Expected sequence length {config.expected_sequence_length}, "
                 f"got {self.sequence_length}"
             )
-        if set(np.unique(self.y).tolist()) != {0, 1}:
-            raise ValueError("Binary PainNAS labels must be remapped to exactly {0, 1}")
+        expected_labels = set(range(config.num_classes))
+        if set(np.unique(self.y).tolist()) != expected_labels:
+            raise ValueError(
+                "PainNAS labels must be remapped to every consecutive class index "
+                f"in {sorted(expected_labels)}"
+            )
         if not np.all(np.isfinite(self.X)):
             raise ValueError("Input arrays contain NaN or infinite values")
 
@@ -155,7 +159,12 @@ def build_cross_fitted_subject_plan(
 
 
 def load_biovid_binary(data_dir: str, config: PainNASConfig) -> BioVidArrays:
-    """Load GSR/ECG/EMG and filter BioVid to T0 versus T4."""
+    """Load selected BioVid classes and remap them to consecutive indices.
+
+    The historical function name is retained for API compatibility.  The selected
+    raw class indices are controlled by ``config.raw_class_ids`` and may describe
+    either a binary or a multi-class task.
+    """
 
     dataset_config = PainDatasetConfig(
         dataset_source="biovid_part_a",
@@ -172,19 +181,20 @@ def load_biovid_binary(data_dir: str, config: PainNASConfig) -> BioVidArrays:
         normalize=False,
         normalize_per_subject=False,
     )
-    binary_mask = np.isin(dataset.y, config.raw_class_ids)
-    raw_y = dataset.y[binary_mask]
-    remapped_y = (raw_y == config.raw_class_ids[1]).astype(np.int32)
+    class_mask = np.isin(dataset.y, config.raw_class_ids)
+    raw_y = dataset.y[class_mask]
+    raw_to_index = {raw_class: index for index, raw_class in enumerate(config.raw_class_ids)}
+    remapped_y = np.asarray([raw_to_index[int(label)] for label in raw_y], dtype=np.int32)
     subject_keys = {
         int(key): str(value)
         for key, value in dataset.predefined_subject_int_to_key.items()
     }
     arrays = BioVidArrays(
-        X=np.ascontiguousarray(dataset.X[binary_mask], dtype=np.float32),
+        X=np.ascontiguousarray(dataset.X[class_mask], dtype=np.float32),
         y=remapped_y,
-        subjects=np.ascontiguousarray(dataset.subjects[binary_mask], dtype=np.int32),
+        subjects=np.ascontiguousarray(dataset.subjects[class_mask], dtype=np.int32),
         split_codes=np.ascontiguousarray(
-            dataset.sample_split_codes[binary_mask], dtype=np.int8
+            dataset.sample_split_codes[class_mask], dtype=np.int8
         ),
         subject_keys=subject_keys,
         train_split_code=dataset.split_name_to_code["train"],
@@ -353,6 +363,7 @@ def make_tf_dataset(
 
     selected_X = arrays.X[indices]
     selected_y = arrays.y[indices]
+    class_count = int(np.max(arrays.y)) + 1
     dataset = tf.data.Dataset.from_tensor_slices((selected_X, selected_y))
     if training:
         dataset = dataset.shuffle(
@@ -368,7 +379,7 @@ def make_tf_dataset(
         normalized = (tf.cast(batch_X, tf.float32) - mean_tensor) / std_tensor
         transposed = tf.transpose(normalized, perm=(0, 2, 1))
         model_input = tf.expand_dims(transposed, axis=-1)
-        one_hot_y = tf.one_hot(batch_y, depth=2, dtype=tf.float32)
+        one_hot_y = tf.one_hot(batch_y, depth=class_count, dtype=tf.float32)
         return model_input, one_hot_y
 
     dataset = dataset.map(

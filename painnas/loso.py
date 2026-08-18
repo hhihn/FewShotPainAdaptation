@@ -55,22 +55,39 @@ def _architecture_fingerprint(spec: ArchitectureSpec) -> str:
 
 def classification_metrics(y_true: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
     predictions = np.argmax(probabilities, axis=1).astype(np.int32)
+    labels = np.arange(probabilities.shape[1], dtype=np.int32)
     try:
-        auroc = float(roc_auc_score(y_true, probabilities[:, 1]))
+        auroc = float(
+            roc_auc_score(y_true, probabilities[:, 1])
+            if probabilities.shape[1] == 2
+            else roc_auc_score(y_true, probabilities, multi_class="ovr", average="macro")
+        )
     except ValueError:
         auroc = float("nan")
     return {
         "accuracy": float(accuracy_score(y_true, predictions)),
         "macro_f1": float(f1_score(y_true, predictions, average="macro")),
+        "precision_macro": float(
+            precision_score(y_true, predictions, average="macro", zero_division=0)
+        ),
+        "recall_macro": float(
+            recall_score(y_true, predictions, average="macro", zero_division=0)
+        ),
+        # Legacy binary field names remain available for existing summaries.
+        # For multiclass runs they carry the corresponding macro metric.
         "precision_t4": float(
             precision_score(y_true, predictions, pos_label=1, zero_division=0)
+            if probabilities.shape[1] == 2
+            else precision_score(y_true, predictions, labels=labels, average="macro", zero_division=0)
         ),
         "recall_t4": float(
             recall_score(y_true, predictions, pos_label=1, zero_division=0)
+            if probabilities.shape[1] == 2
+            else recall_score(y_true, predictions, labels=labels, average="macro", zero_division=0)
         ),
         "auroc": auroc,
-        "cross_entropy": float(log_loss(y_true, probabilities, labels=[0, 1])),
-        "confusion_matrix": confusion_matrix(y_true, predictions, labels=[0, 1]),
+        "cross_entropy": float(log_loss(y_true, probabilities, labels=labels)),
+        "confusion_matrix": confusion_matrix(y_true, predictions, labels=labels),
     }
 
 
