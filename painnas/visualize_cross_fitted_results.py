@@ -36,15 +36,45 @@ OKABE_ITO = {
     "black": "#000000",
 }
 
-RATE_METRICS = ("accuracy", "macro_f1", "precision_t4", "recall_t4", "auroc")
+BASE_RATE_METRICS = ("accuracy", "macro_f1", "auroc")
 DISPLAY_NAMES = {
     "accuracy": "Accuracy",
     "macro_f1": "Macro F1",
     "precision_t4": "T4 precision",
     "recall_t4": "T4 recall",
+    "precision_macro": "Macro precision",
+    "recall_macro": "Macro recall",
     "auroc": "AUROC",
     "cross_entropy": "Cross-entropy",
 }
+
+
+def _is_multiclass(summary: dict[str, Any]) -> bool:
+    """Return whether the aggregate confusion matrix represents more than two classes."""
+    matrix = np.asarray(summary.get("aggregate_confusion_matrix", ()))
+    return matrix.ndim == 2 and matrix.shape[0] > 2
+
+
+def _rate_metrics(summary: dict[str, Any]) -> tuple[str, ...]:
+    """Return metrics with labels appropriate for binary or multiclass output."""
+    metrics = ["accuracy", "macro_f1"]
+    metric_summary = summary.get("metrics", {})
+    if _is_multiclass(summary) and {"precision_macro", "recall_macro"}.issubset(metric_summary):
+        metrics.extend(("precision_macro", "recall_macro"))
+    else:
+        metrics.extend(("precision_t4", "recall_t4"))
+    metrics.append("auroc")
+    return tuple(metrics)
+
+
+def _class_labels(summary: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
+    """Resolve display labels in the same order as the confusion-matrix axes."""
+    matrix = np.asarray(summary["aggregate_confusion_matrix"])
+    count = matrix.shape[0]
+    class_ids = manifest.get("config", {}).get("raw_class_ids", [])
+    if len(class_ids) == count:
+        return [f"T{class_id}" for class_id in class_ids]
+    return [f"Class {index}" for index in range(count)]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -67,7 +97,7 @@ def load_results(run_dir: Path) -> tuple[pd.DataFrame, dict[str, Any], dict[str,
         "selected_subject_accuracy_mean",
         "selected_subject_accuracy_standard_error",
         "selected_uncertainty_objective",
-        *RATE_METRICS,
+        *BASE_RATE_METRICS,
         "cross_entropy",
     }
     missing = sorted(required.difference(folds.columns))
@@ -162,7 +192,7 @@ def _plot_selected_accuracy(ax: plt.Axes, selected: pd.DataFrame, beta: float) -
         label=rf"Selection objective (mean − {beta:g} × SE)",
     )
     for block, value in zip(blocks, accuracy):
-        ax.annotate(f"{value:.1%}", (block, value), xytext=(0, 8), textcoords="offset points", ha="center", fontsize=7)
+        ax.annotate(f"{value:.1%}", (block, value+0.02), xytext=(0, 8), textcoords="offset points", ha="center", fontsize=7)
     ax.set(
         xlabel="Outer subject block",
         ylabel="Inner validation score",
@@ -177,7 +207,7 @@ def _plot_selected_accuracy(ax: plt.Axes, selected: pd.DataFrame, beta: float) -
 
 def _plot_aggregate_metrics(ax: plt.Axes, summary: dict[str, Any]) -> None:
     metric_summary = summary["metrics"]
-    present = [metric for metric in RATE_METRICS if metric in metric_summary]
+    present = [metric for metric in _rate_metrics(summary) if metric in metric_summary]
     means = np.asarray([metric_summary[metric]["mean"] for metric in present], dtype=float)
     low = np.asarray([metric_summary[metric]["ci_low"] for metric in present], dtype=float)
     high = np.asarray([metric_summary[metric]["ci_high"] for metric in present], dtype=float)
@@ -193,7 +223,7 @@ def _plot_aggregate_metrics(ax: plt.Axes, summary: dict[str, Any]) -> None:
         markersize=5,
     )
     for y, value in zip(positions, means):
-        ax.annotate(f"{value:.1%}", (value, y), xytext=(7, 0), textcoords="offset points", va="center", fontsize=8)
+        ax.annotate(f"{value:.1%}", (value+0.033, y), xytext=(7, 0), textcoords="offset points", va="center", fontsize=8)
     ax.set(
         xlabel="Aggregate score (95% bootstrap CI)",
         yticks=positions,
@@ -209,14 +239,15 @@ def _plot_aggregate_metrics(ax: plt.Axes, summary: dict[str, Any]) -> None:
     ax.set_title("C  Aggregate test metrics", loc="left", fontweight="bold")
 
 
-def _plot_confusion_matrix(ax: plt.Axes, summary: dict[str, Any]) -> None:
+def _plot_confusion_matrix(ax: plt.Axes, summary: dict[str, Any], manifest: dict[str, Any]) -> None:
     matrix = np.asarray(summary["aggregate_confusion_matrix"], dtype=int)
-    if matrix.shape != (2, 2):
-        raise ValueError("Expected a 2×2 aggregate confusion matrix")
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or matrix.shape[0] == 0:
+        raise ValueError("aggregate_confusion_matrix must be a non-empty square matrix")
+    labels = _class_labels(summary, manifest)
     image = ax.imshow(matrix, cmap="Blues", vmin=0)
     threshold = float(matrix.max()) / 2.0
-    for row in range(2):
-        for column in range(2):
+    for row in range(matrix.shape[0]):
+        for column in range(matrix.shape[1]):
             ax.text(
                 column,
                 row,
@@ -229,10 +260,10 @@ def _plot_confusion_matrix(ax: plt.Axes, summary: dict[str, Any]) -> None:
     ax.set(
         xlabel="Predicted class",
         ylabel="True class",
-        xticks=(0, 1),
-        yticks=(0, 1),
-        xticklabels=("T0", "T4"),
-        yticklabels=("T0", "T4"),
+        xticks=np.arange(len(labels)),
+        yticks=np.arange(len(labels)),
+        xticklabels=labels,
+        yticklabels=labels,
     )
     ax.set_title("D  Aggregate confusion matrix", loc="left", fontweight="bold")
     plt.colorbar(image, ax=ax, fraction=0.046, pad=0.04, label="Samples")
@@ -262,7 +293,7 @@ def create_figure(
     _plot_fold_performance(axes[0, 0], folds, summary)
     _plot_selected_accuracy(axes[0, 1], selected, beta)
     _plot_aggregate_metrics(axes[1, 0], summary)
-    _plot_confusion_matrix(axes[1, 1], summary)
+    _plot_confusion_matrix(axes[1, 1], summary, manifest)
 
     cross_entropy = summary["metrics"].get("cross_entropy", {}).get("mean")
     subtitle = (
@@ -271,7 +302,6 @@ def create_figure(
     )
     if cross_entropy is not None:
         subtitle += f" | mean cross-entropy {float(cross_entropy):.3f}"
-    figure.suptitle("PainNAS cross-fitted LOSO results\n" + subtitle, fontsize=14, fontweight="bold")
     return figure
 
 
@@ -297,7 +327,7 @@ def format_report(
             f"objective={row.selected_uncertainty_objective:.3f}"
         )
     lines.extend([f"  Objective: mean accuracy - {beta:g} × SE", "", "Outer LOSO test metrics:"])
-    for metric in (*RATE_METRICS, "cross_entropy"):
+    for metric in (*_rate_metrics(summary), "cross_entropy"):
         values = summary.get("metrics", {}).get(metric)
         if not values:
             continue
@@ -313,7 +343,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=Path("../data/cross_fitted_loso_new"),
+        default=Path("../data/PainNAS/cross_fitted_loso_multiclass"),
         help="Directory containing fold_metrics.csv, summary.json, and manifest.json",
     )
     parser.add_argument(
@@ -343,10 +373,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, dpi=args.dpi, bbox_inches="tight", facecolor="white")
     saved = [output]
-    if args.pdf:
-        pdf_path = output.with_suffix(".pdf")
-        figure.savefig(pdf_path, bbox_inches="tight", facecolor="white")
-        saved.append(pdf_path)
+    pdf_path = output.with_suffix(".pdf")
+    figure.savefig(pdf_path, bbox_inches="tight", facecolor="white")
+    saved.append(pdf_path)
     plt.close(figure)
 
     print(format_report(folds, summary, manifest))
