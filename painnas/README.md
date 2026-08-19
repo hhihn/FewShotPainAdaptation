@@ -11,6 +11,14 @@ trials may change convolutional depth, width and type, temporal kernel size,
 normalization, pooling type and size, classifier-head pooling, dense depth and
 width, and Adam learning rate. ELU, softmax, and dropout `0.25` remain fixed.
 
+Use `--fusion-mode late` to search and train independent EDA, ECG, and EMG
+branches instead. The late reference trial uses the supplied seven-block EDA
+(`kernel=3`) and ECG/EMG (`kernel=11`) CNNs, then learns non-negative normalized
+weights over their softmax outputs. Branch losses have weight `0.2` each and the
+aggregate prediction has weight `0.4`; ECG and EMG never share weights. Late
+NAS searches each branch independently around that reference topology and fold
+artifacts record the final EDA/EMG/ECG fusion weights.
+
 ## Cross-fitted block NAS protocol
 
 The primary workflow partitions the 87 subjects into five deterministic outer
@@ -37,6 +45,8 @@ python -m painnas cross-fitted \
   --output-dir "/content/drive/MyDrive/PainNAS/run_001" \
   --resume
 ```
+
+For the late-fusion family, add `--fusion-mode late` to the same command.
 
 By default, post-NAS warm-start training uses the rounded median best epoch from
 the winning trial's inner folds as its maximum budget. To set a different

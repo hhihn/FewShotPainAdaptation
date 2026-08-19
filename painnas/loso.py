@@ -30,10 +30,14 @@ from painnas.data import (
 )
 from painnas.io import atomic_write_csv, atomic_write_json, ensure_manifest, read_json
 from painnas.model import (
-    ArchitectureSpec,
-    build_early_fusion_model,
+    ModelSpec,
+    aggregate_probabilities,
+    build_model,
     compile_model,
     early_stopping_callbacks,
+    learned_fusion_weights,
+    target_output_names,
+    validation_monitor,
 )
 from painnas.runtime import reset_runtime
 
@@ -48,7 +52,7 @@ METRIC_NAMES = (
 )
 
 
-def _architecture_fingerprint(spec: ArchitectureSpec) -> str:
+def _architecture_fingerprint(spec: ModelSpec) -> str:
     payload = json.dumps(spec.to_dict(), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -204,7 +208,7 @@ def _load_completed_folds(
 
 def run_loso(
     arrays: BioVidArrays,
-    spec: ArchitectureSpec,
+    spec: ModelSpec,
     config: PainNASConfig,
     output_dir: Path,
     *,
@@ -218,6 +222,11 @@ def run_loso(
     folds_dir = output_dir / "folds"
     folds_dir.mkdir(parents=True, exist_ok=True)
     arrays.validate(config, require_expected_subjects=False)
+    if spec.fusion_mode != config.fusion_mode:
+        raise ValueError(
+            f"Architecture fusion mode {spec.fusion_mode!r} does not match "
+            f"configuration mode {config.fusion_mode!r}"
+        )
     architecture_fingerprint = _architecture_fingerprint(spec)
     manifest = {
         "stage": "loso",
@@ -273,6 +282,7 @@ def run_loso(
             batch_size=config.batch_size,
             training=True,
             seed=fold_seed,
+            target_names=target_output_names(spec),
         )
         validation_dataset = make_tf_dataset(
             arrays,
@@ -282,6 +292,7 @@ def run_loso(
             batch_size=config.batch_size,
             training=False,
             seed=fold_seed,
+            target_names=target_output_names(spec),
         )
         test_dataset = make_tf_dataset(
             arrays,
@@ -291,17 +302,14 @@ def run_loso(
             batch_size=config.batch_size,
             training=False,
             seed=fold_seed,
+            target_names=target_output_names(spec),
         )
-        model = build_early_fusion_model(
-            spec,
-            input_shape=(arrays.num_modalities, arrays.sequence_length, 1),
-            num_classes=config.num_classes,
-        )
+        model = build_model(spec, input_shape=(arrays.num_modalities, arrays.sequence_length, 1), num_classes=config.num_classes, modalities=config.modalities)
         compile_model(model, spec)
         if int(model.optimizer.iterations.numpy()) != 0:
             raise RuntimeError("Fresh fold optimizer did not start at iteration zero")
         callbacks = early_stopping_callbacks(
-            monitor="val_macro_f1", patience=config.loso_patience
+            monitor=validation_monitor(spec), patience=config.loso_patience
         )
         try:
             history = model.fit(
@@ -311,11 +319,11 @@ def run_loso(
                 callbacks=callbacks,
                 verbose=verbose,
             ).history
-            probabilities = np.asarray(model.predict(test_dataset, verbose=0))
+            probabilities = np.asarray(aggregate_probabilities(model, model.predict(test_dataset, verbose=0)))
             y_true = arrays.y[indices.test]
             metrics = classification_metrics(y_true, probabilities)
             validation_scores = np.asarray(
-                history.get("val_macro_f1", []), dtype=np.float64
+                history.get(validation_monitor(spec), []), dtype=np.float64
             )
             best_epoch = (
                 int(np.nanargmax(validation_scores)) + 1
@@ -355,6 +363,7 @@ def run_loso(
                 "normalization": {"mean": mean, "std": std},
                 "architecture_fingerprint": architecture_fingerprint,
                 "parameter_count": int(model.count_params()),
+                "fusion_weights": learned_fusion_weights(model),
                 "optimizer_initial_iterations": 0,
                 "epochs_ran": len(history.get("loss", [])),
                 "best_epoch": best_epoch,

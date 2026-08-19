@@ -30,6 +30,7 @@ class PainNASConfig:
     num_classes: int = 2
     raw_class_ids: tuple[int, ...] = (0, 4)
     modalities: tuple[str, str, str] = ("GSR", "ECG", "EMG")
+    fusion_mode: str = "early"
     expected_sequence_length: int = 1152
     expected_subjects: int = 87
 
@@ -72,6 +73,8 @@ class PainNASConfig:
             raise ValueError("num_classes must equal len(raw_class_ids)")
         if len(self.modalities) != 3:
             raise ValueError("PainNAS requires exactly three physiological modalities")
+        if self.fusion_mode not in {"early", "late"}:
+            raise ValueError("fusion_mode must be 'early' or 'late'")
         if not 0.0 <= self.dropout_rate < 1.0:
             raise ValueError("dropout_rate must be in [0, 1)")
 

@@ -28,10 +28,15 @@ from painnas.data import (
 from painnas.io import atomic_write_csv, atomic_write_json, ensure_manifest, read_json
 from painnas.loso import METRIC_NAMES, classification_metrics
 from painnas.model import (
-    ArchitectureSpec,
-    build_early_fusion_model,
+    ModelSpec,
+    aggregate_probabilities,
+    architecture_from_dict,
+    build_model,
     compile_model,
     early_stopping_callbacks,
+    learned_fusion_weights,
+    target_output_names,
+    validation_monitor,
 )
 from painnas.runtime import reset_runtime
 from painnas.search import (
@@ -67,7 +72,7 @@ def uncertainty_aware_accuracy(
     }
 
 
-def _architecture_fingerprint(spec: ArchitectureSpec) -> str:
+def _architecture_fingerprint(spec: ModelSpec) -> str:
     payload = json.dumps(spec.to_dict(), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -205,9 +210,9 @@ class SubjectMacroAccuracyCallback(keras.callbacks.Callback):
         self.values: list[float] = []
 
     def on_epoch_end(self, epoch: int, logs=None) -> None:
-        probabilities = np.asarray(
-            self.model.predict(self.validation_dataset, verbose=0)
-        )
+        probabilities = np.asarray(aggregate_probabilities(
+            self.model, self.model.predict(self.validation_dataset, verbose=0)
+        ))
         rows = _subject_accuracy_rows(
             self.arrays,
             self.validation_indices,
@@ -290,7 +295,7 @@ def _persist_block_search(
                 **result["warm_start_checkpoint"],
             },
         )
-    spec = architecture_from_parameters(best.params)
+    spec = architecture_from_dict(result["architecture"])
     atomic_write_json(
         output_dir / "best_architecture.json",
         {
@@ -350,7 +355,7 @@ def run_uncertainty_aware_block_search(
     if set(flattened_inner) != set(development_subjects):
         raise ValueError("Inner folds must exactly cover development subjects")
     search_seed = config.seed + int(outer_block_index) * 10_000_000
-    study_name = f"painnas_cross_fitted_block_{outer_block_index:03d}"
+    study_name = f"painnas_{config.fusion_mode}_cross_fitted_block_{outer_block_index:03d}"
     manifest = {
         "stage": "uncertainty_aware_block_search",
         "config": config.to_dict(),
@@ -387,12 +392,12 @@ def run_uncertainty_aware_block_search(
         ),
     )
     if not study.trials:
-        study.enqueue_trial(baseline_trial_parameters())
+        study.enqueue_trial(baseline_trial_parameters(config.fusion_mode))
     input_shape = (arrays.num_modalities, arrays.sequence_length, 1)
 
     def objective(trial: optuna.Trial) -> float:
         trial_start = time.perf_counter()
-        spec = suggest_architecture(trial)
+        spec = suggest_architecture(trial, config.fusion_mode)
         if verbose:
             print(
                 f"[PainNAS block {outer_block_index}/{config.outer_block_count}] "
@@ -435,9 +440,7 @@ def run_uncertainty_aware_block_search(
                     )
                 mean, std = compute_source_normalization(arrays.X, train_indices)
                 reset_runtime(fold_seed)
-                model = build_early_fusion_model(
-                    spec, input_shape=input_shape, num_classes=config.num_classes
-                )
+                model = build_model(spec, input_shape=input_shape, num_classes=config.num_classes, modalities=config.modalities)
                 current_parameter_count = int(model.count_params())
                 parameter_count = current_parameter_count
                 trial.set_user_attr("parameter_count", current_parameter_count)
@@ -451,10 +454,12 @@ def run_uncertainty_aware_block_search(
                 train_dataset = make_tf_dataset(
                     arrays, train_indices, mean=mean, std=std,
                     batch_size=config.batch_size, training=True, seed=fold_seed,
+                    target_names=target_output_names(spec),
                 )
                 validation_dataset = make_tf_dataset(
                     arrays, validation_indices, mean=mean, std=std,
                     batch_size=config.batch_size, training=False, seed=fold_seed,
+                    target_names=target_output_names(spec),
                 )
                 metric_callback = SubjectMacroAccuracyCallback(
                     arrays,
@@ -500,9 +505,9 @@ def run_uncertainty_aware_block_search(
                             "No finite subject-macro validation accuracy was produced"
                         )
                     best_epoch = int(np.nanargmax(scores)) + 1
-                    probabilities = np.asarray(
-                        model.predict(validation_dataset, verbose=0)
-                    )
+                    probabilities = np.asarray(aggregate_probabilities(
+                        model, model.predict(validation_dataset, verbose=0)
+                    ))
                     rows = _subject_accuracy_rows(
                         arrays,
                         validation_indices,
@@ -534,6 +539,7 @@ def run_uncertainty_aware_block_search(
                             "validation_subjects": validation_subjects,
                             "best_epoch": best_epoch,
                             "subject_macro_accuracy": fold_accuracy,
+                            "fusion_weights": learned_fusion_weights(model),
                         }
                 finally:
                     del callbacks, metric_callback, train_dataset, validation_dataset, model
@@ -935,20 +941,23 @@ def run_cross_fitted_loso_nas(
                 arrays.subjects[validation_indices] == target_subject
             ):
                 raise RuntimeError("Outer target leaked into continuation validation")
+            spec = architecture_from_dict(search_result["architecture"])
             mean, std = compute_source_normalization(arrays.X, train_indices)
             train_dataset = make_tf_dataset(
                 arrays, train_indices, mean=mean, std=std,
                 batch_size=config.batch_size, training=True, seed=fold_seed,
+                target_names=target_output_names(spec),
             )
             test_dataset = make_tf_dataset(
                 arrays, test_indices, mean=mean, std=std,
                 batch_size=config.batch_size, training=False, seed=fold_seed,
+                target_names=target_output_names(spec),
             )
             validation_dataset = make_tf_dataset(
                 arrays, validation_indices, mean=mean, std=std,
                 batch_size=config.batch_size, training=False, seed=fold_seed,
+                target_names=target_output_names(spec),
             )
-            spec = ArchitectureSpec.from_dict(search_result["architecture"])
             architecture_fingerprint = _architecture_fingerprint(spec)
             if architecture_fingerprint != search_result["architecture_fingerprint"]:
                 raise RuntimeError("Selected architecture fingerprint mismatch")
@@ -966,25 +975,25 @@ def run_cross_fitted_loso_nas(
                     flush=True,
                 )
             reset_runtime(fold_seed)
-            model = build_early_fusion_model(
-                spec,
-                input_shape=(arrays.num_modalities, arrays.sequence_length, 1),
-                num_classes=config.num_classes,
-            )
+            model = build_model(spec, input_shape=(arrays.num_modalities, arrays.sequence_length, 1), num_classes=config.num_classes, modalities=config.modalities)
             model.load_weights(checkpoint_path)
             compile_model(model, spec)
             optimizer_initial_iterations = int(model.optimizer.iterations.numpy())
             if optimizer_initial_iterations != 0:
                 raise RuntimeError("Warm-start optimizer did not start at iteration zero")
             callbacks = early_stopping_callbacks(
-                monitor="val_macro_f1", patience=config.loso_patience
+                monitor=validation_monitor(spec), patience=config.loso_patience
             )
             if verbose:
                 callbacks.append(
                     EpochProgressCallback(
                         label=f"LOSO fold {fold_index}/{len(all_subjects)}",
                         total_epochs=continuation_epochs,
-                        metric_names=("loss", "accuracy", "macro_f1", "val_macro_f1"),
+                        metric_names=(
+                            ("loss", "pain_class_accuracy", "pain_class_macro_f1", validation_monitor(spec))
+                            if spec.fusion_mode == "late"
+                            else ("loss", "accuracy", "macro_f1", validation_monitor(spec))
+                        ),
                     )
                 )
             continuation_start = time.perf_counter()
@@ -1005,14 +1014,14 @@ def run_cross_fitted_loso_nas(
                         "a valid finite-loss training run"
                     )
                 validation_scores = np.asarray(
-                    history.get("val_macro_f1", []), dtype=np.float64
+                    history.get(validation_monitor(spec), []), dtype=np.float64
                 )
                 if validation_scores.size != losses.size or not np.any(
                     np.isfinite(validation_scores)
                 ):
                     raise RuntimeError("Continuation produced no finite validation score")
                 continuation_best_epoch = int(np.nanargmax(validation_scores)) + 1
-                probabilities = np.asarray(model.predict(test_dataset, verbose=0))
+                probabilities = np.asarray(aggregate_probabilities(model, model.predict(test_dataset, verbose=0)))
                 y_true = arrays.y[test_indices]
                 metrics = classification_metrics(y_true, probabilities)
                 continuation_elapsed_seconds = time.perf_counter() - continuation_start
@@ -1085,6 +1094,7 @@ def run_cross_fitted_loso_nas(
                     "continuation_best_epoch": continuation_best_epoch,
                     "optimizer_initial_iterations": optimizer_initial_iterations,
                     "parameter_count": int(model.count_params()),
+                    "fusion_weights": learned_fusion_weights(model),
                     "final_normalization": {"mean": mean, "std": std},
                     "continuation_history": history,
                     "metrics": metrics,

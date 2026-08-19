@@ -356,6 +356,7 @@ def make_tf_dataset(
     batch_size: int,
     training: bool,
     seed: int,
+    target_names: tuple[str, ...] | None = None,
 ):
     """Build a vectorized channels-last 2D CNN input pipeline."""
 
@@ -380,7 +381,9 @@ def make_tf_dataset(
         transposed = tf.transpose(normalized, perm=(0, 2, 1))
         model_input = tf.expand_dims(transposed, axis=-1)
         one_hot_y = tf.one_hot(batch_y, depth=class_count, dtype=tf.float32)
-        return model_input, one_hot_y
+        if target_names is None or len(target_names) == 1:
+            return model_input, one_hot_y
+        return model_input, {name: one_hot_y for name in target_names}
 
     dataset = dataset.map(
         prepare_batch,

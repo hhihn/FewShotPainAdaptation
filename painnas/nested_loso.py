@@ -23,16 +23,21 @@ from painnas.data import (
 from painnas.io import atomic_write_csv, atomic_write_json, ensure_manifest, read_json
 from painnas.loso import METRIC_NAMES, classification_metrics
 from painnas.model import (
-    ArchitectureSpec,
-    build_early_fusion_model,
+    ModelSpec,
+    aggregate_probabilities,
+    architecture_from_dict,
+    build_model,
     compile_model,
     early_stopping_callbacks,
+    learned_fusion_weights,
+    target_output_names,
+    validation_monitor,
 )
 from painnas.runtime import reset_runtime
 from painnas.search import run_search
 
 
-def _architecture_fingerprint(spec: ArchitectureSpec) -> str:
+def _architecture_fingerprint(spec: ModelSpec) -> str:
     payload = json.dumps(spec.to_dict(), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -122,12 +127,8 @@ def _aggregate_rows(
             "refit_best_epoch": payload["refit_best_epoch"],
             "parameter_count": payload["parameter_count"],
             "architecture_fingerprint": fingerprint,
-            "num_blocks": spec["num_blocks"],
-            "conv_repeats": spec["conv_repeats"],
-            "width_multiplier": spec["width_multiplier"],
-            "temporal_kernel_size": spec["temporal_kernel_size"],
-            "dense_units": spec["dense_units"],
-            "learning_rate": spec["learning_rate"],
+            "fusion_mode": spec.get("fusion_mode", "early"),
+            "architecture": spec,
             "search_elapsed_seconds": payload["search_elapsed_seconds"],
             "refit_elapsed_seconds": payload["refit_elapsed_seconds"],
             "elapsed_seconds": payload["elapsed_seconds"],
@@ -281,7 +282,7 @@ def run_nested_loso_nas(
             raise ValueError(
                 f"Invalid winning best epoch for fold {fold_index}: {refit_epochs}"
             )
-        spec = ArchitectureSpec.from_dict(search_result["architecture"])
+        spec = architecture_from_dict(search_result["architecture"])
         architecture_fingerprint = _architecture_fingerprint(spec)
 
         reset_runtime(refit_seed)
@@ -296,6 +297,7 @@ def run_nested_loso_nas(
             batch_size=config.batch_size,
             training=True,
             seed=refit_seed,
+            target_names=target_output_names(spec),
         )
         test_dataset = make_tf_dataset(
             arrays,
@@ -305,6 +307,7 @@ def run_nested_loso_nas(
             batch_size=config.batch_size,
             training=False,
             seed=refit_seed,
+            target_names=target_output_names(spec),
         )
         validation_dataset = make_tf_dataset(
             arrays,
@@ -314,18 +317,15 @@ def run_nested_loso_nas(
             batch_size=config.batch_size,
             training=False,
             seed=refit_seed,
+            target_names=target_output_names(spec),
         )
-        model = build_early_fusion_model(
-            spec,
-            input_shape=(arrays.num_modalities, arrays.sequence_length, 1),
-            num_classes=config.num_classes,
-        )
+        model = build_model(spec, input_shape=(arrays.num_modalities, arrays.sequence_length, 1), num_classes=config.num_classes, modalities=config.modalities)
         compile_model(model, spec)
         optimizer_initial_iterations = int(model.optimizer.iterations.numpy())
         if optimizer_initial_iterations != 0:
             raise RuntimeError("Fresh refit optimizer did not start at iteration zero")
         callbacks = early_stopping_callbacks(
-            monitor="val_macro_f1", patience=config.loso_patience
+            monitor=validation_monitor(spec), patience=config.loso_patience
         )
         refit_start = time.perf_counter()
         try:
@@ -345,14 +345,14 @@ def run_nested_loso_nas(
                     "finite-loss training run"
                 )
             validation_scores = np.asarray(
-                history.get("val_macro_f1", []), dtype=np.float64
+                history.get(validation_monitor(spec), []), dtype=np.float64
             )
             if validation_scores.size != refit_losses.size or not np.any(
                 np.isfinite(validation_scores)
             ):
                 raise RuntimeError("Final refit produced no finite validation score")
             refit_best_epoch = int(np.nanargmax(validation_scores)) + 1
-            probabilities = np.asarray(model.predict(test_dataset, verbose=0))
+            probabilities = np.asarray(aggregate_probabilities(model, model.predict(test_dataset, verbose=0)))
             y_true = arrays.y[fold_indices.test]
             metrics = classification_metrics(y_true, probabilities)
             predictions = np.argmax(probabilities, axis=1).astype(np.int32)
@@ -419,6 +419,7 @@ def run_nested_loso_nas(
                 "refit_best_epoch": refit_best_epoch,
                 "optimizer_initial_iterations": optimizer_initial_iterations,
                 "parameter_count": int(model.count_params()),
+                "fusion_weights": learned_fusion_weights(model),
                 "final_normalization": {"mean": mean, "std": std},
                 "refit_history": history,
                 "metrics": metrics,

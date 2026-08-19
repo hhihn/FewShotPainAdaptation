@@ -43,6 +43,10 @@ def _common_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uncertainty-beta", type=float, default=1.0)
     parser.add_argument("--max-parameters", type=int, default=32_000_000)
     parser.add_argument("--bootstrap-samples", type=int, default=10_000)
+    parser.add_argument(
+        "--fusion-mode", choices=("early", "late"), default="early",
+        help="Base architecture family for NAS and LOSO (default: early).",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--allow-cpu",
@@ -115,6 +119,7 @@ def _config_from_args(args: argparse.Namespace) -> PainNASConfig:
         uncertainty_beta=args.uncertainty_beta,
         max_parameters=args.max_parameters,
         bootstrap_samples=args.bootstrap_samples,
+        fusion_mode=args.fusion_mode,
     )
 
 
