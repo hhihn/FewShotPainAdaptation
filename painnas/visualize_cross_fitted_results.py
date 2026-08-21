@@ -343,7 +343,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=Path("../data/PainNAS/cross_fitted_loso_multiclass"),
+        default=Path("../data/PainNAS/cross_fitted_loso_late_binary"),
         help="Directory containing fold_metrics.csv, summary.json, and manifest.json",
     )
     parser.add_argument(
