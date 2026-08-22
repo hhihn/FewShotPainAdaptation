@@ -242,6 +242,40 @@ def loso_random_forest(
     return np.asarray(accuracies), np.asarray(f1_scores)
 
 
+def crop_window(
+    X: np.ndarray, cut: str, features_csv: Path | None
+) -> tuple[np.ndarray, Path | None]:
+    """Crop each stimulus window to ``START,END`` seconds.
+
+    Args:
+        X: Raw data shaped [n, time, sensors, 1].
+        cut: ``"START,END"`` in seconds.
+        features_csv: Cache path to disambiguate, or None.
+
+    Returns:
+        The cropped array and a cache path unique to this crop. Cropped tables
+        have the same row count as full-window ones, so they need distinct
+        filenames or a stale cache is silently reused.
+    """
+    bounds = [float(value) for value in cut.split(",")]
+    if len(bounds) != 2 or bounds[0] >= bounds[1]:
+        raise ValueError(f"Window '{cut}' must be START,END seconds with START < END, e.g. 1,5")
+
+    start = int(round(bounds[0] * SAMPLING_RATE_HZ))
+    end = int(round(bounds[1] * SAMPLING_RATE_HZ))
+    if start < 0 or end > X.shape[1]:
+        raise ValueError(
+            f"Window '{cut}' is outside the {X.shape[1] / SAMPLING_RATE_HZ:g} s recording"
+        )
+
+    print(f"Cropped to {bounds[0]:g}-{bounds[1]:g} s: {end - start} samples per window")
+    if features_csv is not None:
+        features_csv = features_csv.with_name(
+            f"{features_csv.stem}_cut{bounds[0]:g}-{bounds[1]:g}{features_csv.suffix}"
+        )
+    return X[:, start:end, :, :], features_csv
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--xai-repo", type=Path, required=True,
@@ -268,6 +302,13 @@ def main() -> None:
                             "evaluation. Diagnostic: measures what the crop costs the RF, "
                             "holding features and classifier fixed. Default is the full window."
                         ))
+    parser.add_argument("--cut-sweep", type=str, default=None,
+                        help=(
+                            "Space-separated windows to evaluate in one run, e.g. "
+                            "'full 0,4 1,5 3,7 6,10 0,10'. Prints a comparison table, which is "
+                            "the direct answer to where the discriminative signal sits in the "
+                            "10 s stimulus. Overrides --cut."
+                        ))
     args = parser.parse_args()
 
     sensors = [name.strip() for name in args.sensors.split(",") if name.strip()]
@@ -278,68 +319,77 @@ def main() -> None:
     if len(classes) != 2:
         raise ValueError("--classes expects exactly two raw heater classes, e.g. 0,5")
 
-    X, y, subjects = load_arrays(args.data_dir)
+    windows = [args.cut]
+    if args.cut_sweep:
+        windows = args.cut_sweep.split()
+
+    X_full, y_full, subjects_full = load_arrays(args.data_dir)
     if args.max_samples is not None:
-        X, y, subjects = X[: args.max_samples], y[: args.max_samples], subjects[: args.max_samples]
-        print(f"DEBUG: truncated to {len(X)} samples")
+        X_full = X_full[: args.max_samples]
+        y_full = y_full[: args.max_samples]
+        subjects_full = subjects_full[: args.max_samples]
+        print(f"DEBUG: truncated to {len(X_full)} samples")
 
-    features_csv = args.features_csv
-    if args.cut is not None:
-        bounds = [float(value) for value in args.cut.split(",")]
-        if len(bounds) != 2 or bounds[0] >= bounds[1]:
-            raise ValueError("--cut expects START,END in seconds with START < END, e.g. 1,5")
-        start = int(round(bounds[0] * SAMPLING_RATE_HZ))
-        end = int(round(bounds[1] * SAMPLING_RATE_HZ))
-        if start < 0 or end > X.shape[1]:
+    results = []
+    for window in windows:
+        label = "full 10 s" if window in (None, "full") else f"{window.replace(',', '-')} s"
+        print(f"\n{'-' * 62}\n  window: {label}\n{'-' * 62}")
+
+        X = X_full
+        features_csv = args.features_csv
+        if window not in (None, "full"):
+            X, features_csv = crop_window(X_full, window, features_csv)
+
+        features = build_features(X, args.xai_repo, sensors, features_csv)
+        if len(features) != len(y_full):
             raise ValueError(
-                f"--cut {args.cut} is outside the {X.shape[1] / SAMPLING_RATE_HZ:g} s window"
-            )
-        X = X[:, start:end, :, :]
-        print(f"Cropped to {bounds[0]:g}-{bounds[1]:g} s: {X.shape[1]} samples per window")
-        # Keep cropped features in their own cache so they cannot collide with
-        # full-window features, which have the same row count.
-        if features_csv is not None:
-            features_csv = features_csv.with_name(
-                f"{features_csv.stem}_cut{bounds[0]:g}-{bounds[1]:g}{features_csv.suffix}"
+                f"Feature rows ({len(features)}) do not match samples ({len(y_full)}). "
+                "A cached --features-csv from a different subset is the usual cause."
             )
 
-    features = build_features(X, args.xai_repo, sensors, features_csv)
-    if len(features) != len(y):
-        raise ValueError(
-            f"Feature rows ({len(features)}) do not match samples ({len(y)}). "
-            "A cached --features-csv from a different subset is the usual cause."
-        )
+        features, y_binary, subjects = select_classes(features, y_full, subjects_full, classes)
 
-    features, y_binary, subjects = select_classes(features, y, subjects, classes)
+        print(f"\nRunning {args.runs} x LOSO over {len(np.unique(subjects))} subjects "
+              f"with {args.n_estimators} trees on {features.shape[1]} features...")
+        run_means, run_f1_means, fold_stds = [], [], []
+        for run in range(args.runs):
+            seed = None if args.seed is None else args.seed + run
+            accuracies, f1_scores = loso_random_forest(
+                features, y_binary, subjects, args.n_estimators, seed
+            )
+            run_means.append(float(np.mean(accuracies)))
+            run_f1_means.append(float(np.mean(f1_scores)))
+            fold_stds.append(float(np.std(accuracies)))
+            print(f"  run {run + 1}/{args.runs}: accuracy {run_means[-1] * 100:.2f} % "
+                  f"(fold std {fold_stds[-1] * 100:.2f}), macro F1 {run_f1_means[-1] * 100:.2f} %")
 
-    print(f"\nRunning {args.runs} x LOSO over {len(np.unique(subjects))} subjects "
-          f"with {args.n_estimators} trees on {features.shape[1]} features...")
-    run_means, run_f1_means = [], []
-    for run in range(args.runs):
-        seed = None if args.seed is None else args.seed + run
-        accuracies, f1_scores = loso_random_forest(
-            features, y_binary, subjects, args.n_estimators, seed
-        )
-        run_means.append(float(np.mean(accuracies)))
-        run_f1_means.append(float(np.mean(f1_scores)))
-        print(f"  run {run + 1}/{args.runs}: accuracy {run_means[-1] * 100:.2f} % "
-              f"(fold std {np.std(accuracies) * 100:.2f}), macro F1 {run_f1_means[-1] * 100:.2f} %")
+        results.append({
+            "window": label,
+            "features": features.shape[1],
+            "accuracy": float(np.mean(run_means)) * 100,
+            "f1": float(np.mean(run_f1_means)) * 100,
+            "fold_std": float(np.mean(fold_stds)) * 100,
+        })
 
-    accuracy = float(np.mean(run_means)) * 100
     print(f"\n{'=' * 62}")
-    print(f"  sensors            : {', '.join(sensors)}")
-    print(f"  window             : {args.cut.replace(',', '-') + ' s' if args.cut else 'full 10 s'}")
-    print(f"  raw classes        : {classes[0]} vs {classes[1]}")
-    print(f"  accuracy           : {accuracy:.2f} % "
-          f"(spread across runs {np.std(run_means) * 100:.2f})")
-    print(f"  macro F1           : {float(np.mean(run_f1_means)) * 100:.2f} %")
+    print(f"  sensors     : {', '.join(sensors)}")
+    print(f"  raw classes : {classes[0]} vs {classes[1]}")
+    print(f"{'=' * 62}")
+    print(f"  {'window':<12} {'feats':>6} {'accuracy':>10} {'macro F1':>10} {'fold std':>10}")
+    best = max(result["accuracy"] for result in results)
+    for result in results:
+        marker = "  <-- best" if result["accuracy"] == best and len(results) > 1 else ""
+        print(f"  {result['window']:<12} {result['features']:>6} "
+              f"{result['accuracy']:>9.2f} % {result['f1']:>9.2f} % "
+              f"{result['fold_std']:>9.2f}{marker}")
 
     # The published figures are full-window, so only compare like with like.
-    if (args.cut is None and len(sensors) == 1 and classes == [0, 5]
+    full = next((r for r in results if r["window"] == "full 10 s"), None)
+    if (full is not None and len(sensors) == 1 and classes == [0, 5]
             and sensors[0] in PUBLISHED_B_VS_P4):
         published = PUBLISHED_B_VS_P4[sensors[0]]
-        print(f"  published (B vs P4): {published:.2f} %")
-        print(f"  difference         : {accuracy - published:+.2f} points")
+        print(f"\n  published full-window (B vs P4): {published:.2f} %")
+        print(f"  our full-window difference     : {full['accuracy'] - published:+.2f} points")
     print("=" * 62)
 
 
