@@ -64,12 +64,15 @@ completed the block. Use `--verbose 0` to disable this progress output.
 
 For Colab, open `painnas/colab_entrypoint.ipynb`. It checks out the repository,
 installs the pinned environment, stages `BioVid.tar.gz` from Drive onto the
-Colab SSD (with an extracted-Drive fallback), validates the real T0/T4 arrays,
-runs/resumes block NAS and warm-started LOSO, audits target isolation, and
-visualizes uncertainty-aware search and LOSO progress.
+Colab SSD (with an extracted-Drive fallback), and audits target isolation. Its
+default `global_search_loso` mode runs one deterministic 70/17 subject-level NAS
+and then retrains the selected architecture from scratch in every LOSO fold.
+Set `WORKFLOW_MODE = 'cross_fitted'` to run/resume the target-exclusive block
+NAS and warm-started LOSO protocol instead. The notebook labels the global
+workflow exploratory because architecture selection uses the complete cohort.
 
-The original nested, one-time global search, and fixed-architecture LOSO remain
-available as compatibility commands, but are not used by the Colab notebook:
+The same one-time global search, fixed-architecture LOSO, and nested protocol
+are available as command-line workflows:
 
 ```bash
 python -m painnas search --data-dir DATA --output-dir RUN --resume
