@@ -261,6 +261,13 @@ def main() -> None:
                         help="Cache path for the extracted feature table")
     parser.add_argument("--max-samples", type=int, default=None,
                         help="Debug only: keep the first N samples to smoke-test the pipeline")
+    parser.add_argument("--cut", type=str, default=None,
+                        help=(
+                            "Crop each 10 s window to START,END in seconds before extracting "
+                            "features, e.g. '1,5' for the 4 s crop our episodic model sees at "
+                            "evaluation. Diagnostic: measures what the crop costs the RF, "
+                            "holding features and classifier fixed. Default is the full window."
+                        ))
     args = parser.parse_args()
 
     sensors = [name.strip() for name in args.sensors.split(",") if name.strip()]
@@ -276,7 +283,27 @@ def main() -> None:
         X, y, subjects = X[: args.max_samples], y[: args.max_samples], subjects[: args.max_samples]
         print(f"DEBUG: truncated to {len(X)} samples")
 
-    features = build_features(X, args.xai_repo, sensors, args.features_csv)
+    features_csv = args.features_csv
+    if args.cut is not None:
+        bounds = [float(value) for value in args.cut.split(",")]
+        if len(bounds) != 2 or bounds[0] >= bounds[1]:
+            raise ValueError("--cut expects START,END in seconds with START < END, e.g. 1,5")
+        start = int(round(bounds[0] * SAMPLING_RATE_HZ))
+        end = int(round(bounds[1] * SAMPLING_RATE_HZ))
+        if start < 0 or end > X.shape[1]:
+            raise ValueError(
+                f"--cut {args.cut} is outside the {X.shape[1] / SAMPLING_RATE_HZ:g} s window"
+            )
+        X = X[:, start:end, :, :]
+        print(f"Cropped to {bounds[0]:g}-{bounds[1]:g} s: {X.shape[1]} samples per window")
+        # Keep cropped features in their own cache so they cannot collide with
+        # full-window features, which have the same row count.
+        if features_csv is not None:
+            features_csv = features_csv.with_name(
+                f"{features_csv.stem}_cut{bounds[0]:g}-{bounds[1]:g}{features_csv.suffix}"
+            )
+
+    features = build_features(X, args.xai_repo, sensors, features_csv)
     if len(features) != len(y):
         raise ValueError(
             f"Feature rows ({len(features)}) do not match samples ({len(y)}). "
@@ -301,12 +328,15 @@ def main() -> None:
     accuracy = float(np.mean(run_means)) * 100
     print(f"\n{'=' * 62}")
     print(f"  sensors            : {', '.join(sensors)}")
+    print(f"  window             : {args.cut.replace(',', '-') + ' s' if args.cut else 'full 10 s'}")
     print(f"  raw classes        : {classes[0]} vs {classes[1]}")
     print(f"  accuracy           : {accuracy:.2f} % "
           f"(spread across runs {np.std(run_means) * 100:.2f})")
     print(f"  macro F1           : {float(np.mean(run_f1_means)) * 100:.2f} %")
 
-    if len(sensors) == 1 and classes == [0, 5] and sensors[0] in PUBLISHED_B_VS_P4:
+    # The published figures are full-window, so only compare like with like.
+    if (args.cut is None and len(sensors) == 1 and classes == [0, 5]
+            and sensors[0] in PUBLISHED_B_VS_P4):
         published = PUBLISHED_B_VS_P4[sensors[0]]
         print(f"  published (B vs P4): {published:.2f} %")
         print(f"  difference         : {accuracy - published:+.2f} points")
