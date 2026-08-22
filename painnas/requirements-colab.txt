@@ -1,7 +1,7 @@
-numpy==2.2.6
-optuna==4.8.0
-pandas==2.2.3
-scikit-learn==1.8.0
+numpy
+optuna
+pandas
+scikit-learn
 # Current Colab runtimes provide TensorFlow 2.20.x (2.18.x is not
 # available for the Python version used by current Colab runtimes).
 tensorflow==2.20.0
