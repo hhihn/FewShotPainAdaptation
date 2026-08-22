@@ -252,6 +252,20 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         ),
         crossmod_ff_activation=str(getattr(args, "crossmod_ff_activation", "relu")),
         enable_window_shift_augmentation=not args.disable_window_shift,
+        **{
+            key: value
+            for key, value in (
+                ("window_shift_window_seconds", getattr(args, "window_seconds", None)),
+                ("window_shift_start_min_seconds",
+                 getattr(args, "window_start_min_seconds", None)),
+                ("window_shift_start_max_seconds",
+                 getattr(args, "window_start_max_seconds", None)),
+                ("window_shift_step_seconds", getattr(args, "window_step_seconds", None)),
+                ("window_shift_eval_start_seconds",
+                 getattr(args, "window_eval_start_seconds", None)),
+            )
+            if value is not None
+        },
         gaussian_noise_std=args.gaussian_noise_std,
         logging_verbosity=args.logging_verbosity,
         disable_training_logging=bool(
@@ -394,6 +408,14 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
         "disable_training_logging": bool(config.disable_training_logging),
         "k_shot_adaptation_steps": int(config.k_shot_adaptation_steps),
         "window_shift_enabled": bool(config.enable_window_shift_augmentation),
+        "window_shift_window_seconds": float(config.window_shift_window_seconds),
+        "window_shift_start_min_seconds": float(config.window_shift_start_min_seconds),
+        "window_shift_start_max_seconds": float(config.window_shift_start_max_seconds),
+        "window_shift_step_seconds": float(config.window_shift_step_seconds),
+        "window_shift_eval_start_seconds": (
+            None if config.window_shift_eval_start_seconds is None
+            else float(config.window_shift_eval_start_seconds)
+        ),
         "gaussian_noise_std": float(config.gaussian_noise_std),
         "deterministic_ops": bool(config.deterministic_ops),
         "train_progress_write_every_n_batches": int(
@@ -648,6 +670,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
     )
     parser.add_argument("--disable-window-shift", action="store_true")
+    # Window geometry. Measured on PainMonit Eda_RB with the authors' features
+    # (52-fold LOSO): full 10 s 90.77%, 2-10 s 90.53%, 3-7 s 86.23%,
+    # 1-5 s 82.79% (the old default), 0-4 s 77.73%. Length matters most, but
+    # position matters at fixed length, so both are tunable here.
+    parser.add_argument("--window-seconds", type=float, default=None,
+                        help="Window duration in seconds (config default 4.0)")
+    parser.add_argument("--window-start-min-seconds", type=float, default=None,
+                        help="Earliest training window start (config default 1.0)")
+    parser.add_argument("--window-start-max-seconds", type=float, default=None,
+                        help="Latest training window start (config default 6.0)")
+    parser.add_argument("--window-step-seconds", type=float, default=None,
+                        help="Jitter step between training starts (config default 0.2)")
+    parser.add_argument("--window-eval-start-seconds", type=float, default=None,
+                        help=(
+                            "Canonical window start for val/test. Defaults to the earliest "
+                            "training start; set it when the best window is not the earliest, "
+                            "e.g. --window-seconds 8 --window-start-max-seconds 2 "
+                            "--window-eval-start-seconds 2 to jitter over 0-2 s but evaluate "
+                            "at the measured-best 2-10 s."
+                        ))
     parser.add_argument(
         "--logging-verbosity",
         type=int,

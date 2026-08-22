@@ -156,6 +156,15 @@ class PainDatasetConfig:
     window_shift_step_seconds: float = (
         0.2  # Sliding step in seconds (e.g., 0.2s => 50 samples @ 250 Hz)
     )
+    window_shift_eval_start_seconds: Optional[float] = (
+        # Canonical window start used for val/test and any base-index draw.
+        # None keeps the legacy behaviour of evaluating at the earliest training
+        # start. Set it when the best window is not the earliest one: on
+        # PainMonit an 8 s window scores 90.53% at 2-10 s but only 88.27% at
+        # 0-8 s, so jittering over starts 0-2 s while evaluating at 2 s needs
+        # these decoupled.
+        None
+    )
     sampling_rate_hz: int = 250  # Signal sampling rate used for time->index conversion
 
     # Data paths
@@ -464,6 +473,12 @@ class PainDatasetConfig:
             raise ValueError(
                 "window_shift_start_max_seconds must be >= window_shift_start_min_seconds"
             )
+        if self.window_shift_eval_start_seconds is not None:
+            self.window_shift_eval_start_seconds = float(
+                self.window_shift_eval_start_seconds
+            )
+            if self.window_shift_eval_start_seconds < 0:
+                raise ValueError("window_shift_eval_start_seconds must be >= 0")
         if self.gaussian_noise_std < 0:
             raise ValueError("gaussian_noise_std must be non-negative")
         if self.logging_verbosity not in {0, 1, 2}:

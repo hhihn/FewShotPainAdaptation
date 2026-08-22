@@ -68,6 +68,7 @@ class PainMetaDataset:
         self.window_step_samples = 0
         self.window_start_min_idx = 0
         self.window_start_max_idx = 0
+        self.window_eval_start_idx = 0
         self.has_predefined_split = bool(self.config.split_strategy == "predefined")
         self.sample_split_codes = np.array([], dtype=np.int8)
         self.split_code_to_name = {0: "train", 1: "test"}
@@ -663,6 +664,25 @@ class PainMetaDataset:
         self.window_step_samples = step_samples
         self.window_start_min_idx = int(window_start_indices[0])
         self.window_start_max_idx = int(window_start_indices[-1])
+        # Evaluation draws one canonical window per sample. That need not be the
+        # earliest training start: on PainMonit the best 8 s window is 2-10 s
+        # (90.53%) while 0-8 s scores 88.27%, so the eval position is configured
+        # independently of the jitter range. None keeps the legacy behaviour.
+        eval_start_seconds = getattr(
+            self.config, "window_shift_eval_start_seconds", None
+        )
+        if eval_start_seconds is None:
+            self.window_eval_start_idx = self.window_start_min_idx
+        else:
+            eval_start_idx = int(round(float(eval_start_seconds) * sampling_rate_hz))
+            if not 0 <= eval_start_idx <= max_valid_start:
+                raise ValueError(
+                    f"window_shift_eval_start_seconds={eval_start_seconds} resolves to "
+                    f"sample {eval_start_idx}, outside the valid start range "
+                    f"[0, {max_valid_start}] for a {window_length_samples}-sample window "
+                    f"in a {raw_sequence_length}-sample signal."
+                )
+            self.window_eval_start_idx = eval_start_idx
         self.config.sequence_length = window_length_samples
 
         expanded_index: Dict[int, Dict[int, np.ndarray]] = {}
@@ -732,7 +752,7 @@ class PainMetaDataset:
             return self._extract_windows(refs_or_indices)
 
         if self.window_shift_enabled:
-            start_idx = int(self.window_start_min_idx)
+            start_idx = int(self.window_eval_start_idx)
             end_idx = start_idx + int(self.window_length_samples)
             return self.X[refs_or_indices, start_idx:end_idx, :]
 
@@ -762,6 +782,14 @@ class PainMetaDataset:
             f"([{self.window_start_min_idx}, {self.window_start_max_idx}] samples), "
             f"step={step_sec:.2f}s ({self.window_step_samples} samples), "
             f"windows_per_signal={num_windows}"
+        )
+        eval_start_sec = self.window_eval_start_idx / sampling_rate
+        self.logger.info(
+            "  Eval window: "
+            f"{eval_start_sec:.2f}s..{eval_start_sec + window_sec:.2f}s "
+            f"(start sample {self.window_eval_start_idx})"
+            + ("" if self.window_eval_start_idx != self.window_start_min_idx
+               else " [earliest training start]")
         )
 
         total_original = 0
