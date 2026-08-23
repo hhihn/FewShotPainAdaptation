@@ -110,6 +110,19 @@ EXPERIMENTS = {
     # Length dominates, but position matters at fixed length too, and the old
     # 1-5 s default was the second-worst window tested. Eval is pinned to 2 s
     # rather than the earliest jitter start because 0-8 s costs 2.26 points.
+    # Window control against the ORIGINAL baseline (CrossMod, sensors 1,4,
+    # 4 s @ 1-5 s, zero-shot 0.6888): same encoder and sensors, new window only.
+    # Answers whether the window alone lifts that number, independently of the
+    # sensor swap and the encoder change. CrossMod forces sensor_idx=(1,4).
+    "E": {
+        "encoder_backend": "crossmod",
+        "sensor_idx": "1,4",
+        "window_seconds": 8.0,
+        "window_start_min_seconds": 0.0,
+        "window_start_max_seconds": 2.0,
+        "window_step_seconds": 0.2,
+        "window_eval_start_seconds": 2.0,
+    },
     "D": {
         "sensor_idx": "3,4,5",
         "window_seconds": 8.0,
