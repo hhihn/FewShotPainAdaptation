@@ -133,6 +133,28 @@ EXPERIMENTS = {
         "window_step_seconds": 0.2,
         "window_eval_start_seconds": 2.0,
     },
+    # Encoder comparison at MATCHED sensors, both on D's window. CrossMod is
+    # structurally two-stream (two frontends, bidirectional cross-attention), so
+    # 3 channels is not available to it; (3,4) = Eda_RB + Ecg is the strongest
+    # pair both encoders can take. F vs G isolates the encoder.
+    "F": {
+        "encoder_backend": "eegnet",
+        "sensor_idx": "3,4",
+        "window_seconds": 8.0,
+        "window_start_min_seconds": 0.0,
+        "window_start_max_seconds": 2.0,
+        "window_step_seconds": 0.2,
+        "window_eval_start_seconds": 2.0,
+    },
+    "G": {
+        "encoder_backend": "crossmod",
+        "sensor_idx": "3,4",
+        "window_seconds": 8.0,
+        "window_start_min_seconds": 0.0,
+        "window_start_max_seconds": 2.0,
+        "window_step_seconds": 0.2,
+        "window_eval_start_seconds": 2.0,
+    },
     "D": {
         "sensor_idx": "3,4,5",
         "window_seconds": 8.0,

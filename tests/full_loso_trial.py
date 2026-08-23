@@ -114,11 +114,12 @@ def run_full_loso_trial(args: argparse.Namespace) -> dict[str, Any]:
     encoder_backend = str(getattr(args, "encoder_backend", "eegnet")).strip().lower()
     if sensor_idx_raw:
         sensor_idx = _parse_int_tuple(sensor_idx_raw)
-        if encoder_backend == "crossmod" and tuple(sensor_idx) != (1, 4):
+        if encoder_backend == "crossmod" and len(sensor_idx) != 2:
             raise ValueError(
-                "encoder_backend='crossmod' only supports the 2-channel EDA+ECG "
-                f"input (sensor_idx=1,4), but sensor_idx={sensor_idx_raw!r} was set. "
-                "Use encoder_backend='eegnet' to train on more channels (e.g. EMG)."
+                "encoder_backend='crossmod' is a two-stream architecture and needs "
+                f"exactly 2 channels, but sensor_idx={sensor_idx_raw!r} has "
+                f"{len(sensor_idx)}. Any pair works (e.g. 3,4 = Eda_RB + Ecg); use "
+                "encoder_backend='eegnet' for 3 or more channels."
             )
     else:
         sensor_idx = (1, 4, 5)

@@ -203,8 +203,25 @@ class PainDatasetConfig:
                 raise ValueError(
                     "encoder_backend='crossmod' requires attention_mode='can'"
                 )
+            # CrossMod is structurally two-stream: two frontends and a
+            # bidirectional cross-attention pair. Two channels is a hard
+            # architectural requirement; WHICH two is not. Keep a caller's
+            # 2-channel choice (e.g. 3,4 = Eda_RB + Ecg) and default to (1,4).
+            if len(tuple(self.sensor_idx)) != 2:
+                # Fall back only from the untouched class default; a caller who
+                # deliberately asked for 3+ channels gets an error rather than a
+                # silent coercion to (1, 4).
+                if tuple(self.sensor_idx) == (1, 4, 5):
+                    self.sensor_idx = (1, 4)
+                else:
+                    raise ValueError(
+                        "encoder_backend='crossmod' is a two-stream architecture and "
+                        f"needs exactly 2 channels, but sensor_idx={self.sensor_idx} "
+                        "has "
+                        f"{len(tuple(self.sensor_idx))}. Any pair works (e.g. (3, 4) "
+                        "= Eda_RB + Ecg); use encoder_backend='eegnet' for more."
+                    )
             self.num_sensors = 2
-            self.sensor_idx = (1, 4)
             self.modality_names = ("EDA", "ECG")
             self.biovid_modalities = ("GSR", "ECG")
             self.senseemotion_modalities = ("GSR", "ECG")
