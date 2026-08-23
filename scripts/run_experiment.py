@@ -100,7 +100,21 @@ EXPERIMENTS = {
     # Eda_RB swap, original 4 s windowing. Result: no better than baseline.
     "A": {"sensor_idx": "3,4,5"},
     # No windowing: the model sees the full 10 s signal.
-    "B": {"sensor_idx": "3,4,5", "disable_window_shift": True},
+    #
+    # The prototype bank needs samples_per_slot * slots = 256 * 2 = 512 samples
+    # per class. With windowing on, 360 real trials become 360 * 11 windows and
+    # that is never binding; with windowing off only the 360 remain (45 train
+    # subjects x 8 baseline trials), so initialisation fails. 128 * 2 = 256
+    # fits with margin for folds whose subjects have fewer trials.
+    #
+    # This is a forced deviation from D, not a free choice: without
+    # augmentation the data cannot supply D's bank size. Report it alongside
+    # any B vs D comparison.
+    "B": {
+        "sensor_idx": "3,4,5",
+        "disable_window_shift": True,
+        "prototype_bank_init_samples_per_class": 128,
+    },
     # Both EDA sensors, on D's measured window so the only difference from D is
     # the added Eda_E4 channel. Prior is mildly negative: the all-6-channel run
     # contained both EDA channels and scored below the 3-channel one, and the
