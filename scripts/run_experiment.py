@@ -101,8 +101,18 @@ EXPERIMENTS = {
     "A": {"sensor_idx": "3,4,5"},
     # No windowing: the model sees the full 10 s signal.
     "B": {"sensor_idx": "3,4,5", "disable_window_shift": True},
-    # Both EDA sensors.
-    "C": {"sensor_idx": "1,3,4,5"},
+    # Both EDA sensors, on D's measured window so the only difference from D is
+    # the added Eda_E4 channel. Prior is mildly negative: the all-6-channel run
+    # contained both EDA channels and scored below the 3-channel one, and the
+    # paper's own late fusion (91.34) is slightly below Eda_RB alone (91.93).
+    "C": {
+        "sensor_idx": "1,3,4,5",
+        "window_seconds": 8.0,
+        "window_start_min_seconds": 0.0,
+        "window_start_max_seconds": 2.0,
+        "window_step_seconds": 0.2,
+        "window_eval_start_seconds": 2.0,
+    },
     # Window geometry taken from the random-forest sweep (52-fold LOSO, Eda_RB,
     # the authors' own features, so features and classifier are held fixed):
     #   full 10 s 90.77 | 2-10 s 90.53 | 3-7 s 86.23 | 1-5 s 82.79 | 0-4 s 77.73
