@@ -28,6 +28,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from datetime import datetime
@@ -294,7 +295,43 @@ def main() -> None:
 
     payload = run_full_loso_trial(trial_args)
 
+    # full_loso_payload.json holds everything but is far too large to read by
+    # eye; write the headline numbers beside it in JSON and CSV so the result
+    # survives a closed Colab session.
     summary = payload.get("summary", {})
+    with (run_dir / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["metric", "mean", "std"])
+        writer.writerows(sorted(
+            (key, stats["mean"], stats["std"])
+            for key, stats in summary.items()
+            if isinstance(stats, dict)
+        ))
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment": args.experiment,
+                "folds": summary.get("num_folds"),
+                "elapsed_hours": round(payload.get("elapsed_seconds", 0) / 3600, 3),
+                "config": {
+                    key: payload.get("config", {}).get(key)
+                    for key in (
+                        "encoder_backend", "sensor_idx", "modality_names",
+                        "task_class_ids", "window_shift_enabled",
+                        "window_shift_window_seconds",
+                        "window_shift_start_min_seconds",
+                        "window_shift_start_max_seconds",
+                        "window_shift_eval_start_seconds",
+                        "loso_start_index", "loso_stop_index",
+                    )
+                },
+                "summary": summary,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     print("\n=== Result ===")
     for metric in (
         "zero_shot_accuracy",
@@ -305,6 +342,7 @@ def main() -> None:
         if stats:
             print(f"  {metric:<38} {stats['mean']:.4f} +/- {stats['std']:.4f}")
     print(f"\nArtifacts in {run_dir}")
+    print("  summary.json / summary.csv hold the headline numbers")
 
 
 if __name__ == "__main__":
