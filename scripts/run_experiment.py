@@ -344,6 +344,21 @@ def main() -> None:
     trial_args = build_parser().parse_args(build_argv(settings))
 
     print(f"=== Experiment {args.experiment} ===")
+    # Show the experiment's own settings and the commit they came from. A stale
+    # clone is otherwise only visible deep in the run-config dump, after the
+    # run has already started.
+    try:
+        import subprocess
+
+        head = subprocess.check_output(
+            ["git", "-C", str(ROOT), "log", "-1", "--format=%h %s"], text=True
+        ).strip()
+        print(f"  commit      : {head}")
+    except Exception:
+        pass
+    print("  settings    : " + ", ".join(
+        f"{key}={value!r}" for key, value in EXPERIMENTS[args.experiment].items()
+    ))
     print(f"  run dir     : {run_dir}")
     describe(trial_args)
     print()
