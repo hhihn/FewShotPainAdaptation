@@ -147,6 +147,17 @@ EXPERIMENTS = {
         "window_step_seconds": 0.2,
         "window_eval_start_seconds": 2.0,
     },
+    # Combines the two measured winners: CrossMod (F 0.8650 -> G 0.9072, the
+    # encoder is worth +4.21 at matched sensors) and the uncropped signal
+    # (D 0.8614 -> B 0.8725, windowing off is worth +1.11 at matched sensors and
+    # encoder). Needs B's smaller prototype bank for the same reason B does:
+    # without augmentation only 360 real trials per class exist.
+    "H": {
+        "encoder_backend": "crossmod",
+        "sensor_idx": "3,4",
+        "disable_window_shift": True,
+        "prototype_bank_init_samples_per_class": 128,
+    },
     # Encoder comparison at MATCHED sensors, both on D's window. CrossMod is
     # structurally two-stream (two frontends, bidirectional cross-attention), so
     # 3 channels is not available to it; (3,4) = Eda_RB + Ecg is the strongest
