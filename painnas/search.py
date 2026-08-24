@@ -37,13 +37,13 @@ from painnas.runtime import reset_runtime
 
 
 STUDY_NAME = "painnas_early_fusion_binary"
-SEARCH_SPACE_VERSION = 3
+SEARCH_SPACE_VERSION = 4
 
 
 def baseline_trial_parameters(fusion_mode: str = "early") -> dict[str, Any]:
     if fusion_mode == "late":
         parameters: dict[str, Any] = {"learning_rate": 1e-5}
-        for modality, kernel in (("eda", 3), ("emg", 11), ("ecg", 11)):
+        for modality, kernel in (("eda", 3), ("emg_ecg", 11)):
             parameters.update({
                 f"{modality}_num_blocks": 7,
                 **{f"{modality}_block_{index}_repeats": 1 for index in range(1, 8)},
@@ -94,10 +94,11 @@ def _late_branch_from_parameters(parameters: Mapping[str, Any], modality: str) -
 
 def architecture_from_parameters(parameters: Mapping[str, Any], fusion_mode: str = "early") -> ModelSpec:
     if fusion_mode == "late":
+        shared_emg_ecg = _late_branch_from_parameters(parameters, "emg_ecg")
         return LateFusionArchitectureSpec(
             eda=_late_branch_from_parameters(parameters, "eda"),
-            emg=_late_branch_from_parameters(parameters, "emg"),
-            ecg=_late_branch_from_parameters(parameters, "ecg"),
+            emg=shared_emg_ecg,
+            ecg=shared_emg_ecg,
             learning_rate=float(parameters["learning_rate"]),
         )
     num_blocks = int(parameters["num_blocks"])
@@ -142,8 +143,7 @@ def _suggest_late_branch(trial: optuna.Trial, modality: str, kernels: list[int])
 def suggest_architecture(trial: optuna.Trial, fusion_mode: str = "early") -> ModelSpec:
     if fusion_mode == "late":
         _suggest_late_branch(trial, "eda", [3, 5, 7])
-        _suggest_late_branch(trial, "emg", [7, 11, 15])
-        _suggest_late_branch(trial, "ecg", [7, 11, 15])
+        _suggest_late_branch(trial, "emg_ecg", [7, 11, 15])
         parameters = dict(trial.params)
         parameters["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
         return architecture_from_parameters(parameters, fusion_mode="late")

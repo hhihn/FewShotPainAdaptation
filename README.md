@@ -128,7 +128,7 @@ and held-out evaluation operate over test subjects.
 To convert BioVid arrays from `.npy` to compressed `.npz`:
 
 ```bash
-python scripts/convert_biovid_parta_npy_to_npz.py --help
+python scripts/data_preparation/convert_biovid_parta_npy_to_npz.py --help
 ```
 
 ### SenseEmotion
@@ -172,7 +172,7 @@ subjects as one subject ID per sample.
 Create compatible mock arrays with:
 
 ```bash
-python scripts/create_mock_pain_dataset.py
+python scripts/data_preparation/create_mock_pain_dataset.py
 ```
 
 The mock files are named `X_pre_mock.npy`, `y_heater_mock.npy`, and
@@ -366,7 +366,7 @@ The full runner writes:
 Useful tracked utilities include:
 
 ```bash
-python scripts/convert_biovid_parta_npy_to_npz.py --help
+python scripts/data_preparation/convert_biovid_parta_npy_to_npz.py --help
 ```
 
 Additional analysis scripts may be present in a research workspace, but only

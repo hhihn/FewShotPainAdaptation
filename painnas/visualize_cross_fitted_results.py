@@ -332,8 +332,8 @@ def format_report(
         if not values:
             continue
         lines.append(
-            f"  {DISPLAY_NAMES[metric]}: {values['mean']:.3f} "
-            f"(95% CI {values['ci_low']:.3f}–{values['ci_high']:.3f}; fold SD {values['std']:.3f})"
+            f"  {DISPLAY_NAMES[metric]}: {values['mean']:.4f} "
+            f"(95% CI {values['ci_low']:.4f}–{values['ci_high']:.4f}; fold SD {values['std']:.4f})"
         )
     return "\n".join(lines)
 
@@ -343,7 +343,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=Path("../data/PainNAS/cross_fitted_run_late_mc"),
+        default=Path("../data/PainNAS/nas_runs/5_blocks_5_folds_early_mc"),
         help="Directory containing fold_metrics.csv, summary.json, and manifest.json",
     )
     parser.add_argument(
