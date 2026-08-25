@@ -14,7 +14,7 @@ from painnas.io import to_jsonable
 from painnas.loso import run_loso
 from painnas.nested_loso import run_nested_loso_nas
 from painnas.runtime import require_gpu
-from painnas.search import load_architecture, run_search
+from painnas.search import load_architecture, load_selected_training_epochs, run_search
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -25,7 +25,15 @@ def _common_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=40)
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--search-max-epochs", type=int, default=50)
-    parser.add_argument("--loso-max-epochs", type=int, default=100)
+    parser.add_argument(
+        "--loso-max-epochs",
+        type=int,
+        default=100,
+        help=(
+            "Maximum for nested/cross-fitted training. Global fixed-architecture "
+            "LOSO loads the winning NAS best_epoch instead."
+        ),
+    )
     parser.add_argument(
         "--cross-fitted-continuation-epochs",
         type=int,
@@ -36,7 +44,15 @@ def _common_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--search-patience", type=int, default=8)
-    parser.add_argument("--loso-patience", type=int, default=15)
+    parser.add_argument(
+        "--loso-patience",
+        type=int,
+        default=15,
+        help=(
+            "Patience for nested/cross-fitted training; unused by global fixed-"
+            "epoch LOSO."
+        ),
+    )
     parser.add_argument(
         "--search-validation-subjects",
         type=int,
@@ -183,12 +199,14 @@ def run_command(args: argparse.Namespace) -> dict[str, Any]:
             else output_dir / "search" / "best_architecture.json"
         )
         spec = load_architecture(architecture_path)
+        training_epochs = load_selected_training_epochs(architecture_path)
         result["loso"] = run_loso(
             arrays,
             spec,
             config,
             output_dir / "loso",
             resume=bool(args.resume),
+            training_epochs=training_epochs,
             start_index=getattr(args, "loso_start_index", None),
             stop_index=getattr(args, "loso_stop_index", None),
             max_folds=getattr(args, "max_folds", None),

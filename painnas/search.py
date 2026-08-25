@@ -352,6 +352,24 @@ def load_architecture(path: Path) -> ModelSpec:
     return architecture_from_dict(architecture_payload)
 
 
+def load_selected_training_epochs(path: Path) -> int:
+    """Load the winning trial's subject-disjoint validation-best epoch."""
+
+    payload = read_json(path)
+    value = payload.get("best_epoch")
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid best_epoch in selected architecture: {path}")
+    try:
+        training_epochs = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"Selected architecture does not contain a valid best_epoch: {path}"
+        ) from error
+    if training_epochs <= 0 or float(value) != float(training_epochs):
+        raise ValueError(f"Invalid best_epoch in selected architecture: {path}")
+    return training_epochs
+
+
 def run_search(
     arrays: BioVidArrays,
     config: PainNASConfig,

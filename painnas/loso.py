@@ -34,10 +34,8 @@ from painnas.model import (
     aggregate_probabilities,
     build_model,
     compile_model,
-    early_stopping_callbacks,
     learned_fusion_weights,
     target_output_names,
-    validation_monitor,
 )
 from painnas.runtime import reset_runtime
 
@@ -186,6 +184,8 @@ def _write_aggregate(
     )
     summary = {
         "completed_folds": len(payloads),
+        "training_epochs": int(payloads[0]["training_epochs"]),
+        "training_epoch_source": "nas_winner_validation_best_epoch",
         "metrics": summaries,
         "aggregate_confusion_matrix": confusion,
         "protocol_warning": PROTOCOL_WARNING,
@@ -195,13 +195,15 @@ def _write_aggregate(
 
 
 def _load_completed_folds(
-    folds_dir: Path, *, architecture_fingerprint: str
+    folds_dir: Path, *, architecture_fingerprint: str, training_epochs: int
 ) -> dict[int, dict[str, Any]]:
     completed: dict[int, dict[str, Any]] = {}
     for fold_path in sorted(Path(folds_dir).glob("fold_*.json")):
         payload = read_json(fold_path)
         if payload.get("architecture_fingerprint") != architecture_fingerprint:
             raise ValueError(f"Architecture mismatch in resumed fold: {fold_path}")
+        if payload.get("training_epochs") != training_epochs:
+            raise ValueError(f"Training-epoch mismatch in resumed fold: {fold_path}")
         completed[int(payload["fold_index"])] = payload
     return completed
 
@@ -213,11 +215,22 @@ def run_loso(
     output_dir: Path,
     *,
     resume: bool,
+    training_epochs: int,
     start_index: int | None = None,
     stop_index: int | None = None,
     max_folds: int | None = None,
     verbose: int = 1,
 ) -> dict[str, Any]:
+    """Fit every target-exclusive fold for the NAS winner's fixed epoch count.
+
+    The epoch count must have been selected before LOSO from the winning NAS
+    trial's subject-disjoint validation curve.  LOSO does not use source-subject
+    ``Test`` samples for validation or early stopping.
+    """
+
+    training_epochs = int(training_epochs)
+    if training_epochs <= 0:
+        raise ValueError("training_epochs must be greater than zero")
     output_dir = Path(output_dir)
     folds_dir = output_dir / "folds"
     folds_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +247,9 @@ def run_loso(
         "config_fingerprint": config.fingerprint(),
         "architecture": spec.to_dict(),
         "architecture_fingerprint": architecture_fingerprint,
+        "training_epochs": training_epochs,
+        "training_epoch_source": "nas_winner_validation_best_epoch",
+        "source_test_usage": "unused_during_training",
         "protocol_warning": PROTOCOL_WARNING,
     }
     ensure_manifest(output_dir / "manifest.json", manifest, resume=resume)
@@ -249,7 +265,9 @@ def run_loso(
     }
     payload_by_fold = (
         _load_completed_folds(
-            folds_dir, architecture_fingerprint=architecture_fingerprint
+            folds_dir,
+            architecture_fingerprint=architecture_fingerprint,
+            training_epochs=training_epochs,
         )
         if resume
         else {}
@@ -266,6 +284,8 @@ def run_loso(
             existing = read_json(fold_path)
             if existing.get("architecture_fingerprint") != architecture_fingerprint:
                 raise ValueError(f"Architecture mismatch in resumed fold: {fold_path}")
+            if existing.get("training_epochs") != training_epochs:
+                raise ValueError(f"Training-epoch mismatch in resumed fold: {fold_path}")
             payload_by_fold[fold_index] = existing
             continue
 
@@ -284,16 +304,6 @@ def run_loso(
             seed=fold_seed,
             target_names=target_output_names(spec),
         )
-        validation_dataset = make_tf_dataset(
-            arrays,
-            indices.validation,
-            mean=mean,
-            std=std,
-            batch_size=config.batch_size,
-            training=False,
-            seed=fold_seed,
-            target_names=target_output_names(spec),
-        )
         test_dataset = make_tf_dataset(
             arrays,
             indices.test,
@@ -308,28 +318,23 @@ def run_loso(
         compile_model(model, spec)
         if int(model.optimizer.iterations.numpy()) != 0:
             raise RuntimeError("Fresh fold optimizer did not start at iteration zero")
-        callbacks = early_stopping_callbacks(
-            monitor=validation_monitor(spec), patience=config.loso_patience
-        )
+        callbacks = [keras.callbacks.TerminateOnNaN()]
         try:
             history = model.fit(
                 train_dataset,
-                validation_data=validation_dataset,
-                epochs=config.loso_max_epochs,
+                epochs=training_epochs,
                 callbacks=callbacks,
                 verbose=verbose,
             ).history
+            epochs_ran = len(history.get("loss", []))
+            if epochs_ran != training_epochs:
+                raise RuntimeError(
+                    "LOSO training ended before the NAS-selected epoch budget: "
+                    f"expected {training_epochs}, ran {epochs_ran}"
+                )
             probabilities = np.asarray(aggregate_probabilities(model, model.predict(test_dataset, verbose=0)))
             y_true = arrays.y[indices.test]
             metrics = classification_metrics(y_true, probabilities)
-            validation_scores = np.asarray(
-                history.get(validation_monitor(spec), []), dtype=np.float64
-            )
-            best_epoch = (
-                int(np.nanargmax(validation_scores)) + 1
-                if validation_scores.size
-                else len(history.get("loss", []))
-            )
             predictions = np.argmax(probabilities, axis=1).astype(np.int32)
             subject_key = arrays.subject_keys.get(target_subject, str(target_subject))
             prediction_rows = [
@@ -358,15 +363,17 @@ def run_loso(
                 "fold_seed": fold_seed,
                 "source_subject_count": len(indices.source_subjects),
                 "train_samples": len(indices.train),
-                "validation_samples": len(indices.validation),
+                "validation_samples": 0,
                 "test_samples": len(indices.test),
                 "normalization": {"mean": mean, "std": std},
                 "architecture_fingerprint": architecture_fingerprint,
                 "parameter_count": int(model.count_params()),
                 "fusion_weights": learned_fusion_weights(model),
                 "optimizer_initial_iterations": 0,
-                "epochs_ran": len(history.get("loss", [])),
-                "best_epoch": best_epoch,
+                "training_epochs": training_epochs,
+                "training_epoch_source": "nas_winner_validation_best_epoch",
+                "epochs_ran": epochs_ran,
+                "best_epoch": training_epochs,
                 "history": history,
                 "metrics": metrics,
                 "predictions": prediction_rows,
@@ -375,7 +382,7 @@ def run_loso(
             atomic_write_json(fold_path, payload)
             payload_by_fold[fold_index] = payload
         finally:
-            del callbacks, train_dataset, validation_dataset, test_dataset, model
+            del callbacks, train_dataset, test_dataset, model
             reset_runtime(fold_seed + 1_000_000)
             gc.collect()
         _write_aggregate(

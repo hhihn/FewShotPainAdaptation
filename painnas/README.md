@@ -70,6 +70,9 @@ train/validation/architecture-selection-test split. Training subjects fit each
 candidate, validation subjects control early stopping and pruning, and the
 unweighted mean test-subject macro F1 selects the architecture. The selected
 architecture is then retrained from scratch in every LOSO fold.
+Each fold trains on all 86 source subjects for the winning NAS trial's
+validation-best epoch count. Source-subject `Test` samples are not used for
+LOSO early stopping.
 Set `WORKFLOW_MODE = 'cross_fitted'` to run/resume the target-exclusive block
 NAS and warm-started LOSO protocol instead. The notebook labels the global
 workflow exploratory because architecture selection uses the complete cohort.
