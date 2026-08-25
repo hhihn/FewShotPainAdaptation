@@ -312,8 +312,14 @@ def main() -> None:
         type=int,
         nargs=2,
         metavar=("START", "STOP"),
-        default=(1, 12),
-        help="1-based inclusive LOSO fold range (default: the 12-fold screen)",
+        default=(1, 52),
+        help=(
+            "1-based inclusive LOSO fold range. Defaults to the full sweep: every "
+            "comparison in this project is 52-fold, and folds 1-12 are a harder "
+            "than average slice (D scores 0.8349 there against 0.8614 overall), "
+            "so a 12-fold number cannot be compared with the rest. Pass "
+            "--folds 1 12 explicitly for a quick screen."
+        ),
     )
     parser.add_argument(
         "--set",
