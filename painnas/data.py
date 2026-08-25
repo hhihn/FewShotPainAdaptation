@@ -12,6 +12,10 @@ from data_loaders.pain_meta_dataset import PainMetaDataset
 from painnas.config import PainNASConfig
 
 
+GLOBAL_SEARCH_TEST_FRACTION = 0.20
+GLOBAL_SEARCH_VALIDATION_FRACTION = 0.20
+
+
 @dataclass
 class BioVidArrays:
     """In-memory BioVid arrays with class labels remapped to consecutive indices."""
@@ -85,6 +89,47 @@ class NestedFoldIndices:
     inner_train_subjects: tuple[int, ...]
     inner_validation_subjects: tuple[int, ...]
     target_subject: int
+
+
+@dataclass(frozen=True)
+class SearchSubjectSplit:
+    """Deterministic global-NAS train/validation/test subject partition."""
+
+    train_subjects: tuple[int, ...]
+    validation_subjects: tuple[int, ...]
+    test_subjects: tuple[int, ...]
+    seed: int
+    test_fraction: float
+    validation_fraction: float
+
+    def validate(self, subjects: Iterable[int]) -> None:
+        known_values = tuple(int(value) for value in subjects)
+        known = set(known_values)
+        if len(known_values) != len(known):
+            raise ValueError("Available subjects must not contain duplicates")
+        groups = {
+            "train": self.train_subjects,
+            "validation": self.validation_subjects,
+            "test": self.test_subjects,
+        }
+        for name, values in groups.items():
+            if not values:
+                raise RuntimeError(f"Global NAS {name} subjects must be non-empty")
+            if len(values) != len(set(values)):
+                raise RuntimeError(f"Global NAS {name} subjects contain duplicates")
+        names = tuple(groups)
+        for index, left_name in enumerate(names):
+            for right_name in names[index + 1 :]:
+                if set(groups[left_name]) & set(groups[right_name]):
+                    raise RuntimeError(
+                        f"Global NAS {left_name} and {right_name} subjects overlap"
+                    )
+        selected = set().union(*(set(values) for values in groups.values()))
+        if selected != known:
+            raise RuntimeError(
+                "Global NAS train, validation, and test subjects must exactly "
+                "cover the available subjects"
+            )
 
 
 @dataclass(frozen=True)
@@ -215,6 +260,63 @@ def deterministic_search_subject_split(
     validation = tuple(sorted(int(value) for value in shuffled[:validation_subjects]))
     training = tuple(sorted(int(value) for value in shuffled[validation_subjects:]))
     return training, validation
+
+
+def deterministic_global_search_subject_split(
+    subjects: Iterable[int],
+    *,
+    seed: int,
+    test_fraction: float = GLOBAL_SEARCH_TEST_FRACTION,
+    validation_fraction: float = GLOBAL_SEARCH_VALIDATION_FRACTION,
+) -> SearchSubjectSplit:
+    """Split subjects 80/20, then split the development subjects 80/20.
+
+    Counts use ceiling for each held-out fraction.  With 87 subjects this yields
+    55 training, 14 validation, and 18 architecture-selection test subjects.
+    """
+
+    ordered_values = tuple(sorted(int(subject) for subject in subjects))
+    if len(ordered_values) != len(set(ordered_values)):
+        raise ValueError("subjects must not contain duplicates")
+    if len(ordered_values) < 3:
+        raise ValueError("At least three subjects are required for a three-way split")
+    for name, fraction in (
+        ("test_fraction", test_fraction),
+        ("validation_fraction", validation_fraction),
+    ):
+        if not 0.0 < float(fraction) < 1.0:
+            raise ValueError(f"{name} must be between 0 and 1")
+
+    test_count = int(np.ceil(len(ordered_values) * float(test_fraction)))
+    development_count = len(ordered_values) - test_count
+    validation_count = int(
+        np.ceil(development_count * float(validation_fraction))
+    )
+    train_count = development_count - validation_count
+    if min(train_count, validation_count, test_count) <= 0:
+        raise ValueError(
+            "Requested fractions do not leave non-empty train, validation, and test sets"
+        )
+
+    shuffled = np.random.default_rng(seed).permutation(
+        np.asarray(ordered_values, dtype=np.int32)
+    )
+    test_stop = test_count
+    validation_stop = test_stop + validation_count
+    split = SearchSubjectSplit(
+        train_subjects=tuple(
+            sorted(int(value) for value in shuffled[validation_stop:])
+        ),
+        validation_subjects=tuple(
+            sorted(int(value) for value in shuffled[test_stop:validation_stop])
+        ),
+        test_subjects=tuple(sorted(int(value) for value in shuffled[:test_stop])),
+        seed=int(seed),
+        test_fraction=float(test_fraction),
+        validation_fraction=float(validation_fraction),
+    )
+    split.validate(ordered_values)
+    return split
 
 
 def indices_for_subjects(

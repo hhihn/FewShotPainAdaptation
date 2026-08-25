@@ -37,7 +37,15 @@ def _common_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--search-patience", type=int, default=8)
     parser.add_argument("--loso-patience", type=int, default=15)
-    parser.add_argument("--search-validation-subjects", type=int, default=17)
+    parser.add_argument(
+        "--search-validation-subjects",
+        type=int,
+        default=17,
+        help=(
+            "Validation-subject count for nested search. Global search uses its "
+            "fixed two-stage 80/20 subject split."
+        ),
+    )
     parser.add_argument("--outer-block-count", type=int, default=5)
     parser.add_argument("--inner-fold-count", type=int, default=3)
     parser.add_argument("--uncertainty-beta", type=float, default=1.0)
