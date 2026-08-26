@@ -337,6 +337,7 @@ def main() -> None:
 
     settings = dict(BASE)
     settings.update(EXPERIMENTS[args.experiment])
+    overrides: dict = {}
     settings["data_dir"] = args.data_dir
     settings["loso_start_index"], settings["loso_stop_index"] = args.folds
 
@@ -350,6 +351,7 @@ def main() -> None:
         except json.JSONDecodeError:
             value = raw
         settings[key] = value
+        overrides[key] = value
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.run_root) / f"cli-{stamp}-painmonit-exp{args.experiment}"
@@ -376,6 +378,12 @@ def main() -> None:
     print("  settings    : " + ", ".join(
         f"{key}={value!r}" for key, value in EXPERIMENTS[args.experiment].items()
     ))
+    if overrides:
+        # --set values are what distinguishes a repeat from its original, so they
+        # must be visible next to the experiment's own settings, not implied.
+        print("  overrides   : " + ", ".join(
+            f"{key}={value!r}" for key, value in overrides.items()
+        ))
     print(f"  run dir     : {run_dir}")
     describe(trial_args)
     print()
