@@ -22,6 +22,11 @@ PROTOTYPE_PHASE2_LOSS_MODES = ("ce_can",)
 SOURCE_SUBJECT_PROTOTYPE_VOTE_SOFTMAX_SCOPES = ("global",)
 SUPPORTED_DATASET_SOURCES = ("painmonit", "biovid_part_a", "senseemotion")
 PREDEFINED_SPLIT_DATASET_SOURCES = ("biovid_part_a", "senseemotion")
+ALLOWED_MODALITIES_BY_DATASET = {
+    "biovid_part_a": ("ECG", "EMG", "GSR"),
+    "senseemotion": ("ECG", "EMG", "GSR", "RSP"),
+}
+MODALITY_ALIASES = {"EDA": "GSR", "GRS": "GSR"}
 
 
 @dataclass
@@ -182,6 +187,7 @@ class PainDatasetConfig:
     senseemotion_train_split_dir: str = "Train"
     senseemotion_test_split_dir: str = "Test"
     senseemotion_modalities: Tuple[str, ...] = ("GSR", "ECG")
+    modalities: Optional[Tuple[str, ...]] = None
 
     def __post_init__(self) -> None:
         """Normalize derived fields and validate configuration values.
@@ -190,6 +196,11 @@ class PainDatasetConfig:
             ValueError: If dataset, model, sampler, or training settings are
                 inconsistent or outside supported ranges.
         """
+        self.dataset_source = str(self.dataset_source).strip().lower()
+        if self.dataset_source not in SUPPORTED_DATASET_SOURCES:
+            raise ValueError(
+                "dataset_source must be one of: " + ", ".join(SUPPORTED_DATASET_SOURCES)
+            )
         if self.subject_eval_tasks is not None:
             self.heldout_eval_tasks = int(self.subject_eval_tasks)
         self.matched_query_support_repeats = int(self.matched_query_support_repeats)
@@ -203,36 +214,91 @@ class PainDatasetConfig:
                 raise ValueError(
                     "encoder_backend='crossmod' requires attention_mode='can'"
                 )
-            # CrossMod is structurally two-stream: two frontends and a
-            # bidirectional cross-attention pair. Two channels is a hard
-            # architectural requirement; WHICH two is not. Keep a caller's
-            # 2-channel choice (e.g. 3,4 = Eda_RB + Ecg) and default to (1,4).
-            if len(tuple(self.sensor_idx)) != 2:
-                # Fall back only from the untouched class default; a caller who
-                # deliberately asked for 3+ channels gets an error rather than a
-                # silent coercion to (1, 4).
-                if tuple(self.sensor_idx) == (1, 4, 5):
-                    self.sensor_idx = (1, 4)
-                else:
-                    raise ValueError(
-                        "encoder_backend='crossmod' is a two-stream architecture and "
-                        f"needs exactly 2 channels, but sensor_idx={self.sensor_idx} "
-                        "has "
-                        f"{len(tuple(self.sensor_idx))}. Any pair works (e.g. (3, 4) "
-                        "= Eda_RB + Ecg); use encoder_backend='eegnet' for more."
-                    )
-            self.num_sensors = 2
-            self.modality_names = ("EDA", "ECG")
-            self.biovid_modalities = ("GSR", "ECG")
-            self.senseemotion_modalities = ("GSR", "ECG")
-        self.dataset_source = str(self.dataset_source).strip().lower()
-        if self.dataset_source not in SUPPORTED_DATASET_SOURCES:
-            raise ValueError(
-                "dataset_source must be one of: " + ", ".join(SUPPORTED_DATASET_SOURCES)
-            )
+            if self.dataset_source == "painmonit":
+                # CrossMod is structurally two-stream: two frontends and a
+                # bidirectional cross-attention pair. Two channels is a hard
+                # architectural requirement; WHICH two is not. Keep a caller's
+                # 2-channel choice (e.g. 3,4 = Eda_RB + Ecg) and default to (1,4).
+                if len(tuple(self.sensor_idx)) != 2:
+                    # Fall back only from the untouched class default; a caller
+                    # who deliberately asked for 3+ channels gets an error rather
+                    # than a silent coercion to (1, 4).
+                    if tuple(self.sensor_idx) == (1, 4, 5):
+                        self.sensor_idx = (1, 4)
+                    else:
+                        raise ValueError(
+                            "encoder_backend='crossmod' is a two-stream architecture "
+                            "and needs exactly 2 channels, but "
+                            f"sensor_idx={self.sensor_idx} has "
+                            f"{len(tuple(self.sensor_idx))}. Any pair works (e.g. "
+                            "(3, 4) = Eda_RB + Ecg); use encoder_backend='eegnet' "
+                            "for more."
+                        )
+                self.num_sensors = 2
+                # modality_names is rebuilt from the PainMonit channel map below.
         if self.split_strategy not in {"loso", "predefined"}:
             raise ValueError("split_strategy must be one of: 'loso', 'predefined'")
+        if self.dataset_source == "painmonit":
+            # `modalities` addresses the predefined-split datasets by name.
+            # PainMonit ships six raw channels (two of them EDA) and is
+            # addressed by index through `sensor_idx`, so a modality list here
+            # is inert -- clear it rather than recording it in the run config.
+            self.modalities = None
         if self.dataset_source in PREDEFINED_SPLIT_DATASET_SOURCES:
+            configured_modalities = self.modalities
+            if configured_modalities is None:
+                if self.encoder_backend == "crossmod":
+                    configured_modalities = ("GSR", "ECG")
+                else:
+                    configured_modalities = (
+                        self.biovid_modalities
+                        if self.dataset_source == "biovid_part_a"
+                        else self.senseemotion_modalities
+                    )
+            if isinstance(configured_modalities, str):
+                configured_modalities = tuple(configured_modalities.split(","))
+            normalized_modalities = tuple(
+                MODALITY_ALIASES.get(
+                    str(modality).strip().upper(), str(modality).strip().upper()
+                )
+                for modality in configured_modalities
+            )
+            if (
+                self.modalities is not None or self.encoder_backend == "crossmod"
+            ) and len(normalized_modalities) != 2:
+                raise ValueError("modalities must contain exactly two modalities")
+            # Duplicates are always wrong, but the count is only pinned to two
+            # when the caller asked for specific modalities or when CrossMod's
+            # two-stream architecture requires it. EEGNet takes any number, and
+            # biovid_modalities defaults to three -- requiring exactly two here
+            # made the default config unconstructible.
+            if len(set(normalized_modalities)) != len(normalized_modalities):
+                raise ValueError(
+                    "modalities must be distinct; GSR and EDA are synonyms"
+                )
+            allowed_modalities = ALLOWED_MODALITIES_BY_DATASET[self.dataset_source]
+            invalid_modalities = tuple(
+                modality
+                for modality in normalized_modalities
+                if modality not in allowed_modalities
+            )
+            if invalid_modalities:
+                raise ValueError(
+                    f"Unsupported modalities for {self.dataset_source}: "
+                    f"{', '.join(invalid_modalities)}. Allowed: "
+                    f"{', '.join(allowed_modalities)} (EDA is an alias for GSR)"
+                )
+            self.modalities = normalized_modalities
+            self.num_sensors = len(normalized_modalities)
+            self.sensor_idx = tuple(range(self.num_sensors))
+            self.modality_names = tuple(
+                "EDA" if modality == "GSR" else modality
+                for modality in normalized_modalities
+            )
+            if self.dataset_source == "biovid_part_a":
+                self.biovid_modalities = normalized_modalities
+            else:
+                self.senseemotion_modalities = normalized_modalities
             # BioVid Part A and SenseEmotion ship with explicit train/test splits.
             self.split_strategy = "predefined"
             # Avoid applying an additional sliding-window augmentation on top of
@@ -249,9 +315,6 @@ class PainDatasetConfig:
                 self.task_class_ids = (0, 4)
         elif self.dataset_source == "senseemotion":
             self.sequence_length = 1664
-            self.num_sensors = len(self.senseemotion_modalities)
-            self.sensor_idx = (1, 4)
-            self.modality_names = ("EDA", "ECG")
             if self.task_class_ids == (0, 5):
                 self.task_class_ids = (0, 1, 2, 3)
 

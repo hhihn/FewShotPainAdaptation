@@ -22,7 +22,10 @@ Usage
     python scripts/run_experiment.py D --folds 1 52        # full LOSO
     python scripts/run_experiment.py D --set num_epochs=2
 
-``EXPERIMENTS`` below mirrors the notebook's EXPERIMENT_GRID.
+``EXPERIMENTS`` below is the record of the A-H window/sensor/encoder
+comparison. main.ipynb no longer imports from it: the notebook now runs the
+settled PainMonit configuration (H) directly, alongside BioVid and
+SenseEmotion. Keep this script for reproducing any of the earlier runs.
 """
 
 from __future__ import annotations

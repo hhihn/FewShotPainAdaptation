@@ -120,10 +120,10 @@ Test/<MODALITY>/<SUBJECT>_data.npy|npz
 Test/<MODALITY>/<SUBJECT>_label.npy|npz
 ```
 
-The EEGNet backend uses `GSR`, `ECG`, and `EMG` by default. CrossMod uses only
-`GSR`/EDA and `ECG`, and therefore configures two input sensors. BioVid Part A
-uses its predefined train/test split: training tasks come from train subjects,
-while LOSO validation and held-out evaluation operate over test subjects.
+Select exactly two modalities with `--modalities`; BioVid accepts `ECG`, `EMG`,
+and `GSR` (`EDA` is an alias for `GSR`). BioVid Part A uses its predefined
+train/test split: training tasks come from train subjects, while LOSO validation
+and held-out evaluation operate over test subjects.
 
 To convert BioVid arrays from `.npy` to compressed `.npz`:
 
@@ -149,8 +149,9 @@ Test/<MODALITY>/<SUBJECT>_data.npy|npz
 Test/<MODALITY>/<SUBJECT>_label.npy|npz
 ```
 
-SenseEmotion defaults to `GSR` and `ECG`, sequence length `1664`, and four raw
-classes `0,1,2,3`. In Colab, put `sense_emotion.tar.gz` under
+SenseEmotion accepts `ECG`, `EMG`, `GSR`/`EDA`, and `RSP`; exactly two must be
+selected. It uses sequence length `1664` and four raw classes `0,1,2,3`. In
+Colab, put `sense_emotion.tar.gz` under
 `/content/drive/MyDrive/PainData`; the notebooks stage and extract it with the
 same safe archive helper used for BioVid.
 
@@ -313,9 +314,9 @@ paired statistics and support-sampling uncertainty.
 ### Encoders
 
 `--encoder-backend eegnet` applies one EEGNet-style encoder jointly to the
-selected sensors. `--encoder-backend crossmod` builds EDA and ECG branches and
-fuses them with CrossMod attention. CrossMod requires CAN and two sensors; this
-is enforced by `PainDatasetConfig`.
+selected sensors. `--encoder-backend crossmod` builds one branch per selected
+modality and fuses them with CrossMod attention. CrossMod requires CAN and two
+sensors; this is enforced by `PainDatasetConfig`.
 
 The `--eegnet-*` options configure the convolutional frontend used by both
 backends. The `--crossmod-*` options configure only CrossMod attention and

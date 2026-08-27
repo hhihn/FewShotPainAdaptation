@@ -24,8 +24,8 @@ class SixWayKShotSampler:
     - TensorFlow Dataset integration
     """
 
-    VALIDATION_FALLBACK_K_SHOT = 4
-    VALIDATION_FALLBACK_Q_QUERY = 4
+    VALIDATION_FALLBACK_K_SHOT = 10
+    VALIDATION_FALLBACK_Q_QUERY = 10
 
     def __init__(
         self,
@@ -200,11 +200,17 @@ class SixWayKShotSampler:
         )
         if requested_total <= available_count:
             return requested_k, requested_q
-        # PainMonit: a subject with a short class (subject 15 has 7 in class 5)
-        # cannot supply the configured 4+4=8. Shrink k=q to fit the available
-        # samples instead of the fixed fallback, which would still be too large.
-        fitted = max(1, available_count // 2)
-        return fitted, fitted
+        # Never enlarge the request. The fallback is a cap for oversized
+        # configurations, so raising a small request up to it would ask a short
+        # class for more than the config wanted -- PainMonit subject 15 has 7
+        # samples in raw class 5 against a configured 4+4, and asking for 10+10
+        # there would clamp to 7 support and leave the query set empty. Whatever
+        # still does not fit is clamped by _gather_samples and logged by
+        # _report_task_size_mismatch.
+        return (
+            min(int(self.VALIDATION_FALLBACK_K_SHOT), requested_k),
+            min(int(self.VALIDATION_FALLBACK_Q_QUERY), requested_q),
+        )
 
     def _drop_undersized_train_subjects(self) -> None:
         """Drop train subjects that cannot supply a full k+q task in every class.

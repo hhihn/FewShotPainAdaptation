@@ -314,6 +314,39 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(senseemotion_config.sequence_length, 1664)
         self.assertEqual(senseemotion_config.num_sensors, 2)
 
+    def test_predefined_dataset_modalities_are_selected_and_validated(self):
+        biovid_config = PainDatasetConfig(
+            dataset_source="biovid_part_a",
+            modalities=("EMG", "EDA"),
+        )
+        self.assertEqual(biovid_config.modalities, ("EMG", "GSR"))
+        self.assertEqual(biovid_config.biovid_modalities, ("EMG", "GSR"))
+        self.assertEqual(biovid_config.modality_names, ("EMG", "EDA"))
+        self.assertEqual(biovid_config.num_sensors, 2)
+
+        senseemotion_config = PainDatasetConfig(
+            dataset_source="senseemotion",
+            modalities=("RSP", "ECG"),
+        )
+        self.assertEqual(senseemotion_config.modalities, ("RSP", "ECG"))
+        self.assertEqual(senseemotion_config.senseemotion_modalities, ("RSP", "ECG"))
+
+        with self.assertRaisesRegex(ValueError, "exactly two"):
+            PainDatasetConfig(
+                dataset_source="biovid_part_a",
+                modalities=("ECG",),
+            )
+        with self.assertRaisesRegex(ValueError, "distinct"):
+            PainDatasetConfig(
+                dataset_source="biovid_part_a",
+                modalities=("GSR", "EDA"),
+            )
+        with self.assertRaisesRegex(ValueError, "Unsupported modalities"):
+            PainDatasetConfig(
+                dataset_source="biovid_part_a",
+                modalities=("ECG", "RSP"),
+            )
+
     def test_crossmod_hyperparameters_are_validated(self):
         with self.assertRaisesRegex(ValueError, "requires attention_mode"):
             PainDatasetConfig(
