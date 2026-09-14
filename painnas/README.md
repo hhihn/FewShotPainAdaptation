@@ -24,8 +24,11 @@ artifacts record the final EDA/EMG/ECG fusion weights.
 The primary workflow partitions the 87 subjects into five deterministic outer
 blocks. NAS for one block excludes that complete block and evaluates candidates
 over three independent subject folds covering the remaining 69 or 70 subjects.
-Every development subject contributes one accuracy, and Optuna maximizes mean
-subject accuracy minus its standard error.
+Every development subject contributes one accuracy. By default, Optuna
+maximizes mean subject accuracy minus its standard error. For the plain
+performance baseline, set `architecture_selection_mode="mean_subject_accuracy"`
+on `PainNASConfig`; it ranks candidates by the same mean subject accuracy with
+no uncertainty penalty.
 
 The winning trial retains the checkpoint from its strongest inner fold. For
 each subject in the excluded block, that checkpoint initializes a new model, a
@@ -76,6 +79,10 @@ LOSO early stopping.
 Set `WORKFLOW_MODE = 'cross_fitted'` to run/resume the target-exclusive block
 NAS and warm-started LOSO protocol instead. The notebook labels the global
 workflow exploratory because architecture selection uses the complete cohort.
+For a directly comparable cross-fitted baseline, set
+`ARCHITECTURE_SELECTION_MODE = 'mean_subject_accuracy'` in the notebook's
+configuration cell and use a new `RUN_NAME`; manifests prevent mixing ranking
+modes during resume.
 
 The same one-time global search, fixed-architecture LOSO, and nested protocol
 are available as command-line workflows:

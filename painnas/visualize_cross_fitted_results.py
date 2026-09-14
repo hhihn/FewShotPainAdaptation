@@ -96,7 +96,6 @@ def load_results(run_dir: Path) -> tuple[pd.DataFrame, dict[str, Any], dict[str,
         "outer_block_index",
         "selected_subject_accuracy_mean",
         "selected_subject_accuracy_standard_error",
-        "selected_uncertainty_objective",
         *BASE_RATE_METRICS,
         "cross_entropy",
     }
@@ -105,6 +104,17 @@ def load_results(run_dir: Path) -> tuple[pd.DataFrame, dict[str, Any], dict[str,
         raise ValueError(f"{metrics_path} is missing columns: {', '.join(missing)}")
     if folds.empty:
         raise ValueError(f"No completed folds found in {metrics_path}")
+    if "selected_selection_score" not in folds.columns:
+        if "selected_uncertainty_objective" not in folds.columns:
+            raise ValueError(
+                f"{metrics_path} is missing selected_selection_score "
+                "(or legacy selected_uncertainty_objective)"
+            )
+        folds["selected_selection_score"] = folds["selected_uncertainty_objective"]
+    if "selection_mode" not in folds.columns:
+        folds["selection_mode"] = "uncertainty_aware"
+    if "selection_metric" not in folds.columns:
+        folds["selection_metric"] = "mean_subject_accuracy_minus_beta_standard_error"
 
     summary = _read_json(run_dir / "summary.json")
     manifest = _read_json(run_dir / "manifest.json")
@@ -116,9 +126,11 @@ def selected_block_metrics(folds: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "outer_block_index",
         "selected_trial",
+        "selection_mode",
+        "selection_metric",
         "selected_subject_accuracy_mean",
         "selected_subject_accuracy_standard_error",
-        "selected_uncertainty_objective",
+        "selected_selection_score",
         "architecture_fingerprint",
     ]
     available = [column for column in columns if column in folds.columns]
@@ -166,11 +178,13 @@ def _plot_fold_performance(ax: plt.Axes, folds: pd.DataFrame, summary: dict[str,
     _style_axes(ax)
 
 
-def _plot_selected_accuracy(ax: plt.Axes, selected: pd.DataFrame, beta: float) -> None:
+def _plot_selected_accuracy(
+    ax: plt.Axes, selected: pd.DataFrame, selection_mode: str, beta: float
+) -> None:
     blocks = selected["outer_block_index"].to_numpy(dtype=int)
     accuracy = selected["selected_subject_accuracy_mean"].to_numpy(dtype=float)
     standard_error = selected["selected_subject_accuracy_standard_error"].to_numpy(dtype=float)
-    objective = selected["selected_uncertainty_objective"].to_numpy(dtype=float)
+    selection_score = selected["selected_selection_score"].to_numpy(dtype=float)
     ax.errorbar(
         blocks,
         accuracy,
@@ -182,22 +196,23 @@ def _plot_selected_accuracy(ax: plt.Axes, selected: pd.DataFrame, beta: float) -
         linewidth=1.4,
         label="Chosen validation accuracy ± SE",
     )
-    ax.plot(
-        blocks,
-        objective,
-        marker="D",
-        markersize=4,
-        linestyle="--",
-        color=OKABE_ITO["purple"],
-        label=rf"Selection objective (mean − {beta:g} × SE)",
-    )
+    if selection_mode == "uncertainty_aware":
+        ax.plot(
+            blocks,
+            selection_score,
+            marker="D",
+            markersize=4,
+            linestyle="--",
+            color=OKABE_ITO["purple"],
+            label=rf"Selection objective (mean − {beta:g} × SE)",
+        )
     for block, value in zip(blocks, accuracy):
         ax.annotate(f"{value:.1%}", (block, value+0.02), xytext=(0, 8), textcoords="offset points", ha="center", fontsize=7)
     ax.set(
         xlabel="Outer subject block",
         ylabel="Inner validation score",
         xticks=blocks,
-        ylim=(max(0.0, float(np.min(objective - standard_error)) - 0.05), min(1.0, float(np.max(accuracy + standard_error)) + 0.07)),
+        ylim=(max(0.0, float(np.min(selection_score - standard_error)) - 0.05), min(1.0, float(np.max(accuracy + standard_error)) + 0.07)),
     )
     ax.yaxis.set_major_formatter(PercentFormatter(1.0))
     ax.legend(frameon=False, loc="lower left")
@@ -276,7 +291,9 @@ def create_figure(
 ) -> plt.Figure:
     """Create a colorblind-safe overview figure for the run."""
     selected = selected_block_metrics(folds)
-    beta = float(manifest.get("config", {}).get("uncertainty_beta", 1.0))
+    config = manifest.get("config", {})
+    beta = float(config.get("uncertainty_beta", 1.0))
+    selection_mode = str(config.get("architecture_selection_mode", "uncertainty_aware"))
 
     plt.rcParams.update(
         {
@@ -291,7 +308,7 @@ def create_figure(
     )
     figure, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
     _plot_fold_performance(axes[0, 0], folds, summary)
-    _plot_selected_accuracy(axes[0, 1], selected, beta)
+    _plot_selected_accuracy(axes[0, 1], selected, selection_mode, beta)
     _plot_aggregate_metrics(axes[1, 0], summary)
     _plot_confusion_matrix(axes[1, 1], summary, manifest)
 
@@ -312,7 +329,9 @@ def format_report(
 ) -> str:
     """Build a concise, terminal-friendly report of the plotted values."""
     selected = selected_block_metrics(folds)
-    beta = float(manifest.get("config", {}).get("uncertainty_beta", 1.0))
+    config = manifest.get("config", {})
+    beta = float(config.get("uncertainty_beta", 1.0))
+    selection_mode = str(config.get("architecture_selection_mode", "uncertainty_aware"))
     lines = [
         "PainNAS cross-fitted LOSO run",
         f"Completed folds: {len(folds)}/{summary.get('total_folds', '?')}",
@@ -324,9 +343,14 @@ def format_report(
         lines.append(
             f"  Block {int(row.outer_block_index)}{trial}: "
             f"{row.selected_subject_accuracy_mean:.3f} ± {row.selected_subject_accuracy_standard_error:.3f} SE; "
-            f"objective={row.selected_uncertainty_objective:.3f}"
+            f"selection score={row.selected_selection_score:.3f}"
         )
-    lines.extend([f"  Objective: mean accuracy - {beta:g} × SE", "", "Outer LOSO test metrics:"])
+    selection_description = (
+        f"mean accuracy - {beta:g} × SE"
+        if selection_mode == "uncertainty_aware"
+        else "mean subject accuracy"
+    )
+    lines.extend([f"  Ranking: {selection_description}", "", "Outer LOSO test metrics:"])
     for metric in (*_rate_metrics(summary), "cross_entropy"):
         values = summary.get("metrics", {}).get(metric)
         if not values:

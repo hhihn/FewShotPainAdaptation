@@ -72,6 +72,31 @@ def uncertainty_aware_accuracy(
     }
 
 
+def architecture_selection_metrics(
+    subject_accuracies: Iterable[float], config: PainNASConfig
+) -> dict[str, Any]:
+    """Return common subject-level metrics and the configured NAS ranking score."""
+
+    metrics: dict[str, Any] = uncertainty_aware_accuracy(
+        subject_accuracies, beta=config.uncertainty_beta
+    )
+    mode = config.architecture_selection_mode
+    if mode == "uncertainty_aware":
+        selection_metric = "mean_subject_accuracy_minus_beta_standard_error"
+        selection_score = metrics["uncertainty_objective"]
+    elif mode == "mean_subject_accuracy":
+        selection_metric = "mean_subject_accuracy"
+        selection_score = metrics["subject_accuracy_mean"]
+    else:  # PainNASConfig validates this before a search can begin.
+        raise ValueError(f"Unsupported architecture selection mode: {mode}")
+    return {
+        **metrics,
+        "selection_mode": mode,
+        "selection_metric": selection_metric,
+        "selection_score": float(selection_score),
+    }
+
+
 def _architecture_fingerprint(spec: ModelSpec) -> str:
     payload = json.dumps(spec.to_dict(), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -302,7 +327,12 @@ def _persist_block_search(
             "architecture": spec.to_dict(),
             "architecture_fingerprint": result["architecture_fingerprint"],
             "best_trial_number": int(best.number),
-            "best_uncertainty_objective": float(best.value),
+            "selection_mode": result.get("selection_mode", "uncertainty_aware"),
+            "selection_metric": result.get(
+                "selection_metric",
+                "mean_subject_accuracy_minus_beta_standard_error",
+            ),
+            "best_selection_score": float(best.value),
             "best_subject_accuracy_mean": result["subject_accuracy_mean"],
             "best_subject_accuracy_std": result["subject_accuracy_std"],
             "best_subject_accuracy_standard_error": result[
@@ -545,19 +575,17 @@ def run_uncertainty_aware_block_search(
                     del callbacks, metric_callback, train_dataset, validation_dataset, model
                     reset_runtime(fold_seed + 50_000)
                     gc.collect()
-                partial = uncertainty_aware_accuracy(
-                    (row["accuracy"] for row in subject_rows),
-                    beta=config.uncertainty_beta,
+                partial = architecture_selection_metrics(
+                    (row["accuracy"] for row in subject_rows), config
                 )
-                trial.report(partial["uncertainty_objective"], step=fold_offset)
+                trial.report(partial["selection_score"], step=fold_offset)
                 if trial.should_prune():
                     raise optuna.TrialPruned(
                         f"Pruned after inner fold {fold_offset}: "
-                        f"objective={partial['uncertainty_objective']:.6f}"
+                        f"selection_score={partial['selection_score']:.6f}"
                     )
-            metrics = uncertainty_aware_accuracy(
-                (row["accuracy"] for row in subject_rows),
-                beta=config.uncertainty_beta,
+            metrics = architecture_selection_metrics(
+                (row["accuracy"] for row in subject_rows), config
             )
             if best_checkpoint_metadata is None or not candidate_checkpoint.exists():
                 raise RuntimeError("Trial did not retain a warm-start checkpoint")
@@ -582,10 +610,13 @@ def run_uncertainty_aware_block_search(
                 "subject_accuracy_standard_error",
                 metrics["subject_accuracy_standard_error"],
             )
+            trial.set_user_attr("selection_mode", metrics["selection_mode"])
+            trial.set_user_attr("selection_metric", metrics["selection_metric"])
+            trial.set_user_attr("selection_score", metrics["selection_score"])
             trial.set_user_attr("median_best_epoch", median_best_epoch)
             trial.set_user_attr("elapsed_seconds", result["elapsed_seconds"])
             completed = True
-            return float(metrics["uncertainty_objective"])
+            return float(metrics["selection_score"])
         finally:
             if not completed and candidate_checkpoint.exists():
                 candidate_checkpoint.unlink()
@@ -688,9 +719,15 @@ def _aggregate_cross_fitted_results(
             "target_subject_key": payload["target_subject_key"],
             "outer_block_index": payload["outer_block_index"],
             "selected_trial": payload["selected_trial"],
-            "selected_uncertainty_objective": payload[
-                "selected_uncertainty_objective"
-            ],
+            "selection_mode": payload.get("selection_mode", "uncertainty_aware"),
+            "selection_metric": payload.get(
+                "selection_metric",
+                "mean_subject_accuracy_minus_beta_standard_error",
+            ),
+            "selected_selection_score": payload.get(
+                "selected_selection_score",
+                payload.get("selected_uncertainty_objective"),
+            ),
             "selected_subject_accuracy_mean": payload[
                 "selected_subject_accuracy_mean"
             ],
@@ -813,7 +850,11 @@ def run_cross_fitted_loso_nas(
         "config": config.to_dict(),
         "config_fingerprint": config_fingerprint,
         "subject_plan": _plan_payload(plan),
-        "objective": "subject_accuracy_mean - uncertainty_beta * standard_error",
+        "objective": (
+            "subject_accuracy_mean - uncertainty_beta * standard_error"
+            if config.architecture_selection_mode == "uncertainty_aware"
+            else "subject_accuracy_mean"
+        ),
         "warm_start_rule": "highest-inner-fold-macro-accuracy checkpoint",
         "continuation_epoch_rule": continuation_epoch_rule,
         "protocol_description": CROSS_FITTED_PROTOCOL_DESCRIPTION,
@@ -902,7 +943,8 @@ def run_cross_fitted_loso_nas(
                 f"stage=architecture selected | trial="
                 f"{int(search_result['best_trial_number']) + 1}/{config.n_trials} | "
                 f"validation accuracy={search_result['best_subject_accuracy_mean']:.4f} | "
-                f"selection objective={search_result['best_uncertainty_objective']:.4f} | "
+                f"selection score={search_result['best_selection_score']:.4f} "
+                f"({search_result['selection_metric']}) | "
                 f"parameters={int(search_result['parameter_count']):,} | "
                 f"LOSO continuation epochs={block_continuation_epochs}",
                 flush=True,
@@ -1069,8 +1111,10 @@ def run_cross_fitted_loso_nas(
                     "target_test_samples": len(test_indices),
                     "target_train_samples_excluded": len(excluded_target_train),
                     "selected_trial": int(search_result["best_trial_number"]),
-                    "selected_uncertainty_objective": float(
-                        search_result["best_uncertainty_objective"]
+                    "selection_mode": search_result["selection_mode"],
+                    "selection_metric": search_result["selection_metric"],
+                    "selected_selection_score": float(
+                        search_result["best_selection_score"]
                     ),
                     "selected_subject_accuracy_mean": float(
                         search_result["best_subject_accuracy_mean"]
