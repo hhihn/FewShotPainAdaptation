@@ -365,6 +365,7 @@ def run_uncertainty_aware_block_search(
     inner_folds: Iterable[Iterable[int]],
     resume: bool,
     verbose: int = 1,
+    reviewer_policy=None,
 ) -> dict[str, Any]:
     """Search architectures across independent inner subject folds."""
 
@@ -399,6 +400,8 @@ def run_uncertainty_aware_block_search(
         "search_seed": search_seed,
         "protocol_description": CROSS_FITTED_PROTOCOL_DESCRIPTION,
     }
+    if reviewer_policy is not None:
+        manifest["reviewer_search"] = reviewer_policy.manifest
     ensure_manifest(output_dir / "manifest.json", manifest, resume=resume)
     atomic_write_json(output_dir / "inner_folds.json", manifest)
     trials_dir = output_dir / "trials"
@@ -408,20 +411,23 @@ def run_uncertainty_aware_block_search(
         raise FileExistsError(
             f"Optuna study already exists; pass --resume to reuse it: {database_path}"
         )
+    if reviewer_policy is not None and reviewer_policy.random_sampler:
+        sampler = optuna.samplers.RandomSampler(seed=search_seed)
+    else:
+        sampler = optuna.samplers.TPESampler(
+            seed=search_seed, n_startup_trials=min(10, max(1, config.n_trials // 5))
+        )
     study = optuna.create_study(
         study_name=study_name,
         storage=f"sqlite:///{database_path}",
         direction="maximize",
         load_if_exists=resume,
-        sampler=optuna.samplers.TPESampler(
-            seed=search_seed,
-            n_startup_trials=min(10, max(1, config.n_trials // 5)),
-        ),
+        sampler=sampler,
         pruner=optuna.pruners.SuccessiveHalvingPruner(
             min_resource=1, reduction_factor=3
         ),
     )
-    if not study.trials:
+    if not study.trials and (reviewer_policy is None or reviewer_policy.enqueue_baseline):
         study.enqueue_trial(baseline_trial_parameters(config.fusion_mode))
     input_shape = (arrays.num_modalities, arrays.sequence_length, 1)
 
@@ -499,6 +505,8 @@ def run_uncertainty_aware_block_search(
                     inner_fold_index=fold_offset,
                 )
                 callbacks = [metric_callback]
+                if reviewer_policy is not None:
+                    callbacks.append(reviewer_policy.deadline_callback())
                 callbacks.extend(
                     early_stopping_callbacks(
                         monitor="val_subject_macro_accuracy",
@@ -639,7 +647,9 @@ def run_uncertainty_aware_block_search(
         trial.state in finished_states for trial in study.trials
     )
     remaining_trials = max(0, config.n_trials - finished_trial_count)
-    if remaining_trials:
+    if reviewer_policy is not None:
+        reviewer_policy.optimize(study, objective, persist, output_dir)
+    elif remaining_trials:
         study.optimize(
             objective,
             n_trials=remaining_trials,
