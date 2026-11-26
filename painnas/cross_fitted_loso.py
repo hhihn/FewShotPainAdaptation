@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
 import optuna
@@ -45,6 +45,10 @@ from painnas.search import (
     baseline_trial_parameters,
     suggest_architecture,
 )
+
+
+if TYPE_CHECKING:
+    from painnas.weight_sharing import Replay
 
 
 def uncertainty_aware_accuracy(
@@ -294,7 +298,10 @@ def _persist_block_search(
     ]
     if not complete:
         return
-    best = max(complete, key=lambda trial: float(trial.value))
+    best = max(
+        complete,
+        key=lambda trial: (float(trial.value), -trial.user_attrs.get("reference_trial", trial.number)),
+    )
     result_path = output_dir / "trials" / f"trial_{best.number:04d}" / "result.json"
     if not result_path.exists():
         raise RuntimeError(f"Missing completed-trial result: {result_path}")
@@ -327,6 +334,7 @@ def _persist_block_search(
             "architecture": spec.to_dict(),
             "architecture_fingerprint": result["architecture_fingerprint"],
             "best_trial_number": int(best.number),
+            **({"reference_trial": result["reference_trial"]} if "reference_trial" in result else {}),
             "selection_mode": result.get("selection_mode", "uncertainty_aware"),
             "selection_metric": result.get(
                 "selection_metric",
@@ -365,6 +373,7 @@ def run_uncertainty_aware_block_search(
     inner_folds: Iterable[Iterable[int]],
     resume: bool,
     verbose: int = 1,
+    replay: Replay | None = None,
 ) -> dict[str, Any]:
     """Search architectures across independent inner subject folds."""
 
@@ -399,6 +408,8 @@ def run_uncertainty_aware_block_search(
         "search_seed": search_seed,
         "protocol_description": CROSS_FITTED_PROTOCOL_DESCRIPTION,
     }
+    if replay is not None:
+        manifest["weight_sharing"] = replay.provenance
     ensure_manifest(output_dir / "manifest.json", manifest, resume=resume)
     atomic_write_json(output_dir / "inner_folds.json", manifest)
     trials_dir = output_dir / "trials"
@@ -421,13 +432,15 @@ def run_uncertainty_aware_block_search(
             min_resource=1, reduction_factor=3
         ),
     )
-    if not study.trials:
+    if replay is None and not study.trials:
         study.enqueue_trial(baseline_trial_parameters(config.fusion_mode))
     input_shape = (arrays.num_modalities, arrays.sequence_length, 1)
 
     def objective(trial: optuna.Trial) -> float:
         trial_start = time.perf_counter()
-        spec = suggest_architecture(trial, config.fusion_mode)
+        original_number = int(trial.user_attrs.get("reference_trial", trial.number))
+        spec = (suggest_architecture(trial, config.fusion_mode) if replay is None
+                else replay.specs[original_number])
         if verbose:
             print(
                 f"[PainNAS block {outer_block_index}/{config.outer_block_count}] "
@@ -447,7 +460,7 @@ def run_uncertainty_aware_block_search(
         best_checkpoint_metadata: dict[str, Any] | None = None
         try:
             for fold_offset, validation_subjects in enumerate(inner_folds, start=1):
-                fold_seed = search_seed + int(trial.number) * 100_000 + fold_offset
+                fold_seed = search_seed + original_number * 100_000 + fold_offset
                 training_subjects = tuple(
                     sorted(set(development_subjects) - set(validation_subjects))
                 )
@@ -579,7 +592,7 @@ def run_uncertainty_aware_block_search(
                     (row["accuracy"] for row in subject_rows), config
                 )
                 trial.report(partial["selection_score"], step=fold_offset)
-                if trial.should_prune():
+                if replay is None and trial.should_prune():
                     raise optuna.TrialPruned(
                         f"Pruned after inner fold {fold_offset}: "
                         f"selection_score={partial['selection_score']:.6f}"
@@ -604,6 +617,8 @@ def run_uncertainty_aware_block_search(
                 "subject_accuracies": subject_rows,
                 "elapsed_seconds": time.perf_counter() - trial_start,
             }
+            if replay is not None:
+                result["reference_trial"] = original_number
             atomic_write_json(trial_dir / "result.json", result)
             trial.set_user_attr("subject_accuracy_mean", metrics["subject_accuracy_mean"])
             trial.set_user_attr(
@@ -638,13 +653,22 @@ def run_uncertainty_aware_block_search(
     finished_trial_count = sum(
         trial.state in finished_states for trial in study.trials
     )
-    remaining_trials = max(0, config.n_trials - finished_trial_count)
+    if replay is not None:
+        shortlist = replay.screen(arrays, config, output_dir, inner_folds, development_subjects, search_seed, verbose)
+        attempted = {t.user_attrs["reference_trial"] for t in study.trials
+                     if t.state in {optuna.trial.TrialState.WAITING, optuna.trial.TrialState.COMPLETE}}
+        for number in sorted(set(shortlist) - attempted):
+            study.enqueue_trial({}, user_attrs={"reference_trial": number})
+    budget = config.n_trials if replay is None else len(shortlist)
+    if replay is not None:
+        finished_trial_count = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
+    remaining_trials = max(0, budget - finished_trial_count)
     if remaining_trials:
         study.optimize(
             objective,
             n_trials=remaining_trials,
             callbacks=[persist],
-            catch=(tf.errors.ResourceExhaustedError,),
+            catch=(tf.errors.ResourceExhaustedError,) if replay is None else (),
             gc_after_trial=True,
         )
     persist(study)
@@ -653,6 +677,18 @@ def run_uncertainty_aware_block_search(
     if not best_path.exists() or not checkpoint_path.exists():
         raise RuntimeError(f"Block search did not produce a usable winner: {output_dir}")
     payload = read_json(best_path)
+    if replay is not None:
+        screening = read_json(output_dir / "screening" / "shortlist.json")
+        refit_seconds = sum(t.duration.total_seconds() for t in study.trials
+                            if t.duration is not None)
+        atomic_write_json(output_dir / "weight_sharing_summary.json", {
+            "eligible_candidates": len(screening["scores"]),
+            "completed_refits": sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials),
+            "reference_winner_in_shortlist": screening["reference_winner_in_shortlist"],
+            "screening_seconds": screening["elapsed_seconds"],
+            "refit_trial_seconds": refit_seconds,
+            "reference_trial_seconds": replay.provenance["reference_trial_seconds"],
+        })
     return {
         "study_name": study_name,
         "trial_count": sum(trial.state in finished_states for trial in study.trials),
@@ -824,6 +860,8 @@ def run_cross_fitted_loso_nas(
     stop_index: int | None = None,
     max_folds: int | None = None,
     verbose: int = 1,
+    weight_sharing_reference_dir: Path | None = None,
+    weight_sharing_top_k: int = 3,
 ) -> dict[str, Any]:
     """Run block-level NAS and warm-started individual LOSO evaluation."""
 
@@ -859,6 +897,17 @@ def run_cross_fitted_loso_nas(
         "continuation_epoch_rule": continuation_epoch_rule,
         "protocol_description": CROSS_FITTED_PROTOCOL_DESCRIPTION,
     }
+    replays = {}
+    if weight_sharing_reference_dir is not None:
+        from painnas.weight_sharing import load_replays
+
+        targets = set(_selected_subjects(arrays.unique_subjects, start_index=start_index,
+                                         stop_index=stop_index, max_folds=max_folds))
+        replays, provenance = load_replays(
+            weight_sharing_reference_dir, output_dir, config, _plan_payload(plan),
+            targets, weight_sharing_top_k,
+        )
+        manifest["weight_sharing"] = provenance
     ensure_manifest(output_dir / "manifest.json", manifest, resume=resume)
     atomic_write_json(output_dir / "subject_blocks.json", _plan_payload(plan))
     selected = _selected_subjects(
@@ -935,6 +984,7 @@ def run_cross_fitted_loso_nas(
             inner_folds=inner_folds,
             resume=resume,
             verbose=verbose,
+            replay=replays.get(block_index),
         )
         block_continuation_epochs = resolve_continuation_epochs(search_result, config)
         if verbose:

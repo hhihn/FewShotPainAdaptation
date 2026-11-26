@@ -142,14 +142,18 @@ def architecture_from_dict(payload: Mapping[str, Any]) -> ModelSpec:
     return LateFusionArchitectureSpec.from_dict(payload) if payload.get("fusion_mode") == "late" else ArchitectureSpec.from_dict(payload)
 
 
-def build_early_fusion_model(spec: ArchitectureSpec, *, input_shape=(3, 1152, 1), num_classes=2) -> keras.Model:
+def build_early_fusion_model(spec: ArchitectureSpec, *, input_shape=(3, 1152, 1), num_classes=2, convolution_factory=None) -> keras.Model:
     inputs = keras.Input(shape=input_shape, name="physiological_modalities")
     x = inputs
     for block_index, (filters, repeat_count) in enumerate(zip(spec.block_filters(), spec.conv_repeats), 1):
         convolution_class = keras.layers.Conv2D if spec.convolution_type == "standard" else keras.layers.SeparableConv2D
         kernel_height = 2 if block_index == 1 else 1
         for repeat_index in range(1, repeat_count + 1):
-            x = convolution_class(filters, (kernel_height, spec.temporal_kernel_size), padding="same", activation="elu", name=f"block_{block_index}_{'conv' if spec.convolution_type == 'standard' else 'separable_conv'}_{repeat_index}")(x)
+            name = f"block_{block_index}_{'conv' if spec.convolution_type == 'standard' else 'separable_conv'}_{repeat_index}"
+            kernel = (kernel_height, spec.temporal_kernel_size)
+            layer = (convolution_factory(convolution_class, name, int(x.shape[-1]), filters, kernel)
+                     if convolution_factory else convolution_class(filters, kernel, padding="same", activation="elu", name=name))
+            x = layer(x)
         if spec.normalization_type == "batch":
             x = keras.layers.BatchNormalization(name=f"block_{block_index}_batch_norm")(x)
         elif spec.normalization_type == "group":
@@ -179,11 +183,15 @@ class NormalizedLateFusion(keras.layers.Layer):
         return tf.add_n([weight * value for weight, value in zip(tf.unstack(weights), inputs)])
 
 
-def _branch(inputs, spec: LateBranchSpec, *, name: str, dropout_rate: float, post_pool_dropout: bool, vector_dropout: bool, num_classes: int):
+def _branch(inputs, spec: LateBranchSpec, *, name: str, dropout_rate: float, post_pool_dropout: bool, vector_dropout: bool, num_classes: int, convolution_factory=None):
     x = inputs
     for block_index, (filters, repeat_count) in enumerate(zip(spec.block_filters(), spec.conv_repeats), 1):
         for repeat_index in range(1, repeat_count + 1):
-            x = keras.layers.Conv1D(filters, spec.temporal_kernel_size, padding="same", activation="elu", name=f"{name}_block_{block_index}_conv_{repeat_index}")(x)
+            layer_name = f"{name}_block_{block_index}_conv_{repeat_index}"
+            kernel = spec.temporal_kernel_size
+            layer = (convolution_factory(keras.layers.Conv1D, layer_name, int(x.shape[-1]), filters, kernel)
+                     if convolution_factory else keras.layers.Conv1D(filters, kernel, padding="same", activation="elu", name=layer_name))
+            x = layer(x)
         x = keras.layers.BatchNormalization(name=f"{name}_block_{block_index}_batch_norm")(x)
         x = keras.layers.MaxPooling1D(2, strides=2, name=f"{name}_block_{block_index}_max_pool")(x)
         if post_pool_dropout:
@@ -205,20 +213,20 @@ def _modality_indices(modalities: tuple[str, ...]) -> dict[str, int]:
     return {name: canonical.index(name) for name in canonical}
 
 
-def build_late_fusion_model(spec: LateFusionArchitectureSpec, *, input_shape=(3, 1152, 1), num_classes=2, modalities: tuple[str, ...] = ("GSR", "ECG", "EMG")) -> keras.Model:
+def build_late_fusion_model(spec: LateFusionArchitectureSpec, *, input_shape=(3, 1152, 1), num_classes=2, modalities: tuple[str, ...] = ("GSR", "ECG", "EMG"), convolution_factory=None) -> keras.Model:
     if input_shape[0] != 3:
         raise ValueError("Late fusion requires three modality channels")
     inputs = keras.Input(shape=input_shape, name="physiological_modalities")
     selected = {name: keras.layers.Lambda(lambda value, index=index: value[:, index, :, :], name=f"select_{name.lower()}")(inputs) for name, index in _modality_indices(modalities).items()}
-    eda = _branch(selected["EDA"], spec.eda, name="eda", dropout_rate=spec.dropout_rate, post_pool_dropout=False, vector_dropout=False, num_classes=num_classes)
-    emg = _branch(selected["EMG"], spec.emg, name="emg", dropout_rate=spec.dropout_rate, post_pool_dropout=True, vector_dropout=True, num_classes=num_classes)
-    ecg = _branch(selected["ECG"], spec.ecg, name="ecg", dropout_rate=spec.dropout_rate, post_pool_dropout=True, vector_dropout=True, num_classes=num_classes)
+    eda = _branch(selected["EDA"], spec.eda, name="eda", dropout_rate=spec.dropout_rate, post_pool_dropout=False, vector_dropout=False, num_classes=num_classes, convolution_factory=convolution_factory)
+    emg = _branch(selected["EMG"], spec.emg, name="emg", dropout_rate=spec.dropout_rate, post_pool_dropout=True, vector_dropout=True, num_classes=num_classes, convolution_factory=convolution_factory)
+    ecg = _branch(selected["ECG"], spec.ecg, name="ecg", dropout_rate=spec.dropout_rate, post_pool_dropout=True, vector_dropout=True, num_classes=num_classes, convolution_factory=convolution_factory)
     aggregate = NormalizedLateFusion(name="pain_class")([eda, emg, ecg])
     return keras.Model(inputs, [eda, emg, ecg, aggregate], name="painnas_late_fusion")
 
 
-def build_model(spec: ModelSpec, *, input_shape=(3, 1152, 1), num_classes=2, modalities: tuple[str, ...] = ("GSR", "ECG", "EMG")) -> keras.Model:
-    return build_late_fusion_model(spec, input_shape=input_shape, num_classes=num_classes, modalities=modalities) if isinstance(spec, LateFusionArchitectureSpec) else build_early_fusion_model(spec, input_shape=input_shape, num_classes=num_classes)
+def build_model(spec: ModelSpec, *, input_shape=(3, 1152, 1), num_classes=2, modalities: tuple[str, ...] = ("GSR", "ECG", "EMG"), convolution_factory=None) -> keras.Model:
+    return build_late_fusion_model(spec, input_shape=input_shape, num_classes=num_classes, modalities=modalities, convolution_factory=convolution_factory) if isinstance(spec, LateFusionArchitectureSpec) else build_early_fusion_model(spec, input_shape=input_shape, num_classes=num_classes, convolution_factory=convolution_factory)
 
 
 def target_output_names(spec: ModelSpec) -> tuple[str, ...]:
